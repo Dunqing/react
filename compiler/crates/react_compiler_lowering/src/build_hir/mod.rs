@@ -32,10 +32,12 @@ use crate::hir_builder::todo_diagnostic;
 use crate::semantic_queries as sq;
 
 mod expressions;
+mod statements;
 
 #[allow(unused_imports)]
 pub(crate) use expressions::lower_expression;
 pub(crate) use expressions::lower_expression_to_temporary;
+pub(crate) use statements::lower_statement;
 
 // The per-construct lowering (statements / jsx / patterns) is transcribed
 // incrementally in later N1.2.x / N1.3 stages. Expression lowering (N1.2.3)
@@ -90,6 +92,15 @@ pub(crate) fn build_temporary_place(
         effect: Effect::Unknown,
         loc,
     }
+}
+
+/// Promote a temporary identifier to a named identifier (for destructuring /
+/// catch bindings). Corresponds to TS `promoteTemporary(identifier)`.
+pub(crate) fn promote_temporary(builder: &mut HirBuilder, identifier_id: IdentifierId) {
+    let env = builder.environment_mut();
+    let decl_id = env.identifiers[identifier_id.0 as usize].declaration_id;
+    env.identifiers[identifier_id.0 as usize].name =
+        Some(IdentifierName::Promoted(format!("#t{}", decl_id.0)));
 }
 
 pub(crate) fn lower_value_to_temporary(
@@ -398,80 +409,5 @@ fn lower_param(
         }
     }
     Ok(())
-}
-
-// =============================================================================
-// Statement dispatch (shell: trivial constructs real, rest bail)
-// =============================================================================
-
-fn lower_statement(
-    builder: &mut HirBuilder,
-    stmt: &oxc::Statement,
-) -> Result<(), CompilerError> {
-    match stmt {
-        oxc::Statement::EmptyStatement(_) => Ok(()),
-        oxc::Statement::ReturnStatement(ret) => {
-            let value = match &ret.argument {
-                Some(expr) => lower_expression_to_temporary(builder, expr)?,
-                None => {
-                    let undef = InstructionValue::Primitive {
-                        value: PrimitiveValue::Undefined,
-                        loc: None,
-                    };
-                    lower_value_to_temporary(builder, undef)?
-                }
-            };
-            let loc = Some(builder.loc_of_span(ret.span));
-            builder.terminate(
-                Terminal::Return {
-                    value,
-                    return_variant: ReturnVariant::Explicit,
-                    id: EvaluationOrder(0),
-                    loc,
-                    effects: None,
-                },
-                Some(BlockKind::Block),
-            );
-            Ok(())
-        }
-        oxc::Statement::ExpressionStatement(es) => {
-            // Evaluate for side effects; discard the value.
-            let _ = lower_expression_to_temporary(builder, &es.expression)?;
-            Ok(())
-        }
-        other => {
-            let loc = Some(builder.loc_of_span(other.span()));
-            builder.record_diagnostic(todo_diagnostic(
-                &format!("statement: {}", statement_kind_name(other)),
-                loc,
-            ));
-            Ok(())
-        }
-    }
-}
-
-fn statement_kind_name(stmt: &oxc::Statement) -> &'static str {
-    use oxc::Statement::*;
-    match stmt {
-        BlockStatement(_) => "BlockStatement",
-        BreakStatement(_) => "BreakStatement",
-        ContinueStatement(_) => "ContinueStatement",
-        DebuggerStatement(_) => "DebuggerStatement",
-        DoWhileStatement(_) => "DoWhileStatement",
-        EmptyStatement(_) => "EmptyStatement",
-        ExpressionStatement(_) => "ExpressionStatement",
-        ForInStatement(_) => "ForInStatement",
-        ForOfStatement(_) => "ForOfStatement",
-        ForStatement(_) => "ForStatement",
-        IfStatement(_) => "IfStatement",
-        LabeledStatement(_) => "LabeledStatement",
-        ReturnStatement(_) => "ReturnStatement",
-        SwitchStatement(_) => "SwitchStatement",
-        ThrowStatement(_) => "ThrowStatement",
-        TryStatement(_) => "TryStatement",
-        WhileStatement(_) => "WhileStatement",
-        WithStatement(_) => "WithStatement",
-        _ => "Declaration/ModuleDeclaration",
-    }
 }
 
