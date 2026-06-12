@@ -112,6 +112,16 @@ oxc↔babel-AST conversion).
   Remaining ACHIEVABLE: dependency-granularity cluster (PropagateScopeDependencies fidelity), scattered inference small-diffs
   (~80), N-VAL 15, BAIL Family-B ~26.
   - **N2.9 (next)**: dependency-granularity + scattered inference-fidelity OTHER. Then N-VAL, Family-B, then N2.final + N3 cleanup.
+
+  **N2.9 ✅ (e3d795352d)** Fixed the `fn_type` Component-vs-Other misclassification (the N1.2.4 gap!): discovery's
+  classify-by-name → ported `getComponentOrHookLike` body heuristic (calls_hooks_or_creates_jsx + valid params +
+  !returns_non_node; added oxc_ast_visit). Root of dep-granularity (wrong Component → props gets BuiltInProps shape →
+  finer dep paths). Also opt-out module-scope directives. **SEMANTIC-pass 1593→1622 (90.0%), HIR-MATCH 1009→1448 (+439)**,
+  OTHER 103→74, 1 coincidental regression (net positive). Remaining OTHER: deferred pragma features (gating 15,
+  jsx-outlining[enableJsxOutlining, distinct from fn-outlining] 10, instrument 2, fbt 2 = 29), JSX text/entity codegen 7,
+  destructure/SSA lowering 5, computed-member eval 3.
+  - **N2.10 (next)**: codegen/lowering TAIL (do BEFORE N2.final deletes the reference code) — BAIL Family-B optional/logical
+    inlining ~26, JSX text/entity codegen 7, computed-member eval 3, destructure/SSA lowering 5.
   - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
     Babel NAPI/JSON; add oxc_linter Rule + transform API). Deferred features tracked in a handoff note.
 
