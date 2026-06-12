@@ -237,6 +237,17 @@ fn compile_oxc(
         .iter()
         .any(|d| d.severity == oxc_diagnostics::Severity::Error);
 
+    // N2.1: native oxc codegen path — when `code` is populated, emit it
+    // directly. This is the re-enabled CODE oracle output.
+    if let Some(code) = result.code.take() {
+        return CompileOutput {
+            code: Some(code),
+            error: None,
+            events,
+            ordered_log,
+        };
+    }
+
     match result.file {
         Some(ref file) => {
             let emit_allocator = oxc_allocator::Allocator::default();

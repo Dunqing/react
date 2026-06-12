@@ -935,6 +935,7 @@ dependencies = [
  "react_compiler_ast",
  "react_compiler_diagnostics",
  "react_compiler_hir",
+ "react_compiler_reactive_scopes",
  "serde",
  "serde_json",
 ]
@@ -945,6 +946,10 @@ version = "0.1.0"
 dependencies = [
  "hmac",
  "indexmap",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_span",
+ "oxc_syntax",
  "react_compiler_ast",
  "react_compiler_diagnostics",
  "react_compiler_hir",

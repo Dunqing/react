@@ -24,6 +24,7 @@ use super::compile_result::LoggerPosition;
 use super::compile_result::LoggerSourceLocation;
 use super::compile_result::OutlinedFunction;
 use super::imports::ProgramContext;
+use super::native_codegen as native;
 use super::plugin_options::CompilerOutputMode;
 use crate::debug_print;
 
@@ -43,6 +44,14 @@ pub fn compile_fn(
     env_config: &EnvironmentConfig,
     context: &mut ProgramContext,
 ) -> Result<CodegenFunction, CompilerError> {
+    // N2.1: capture the source form (span + arrow-ness) for native oxc codegen
+    // assembly before lowering moves on.
+    let native_fn_span = {
+        let s = func.span();
+        (s.start, s.end)
+    };
+    let native_is_arrow = matches!(func, FunctionForm::Arrow(_));
+
     let mut env = Environment::with_config(env_config.clone());
     env.fn_type = fn_type;
     env.output_mode = match mode {
@@ -1050,6 +1059,15 @@ pub fn compile_fn(
         context.timing.stop();
     }
 
+    // N2.1: snapshot the reactive function + unique identifiers for native oxc
+    // codegen, which runs after the input semantic borrow ends (see
+    // native_codegen.rs). We clone these here, before the (currently dead)
+    // react_compiler_ast codegen below consumes `unique_identifiers` by value
+    // and borrows `env`. `env` itself is moved into the artifact at the push
+    // site below (its scope/identifier arenas are read-only during codegen).
+    let native_reactive_fn = reactive_fn.clone();
+    let native_unique_identifiers = unique_identifiers.clone();
+
     context.timing.start("codegen");
     let codegen_result = react_compiler_reactive_scopes::codegen_function(
         &reactive_fn,
@@ -1150,6 +1168,20 @@ pub fn compile_fn(
         context.merge_uid_known_names(&uid_names);
     }
 
+    // N2.1: record the native codegen artifact only on full success, after all
+    // error checks above. We move `env` in here (the dead codegen above only
+    // read its scope/identifier arenas); native codegen re-runs cache-slot
+    // allocation independently against the snapshotted reactive function.
+    context.native_artifacts.push(native::NativeArtifact {
+        reactive_fn: native_reactive_fn,
+        env,
+        unique_identifiers: native_unique_identifiers,
+        fn_span: (native_fn_span.0, native_fn_span.1),
+        fn_type,
+        is_arrow: native_is_arrow,
+        fn_name: fn_name.map(|s| s.to_string()),
+    });
+
     Ok(CodegenFunction {
         loc: codegen_result.loc,
         id: codegen_result.id,
@@ -1187,7 +1219,6 @@ pub fn compile_outlined_fn(
     let _ = (fn_name, fn_type, mode, env_config, context);
     Ok(codegen_fn)
 }
-
 
 /// Run the compilation pipeline passes on an HIR function (everything after lowering).
 ///

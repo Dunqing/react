@@ -71,6 +71,12 @@ pub struct ProgramContext {
     /// Whether debug logging is enabled (HIR formatting after each pass).
     pub debug_enabled: bool,
 
+    /// N2.1: native oxc codegen artifacts collected during the pipeline.
+    /// Each successfully-compiled function pushes its owned `ReactiveFunction`
+    /// + `Environment` here; the oxc AST is built/spliced after compilation in
+    /// `react_compiler_oxc::transform`.
+    pub native_artifacts: Vec<crate::entrypoint::native_codegen::NativeArtifact>,
+
     // Internal state
     already_compiled: HashSet<u32>,
     known_referenced_names: HashSet<String>,
@@ -104,6 +110,7 @@ impl ProgramContext {
             renames: Vec::new(),
             timing: TimingData::new(profiling),
             debug_enabled,
+            native_artifacts: Vec::new(),
             already_compiled: HashSet::new(),
             known_referenced_names: HashSet::new(),
             imports: HashMap::new(),

@@ -13,6 +13,7 @@
 mod assert_scope_instructions_within_scopes;
 mod assert_well_formed_break_targets;
 mod build_reactive_function;
+pub mod codegen_oxc;
 pub mod codegen_reactive_function;
 mod extract_scope_declarations_from_destructuring;
 mod merge_reactive_scopes_that_invalidate_together;
@@ -33,6 +34,7 @@ pub mod visitors;
 pub use assert_scope_instructions_within_scopes::assert_scope_instructions_within_scopes;
 pub use assert_well_formed_break_targets::assert_well_formed_break_targets;
 pub use build_reactive_function::build_reactive_function;
+pub use codegen_oxc::codegen_oxc_function;
 pub use codegen_reactive_function::codegen_function;
 pub use extract_scope_declarations_from_destructuring::extract_scope_declarations_from_destructuring;
 pub use merge_reactive_scopes_that_invalidate_together::merge_reactive_scopes_that_invalidate_together;

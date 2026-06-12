@@ -1,4 +1,5 @@
 pub mod apply_renames;
+pub mod codegen_assembly;
 pub mod convert_ast_reverse;
 pub mod convert_scope;
 pub mod diagnostics;
@@ -16,6 +17,10 @@ use react_compiler::entrypoint::plugin_options::PluginOptions;
 pub struct TransformResult {
     /// The compiled program as a react_compiler_ast File (None if no changes needed).
     pub file: Option<react_compiler_ast::File>,
+    /// N2.1: natively-printed compiled code. When `Some`, the CLI emits this
+    /// directly (native oxc codegen path). When `None`, no functions were
+    /// compiled via the native path (fall back to passthrough / error).
+    pub code: Option<String>,
     pub diagnostics: Vec<oxc_diagnostics::OxcDiagnostic>,
     pub events: Vec<LoggerEvent>,
     /// Unified ordered log interleaving logger events and debug entries
@@ -46,6 +51,7 @@ pub fn transform(
     if options.compilation_mode != "all" && !has_react_like_functions(program) {
         return TransformResult {
             file: None,
+            code: None,
             diagnostics: vec![],
             events: vec![],
             ordered_log: vec![],
@@ -53,10 +59,22 @@ pub fn transform(
         };
     }
 
+    // N2.1: capture the bits of `options` we need for native codegen assembly
+    // before `compile_program` consumes it by value.
+    let runtime_module =
+        react_compiler::entrypoint::imports::get_react_compiler_runtime_module(&options.target);
+    let source_type = source_type_for(source_text, options.filename.as_deref());
+
     // N1.2: run the compiler DIRECTLY against the oxc AST + semantic model
     // (no react_compiler_ast / ScopeInfo bridge).
-    let result =
-        react_compiler::entrypoint::program::compile_program(program, semantic, source_text, options);
+    let compiled = react_compiler::entrypoint::program::compile_program(
+        program,
+        semantic,
+        source_text,
+        options,
+    );
+    let result = compiled.result;
+    let native_artifacts = compiled.native_artifacts;
 
     let diagnostics = compile_result_to_diagnostics(&result);
     let (events, ordered_log, _renames) = match result {
@@ -73,11 +91,20 @@ pub fn transform(
         } => (events, ordered_log, Vec::new()),
     };
 
-    // N1.2: codegen / output reassembly is deferred to N2. `file` is None and
-    // the rename plan (which fixes references in uncompiled sibling code during
-    // emit) is empty; the HIR oracle (`ordered_log`) is the contract for now.
+    // N2.1: native oxc codegen + assembly + print. Runs AFTER the input
+    // `semantic` borrow has ended (artifacts are owned), against a fresh
+    // re-parse of the source in its own allocator. `code` is `Some` only when
+    // at least one function compiled natively.
+    let code = codegen_assembly::assemble_and_print(
+        source_text,
+        source_type,
+        &native_artifacts,
+        &runtime_module,
+    );
+
     TransformResult {
         file: None,
+        code,
         diagnostics,
         events,
         ordered_log,
@@ -99,6 +126,21 @@ pub fn transform_source(
         .semantic;
 
     transform(&parsed.program, &semantic, source_text, options)
+}
+
+/// Determine the oxc `SourceType` for re-parsing during native codegen
+/// assembly. Mirrors the CLI's logic: TS + JSX enabled, module unless a
+/// `@script` pragma appears on the first line.
+fn source_type_for(source_text: &str, filename: Option<&str>) -> oxc_span::SourceType {
+    let first_line = source_text.lines().next().unwrap_or("");
+    let is_script = first_line.contains("@script");
+    let base = filename
+        .and_then(|f| oxc_span::SourceType::from_path(f).ok())
+        .unwrap_or_default();
+    base.with_module(!is_script)
+        .with_script(is_script)
+        .with_jsx(true)
+        .with_typescript(true)
 }
 
 /// Lint API — accepts pre-parsed OXC AST + semantic.
@@ -146,8 +188,7 @@ pub fn emit(
         let comment_allocator = oxc_allocator::Allocator::default();
         // Parse as TSX to handle maximum syntax variety
         let source_type = oxc_span::SourceType::tsx();
-        let parsed =
-            oxc_parser::Parser::new(&comment_allocator, source, source_type).parse();
+        let parsed = oxc_parser::Parser::new(&comment_allocator, source, source_type).parse();
 
         // Collect the span starts of top-level statements in the compiled
         // program. Only comments attached to these positions should be
@@ -164,10 +205,8 @@ pub fn emit(
         }
 
         // Copy only comments attached to top-level statements.
-        let mut comments = oxc_allocator::Vec::with_capacity_in(
-            parsed.program.comments.len(),
-            allocator,
-        );
+        let mut comments =
+            oxc_allocator::Vec::with_capacity_in(parsed.program.comments.len(), allocator);
         for comment in &parsed.program.comments {
             if top_level_starts.contains(&comment.attached_to) {
                 comments.push(*comment);
@@ -178,8 +217,7 @@ pub fn emit(
         // Set the source_text so the codegen can extract comment content
         // from the original source spans.
         // We copy the source into the allocator to guarantee the lifetime.
-        let source_in_alloc =
-            oxc_allocator::StringBuilder::from_str_in(source, allocator);
+        let source_in_alloc = oxc_allocator::StringBuilder::from_str_in(source, allocator);
         program.source_text = source_in_alloc.into_str();
     }
 

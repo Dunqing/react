@@ -45,9 +45,19 @@ use super::compile_result::LoggerSuggestionInfo;
 use super::compile_result::LoggerSuggestionOp;
 use super::compile_result::OrderedLogItem;
 use super::imports::ProgramContext;
+use super::native_codegen::NativeArtifact;
 use super::pipeline;
 use super::plugin_options::CompilerOutputMode;
 use super::plugin_options::PluginOptions;
+
+/// Result of [`compile_program`]: the serializable [`CompileResult`] plus the
+/// out-of-band native oxc codegen artifacts (N2.1). The artifacts are owned
+/// (allocator-free) and consumed by `react_compiler_oxc::transform` to build +
+/// splice the compiled oxc AST after the input semantic borrow ends.
+pub struct CompileProgramResult {
+    pub result: CompileResult,
+    pub native_artifacts: Vec<NativeArtifact>,
+}
 
 // =============================================================================
 // Discovery
@@ -213,7 +223,7 @@ pub fn compile_program(
     semantic: &Semantic,
     source_text: &str,
     options: PluginOptions,
-) -> CompileResult {
+) -> CompileProgramResult {
     let output_mode = CompilerOutputMode::from_opts(&options);
 
     // Log environment config for debugLogIRs (skipped by the dump-hir printer).
@@ -228,7 +238,10 @@ pub fn compile_program(
     }
 
     if !options.should_compile {
-        return success(None, early_ordered_log, Vec::new());
+        return CompileProgramResult {
+            result: success(None, early_ordered_log, Vec::new()),
+            native_artifacts: Vec::new(),
+        };
     }
 
     // TODO(N1.3): port should_skip_compilation (existing runtime imports),
@@ -266,7 +279,11 @@ pub fn compile_program(
         ) {
             Ok(codegen_fn) => {
                 context.log_event(LoggerEvent::CompileSuccess {
-                    fn_loc: span_to_logger_loc(source_text, source.fn_span, context.filename.clone()),
+                    fn_loc: span_to_logger_loc(
+                        source_text,
+                        source.fn_span,
+                        context.filename.clone(),
+                    ),
                     fn_name: source.fn_name.clone(),
                     memo_slots: codegen_fn.memo_slots_used,
                     memo_blocks: codegen_fn.memo_blocks,
@@ -276,22 +293,31 @@ pub fn compile_program(
                 });
             }
             Err(err) => {
-                let fn_loc = span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
+                let fn_loc =
+                    span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
                 if let Some(result) = handle_error(&err, fn_loc, &mut context) {
-                    return result;
+                    return CompileProgramResult {
+                        result,
+                        native_artifacts: Vec::new(),
+                    };
                 }
             }
         }
     }
 
-    // N1.2: no AST reassembly — codegen is deferred to N2.
+    // N1.2: HIR-oracle `ast` stays None; N2.1 native codegen happens in
+    // `react_compiler_oxc::transform` using the artifacts returned below.
     let renames = convert_renames(&context.renames);
-    CompileResult::Success {
-        ast: None,
-        events: context.events,
-        ordered_log: context.ordered_log,
-        renames,
-        timing: Vec::new(),
+    let native_artifacts = std::mem::take(&mut context.native_artifacts);
+    CompileProgramResult {
+        result: CompileResult::Success {
+            ast: None,
+            events: context.events,
+            ordered_log: context.ordered_log,
+            renames,
+            timing: Vec::new(),
+        },
+        native_artifacts,
     }
 }
 
