@@ -132,17 +132,9 @@ pub(crate) fn lower_statement_labeled(
             lower_labeled_statement(builder, labeled_stmt)
         }
 
-        // ---- function declaration: lower the binding shell, bail on the body ----
+        // ---- function declaration: lower the body + store to the name binding ----
         oxc::Statement::FunctionDeclaration(func_decl) => {
-            // Nested-function body lowering + name hoisting land in a later stage.
-            // Bail gracefully so the crate stays green; the binding name remains
-            // resolvable on demand via `resolve_binding`.
-            let loc = Some(builder.loc_of_span(func_decl.span));
-            builder.record_diagnostic(todo_diagnostic(
-                "statement: function declaration (nested function body)",
-                loc,
-            ));
-            Ok(())
+            super::functions::lower_function_declaration(builder, func_decl)
         }
 
         // ---- with: unsupported syntax (matches reference) ----

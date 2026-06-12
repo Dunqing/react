@@ -267,6 +267,18 @@ pub(crate) fn lower_expression(
             lower_type_cast(builder, &ts.expression, "as", loc)
         }
 
+        // ---- nested function / arrow expressions ----
+        oxc::Expression::ArrowFunctionExpression(arrow) => super::functions::lower_function_to_value(
+            builder,
+            &crate::FunctionForm::Arrow(arrow),
+            FunctionExpressionType::ArrowFunctionExpression,
+        ),
+        oxc::Expression::FunctionExpression(func) => super::functions::lower_function_to_value(
+            builder,
+            &crate::FunctionForm::Function(func),
+            FunctionExpressionType::FunctionExpression,
+        ),
+
         // ---- not-yet-transcribed kinds: graceful Todo bail ----
         other => Ok(todo_value(
             builder,
@@ -1187,12 +1199,9 @@ fn lower_object_expression(
         match prop {
             oxc::ObjectPropertyKind::ObjectProperty(p) => {
                 if p.method {
-                    // Object methods need function lowering (later stage); bail.
-                    let prop_loc = Some(builder.loc_of_span(p.span));
-                    builder.record_diagnostic(todo_diagnostic(
-                        "object expression: method property",
-                        prop_loc,
-                    ));
+                    if let Some(prop) = super::functions::lower_object_method(builder, p)? {
+                        properties.push(ObjectPropertyOrSpread::Property(prop));
+                    }
                     continue;
                 }
                 let key = match lower_object_property_key(builder, &p.key, p.computed)? {
@@ -1216,7 +1225,7 @@ fn lower_object_expression(
 }
 
 /// Lower an object property key to an `ObjectPropertyKey`.
-fn lower_object_property_key(
+pub(crate) fn lower_object_property_key(
     builder: &mut HirBuilder,
     key: &oxc::PropertyKey,
     computed: bool,

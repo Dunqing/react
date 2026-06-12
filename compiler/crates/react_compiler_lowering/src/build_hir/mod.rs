@@ -32,11 +32,16 @@ use crate::hir_builder::todo_diagnostic;
 use crate::semantic_queries as sq;
 
 mod expressions;
+mod functions;
 mod statements;
 
 #[allow(unused_imports)]
 pub(crate) use expressions::lower_expression;
 pub(crate) use expressions::lower_expression_to_temporary;
+#[allow(unused_imports)]
+pub(crate) use functions::{
+    lower_function, lower_function_declaration, lower_function_to_value, lower_object_method,
+};
 pub(crate) use statements::lower_statement;
 
 // The per-construct lowering (statements / jsx / patterns) is transcribed
@@ -200,7 +205,7 @@ pub fn lower(
     let ast_id = func.ast_id_name();
     let id = id.or(ast_id);
 
-    lower_inner(
+    let (f, _, _) = lower_inner(
         params,
         body,
         id,
@@ -218,7 +223,8 @@ pub fn lower(
         function_scope, // component_scope == function_scope for top-level
         &context_identifiers,
         true,
-    )
+    )?;
+    Ok(f)
 }
 
 /// Resolve the oxc scope id introduced by a function node.
@@ -252,7 +258,14 @@ pub(crate) fn lower_inner(
     component_scope: ScopeId,
     context_identifiers: &HashSet<SymbolId>,
     is_top_level: bool,
-) -> Result<HirFunction, CompilerError> {
+) -> Result<
+    (
+        HirFunction,
+        IndexMap<String, SymbolId>,
+        IndexMap<SymbolId, IdentifierId>,
+    ),
+    CompilerError,
+> {
     let _ = ast_id; // reserved for HIR id parity; arrows have none
 
     let mut builder = HirBuilder::new(
@@ -334,30 +347,34 @@ pub(crate) fn lower_inner(
         None,
     );
 
-    let (hir_body, instructions, _used_names, _child_bindings) = builder.build()?;
+    let (hir_body, instructions, used_names, child_bindings) = builder.build()?;
 
     let returns = crate::hir_builder::create_temporary_place(env, loc.clone());
 
-    Ok(HirFunction {
-        loc,
-        id: id.map(|s| s.to_string()),
-        name_hint: None,
-        fn_type: if is_top_level {
-            env.fn_type
-        } else {
-            ReactFunctionType::Other
+    Ok((
+        HirFunction {
+            loc,
+            id: id.map(|s| s.to_string()),
+            name_hint: None,
+            fn_type: if is_top_level {
+                env.fn_type
+            } else {
+                ReactFunctionType::Other
+            },
+            params: hir_params,
+            return_type_annotation: None,
+            returns,
+            context,
+            body: hir_body,
+            instructions,
+            generator,
+            is_async,
+            directives,
+            aliasing_effects: None,
         },
-        params: hir_params,
-        return_type_annotation: None,
-        returns,
-        context,
-        body: hir_body,
-        instructions,
-        generator,
-        is_async,
-        directives,
-        aliasing_effects: None,
-    })
+        used_names,
+        child_bindings,
+    ))
 }
 
 // =============================================================================

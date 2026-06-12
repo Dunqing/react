@@ -441,6 +441,43 @@ fn is_descendant_or_self(semantic: &Semantic, scope: ScopeId, ancestor: ScopeId)
     false
 }
 
+// ---------------------------------------------------------------------------
+// Function-boundary scope queries (used by FindContextIdentifiers and the
+// nested-function captured-context analysis)
+// ---------------------------------------------------------------------------
+
+/// Innermost Function-kind scope enclosing `scope_id` (inclusive), or the
+/// program scope if none. Used to detect references that cross a function
+/// boundary relative to their binding.
+pub fn enclosing_function_scope(semantic: &Semantic, scope_id: ScopeId) -> ScopeId {
+    let mut current = Some(scope_id);
+    while let Some(id) = current {
+        if scope_kind(semantic, id) == ScopeKind::Function
+            || scope_kind(semantic, id) == ScopeKind::Program
+        {
+            return id;
+        }
+        current = scope_parent(semantic, id);
+    }
+    program_scope(semantic)
+}
+
+/// True if `scope` is a (transitive) descendant of `ancestor`, or equal.
+pub fn is_descendant_or_self_scope(
+    semantic: &Semantic,
+    scope: ScopeId,
+    ancestor: ScopeId,
+) -> bool {
+    let mut current = Some(scope);
+    while let Some(id) = current {
+        if id == ancestor {
+            return true;
+        }
+        current = scope_parent(semantic, id);
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -761,6 +798,72 @@ mod tests {
                 |sid| sid == inner1_scope,
             );
             assert!(vetoed.is_none(), "claimed scope must be skipped");
+        });
+    }
+
+    #[test]
+    fn enclosing_function_scope_crosses_arrow_and_block() {
+        // `x` is declared in `outer`'s function scope; the arrow `() => x`
+        // introduces a nested function scope. The arrow's body references `x`,
+        // and enclosing_function_scope on that reference's scope must walk up to
+        // the arrow's function scope (NOT `outer`'s), while `x`'s binding scope
+        // resolves to `outer`'s function scope — establishing the boundary.
+        let src = "
+            function outer() {
+                let x = 1;
+                const fn = () => {
+                    {
+                        return x;
+                    }
+                };
+                return fn;
+            }
+        ";
+        with_semantic(src, |semantic, _program| {
+            let scoping = semantic.scoping();
+
+            // The function scope that declares `x`.
+            let x_sym = symbol_named(semantic, "x");
+            let x_scope = scoping.symbol_scope_id(x_sym);
+            let outer_fn = enclosing_function_scope(semantic, x_scope);
+            assert_eq!(
+                scope_kind(semantic, outer_fn),
+                ScopeKind::Function,
+                "x's enclosing function scope is outer's function scope"
+            );
+
+            // The arrow has its own Function-kind scope (declares `fn`? no — fn is
+            // in outer; locate the arrow scope as the Function child of outer that
+            // is not outer itself). Use the reference to `x` inside the arrow body.
+            let refs: Vec<_> = scoping.get_resolved_references(x_sym).collect();
+            assert!(!refs.is_empty(), "expected a reference to x");
+            let ref_node = refs[0].node_id();
+            let ref_scope = scope_of_node(semantic, ref_node);
+            let ref_fn = enclosing_function_scope(semantic, ref_scope);
+            assert_eq!(
+                scope_kind(semantic, ref_fn),
+                ScopeKind::Function,
+                "the reference is inside a function scope (the arrow)"
+            );
+            assert_ne!(
+                ref_fn, outer_fn,
+                "the arrow's function scope differs from x's binding function scope (crosses a function boundary)"
+            );
+
+            // is_descendant_or_self_scope: the arrow's scope is a descendant of
+            // outer's function scope.
+            assert!(
+                is_descendant_or_self_scope(semantic, ref_fn, outer_fn),
+                "arrow scope is a descendant of outer's function scope"
+            );
+            assert!(
+                is_descendant_or_self_scope(semantic, outer_fn, outer_fn),
+                "a scope is a descendant-or-self of itself"
+            );
+            assert!(
+                !is_descendant_or_self_scope(semantic, outer_fn, ref_fn),
+                "outer's function scope is NOT a descendant of the arrow scope"
+            );
         });
     }
 
