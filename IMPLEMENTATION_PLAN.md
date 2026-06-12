@@ -46,25 +46,29 @@ oxc↔babel-AST conversion).
 - **Success criteria**: `--dump-hir` emits per-pass HIR for a fixture; spot-matches TS HIR.
 - **Status**: Complete (commit a8b5fbbdd8). `--dump-hir` on the oxc CLI emits per-pass HIR in test-rust-port.ts format; post-lowering `HIR` matches TS on `useMemo-simple.js` + `simple-alias.js`. `__debug` (PluginOptions.debug) drives `context.debug_enabled`; oxc `transform()` now carries `ordered_log` through.
 
-### Stage N1.1: Scope queries direct from oxc_semantic
-- **Goal**: Introduce a scope-query module that reads `oxc_semantic` directly (get_binding,
-  binding kind Var/Let/Const/Param/Module/Hoisted/Local, import classification, declaration
-  node, scope kind incl. For-vs-Block, parent walk, reference→symbol). Port the classification
-  logic from the reference `convert_scope.rs`. NO `ScopeInfo` struct — functions over
-  `&Semantic`. (Coupled with N1.2 since binding lookups are keyed by oxc AST nodes.)
-- **Depends on**: N1.0
-- **Success criteria**: module compiles; unit-resolves bindings for sample sources matching
-  the recovered convert_scope semantics.
-- **Status**: Not Started
+### Stage N1.1: Scope queries direct from oxc_semantic — COMPLETE (commit 62fbbd046f)
+`react_compiler_lowering/src/semantic_queries.rs`: free functions over `&Semantic` (no ScopeInfo
+struct), enums mirror the old ones, 8/8 tests. oxc 0.121 = unified `Scoping` via `semantic.scoping()`.
 
-### Stage N1.2: Lowering reads oxc_ast directly (the core rewrite)
-- **Goal**: Rewrite `react_compiler_lowering` (`build_hir.rs`, `hir_builder.rs`) to dispatch on
-  `oxc_ast` enums (statements/expressions/patterns/JSX; oxc separates `Declaration`; TS
-  annotation nodes largely ignored) and use N1.1 scope queries. Input becomes
-  `&'a oxc_ast::Program<'a>`; HIR stays owned (no lifetime leak). Delete `convert_ast`.
+### Stage N1.2: Lowering reads oxc_ast directly (the core rewrite — IN-PLACE, red build)
+Strategy (user-chosen): in-place retarget; build is RED during transcription, then green + HIR parity.
+Sub-stages:
+- **N1.2.0** (stays GREEN): split `build_hir.rs` (7358L) into a `build_hir/` module dir by concern
+  (`mod.rs` = `lower()` + driver; `statements.rs`, `expressions.rs`, `jsx.rs`, `patterns.rs`,
+  `hoisting.rs`/context). Pure mechanical extraction — `cargo test` + `--dump-hir` parity unchanged.
+- **N1.2.1** (goes RED): flip the input type — `lower()` + HIRBuilder take `&'a oxc_ast` + `&Semantic`
+  (+ `semantic_queries`); update `pipeline.rs:61/1218` and `react_compiler_oxc::transform()` to pass
+  oxc directly; **delete `convert_ast.rs`**. HIR stays owned (no lifetime leak past lowering).
+- **N1.2.2…k** (RED, shrinking errors): transcribe each `build_hir/` module to oxc_ast +
+  semantic_queries, one agent per module, sequential (same file family). Order: function/params →
+  statements → expressions → patterns/lvalue → jsx → hoisting/context. ~15 real structural diffs
+  (Declaration vs Statement, JSX/property/optional-chaining shapes, TS nodes).
+- **N1.2.final** (GREEN + parity): resolve remaining errors; `--dump-hir` (native) vs TS HIR; drive
+  fixture parity up. Delete `ScopeInfo` (`react_compiler_ast/src/scope.rs`) + `convert_scope.rs`.
 - **Depends on**: N1.1
-- **Success criteria**: drive to HIR-diff parity with the bridged baseline, fixture-by-fixture (`X/1803`).
-- **Status**: Not Started
+- **Success criteria**: `cargo build` green; native-lowering HIR matches TS HIR across fixtures
+  (target ≈ the 95% baseline minus codegen-only failures); no `react_compiler_ast`/`ScopeInfo` on input path.
+- **Status**: N1.2.0 in progress
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
