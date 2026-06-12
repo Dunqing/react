@@ -1,44 +1,78 @@
-# Task: Migrate React Compiler (Rust port) to Oxc as the AST + scope core
+# Task: Make Oxc the React Compiler (Rust port) internals — fully native, no bridge
 
 Branch: `oxc-migration`. Approved plan: `~/.claude/plans/async-singing-wombat.md`.
-Deliberate fork (diverges from upstream #36743 on purpose). Wholesale replacement:
-oxc_ast/oxc_semantic become the core; `react_compiler_ast` deleted at the end.
+Deliberate fork (diverges from upstream #36743 on purpose).
 
-**Accelerant:** the adapter we need for Phase 1 was deleted yesterday (#36743) and is
-fully recoverable from `d3da200820^` (≈zero API drift). Reuse it, don't rewrite it.
+**Direction (user-corrected):** Replace ALL internals with Oxc. Lowering + program
+discovery consume `oxc_ast` + `oxc_semantic` DIRECTLY. Codegen builds `oxc_ast`
+directly, printed by `oxc_codegen`. **Delete `react_compiler_ast` AND `ScopeInfo`** —
+scope/binding is queried straight from `oxc_semantic` (no intermediate scope type, no
+oxc↔babel-AST conversion).
 
-## Milestones (approved-plan phases)
-- **M1 — Oxc front + scope behind a temporary bridge** ← current focus (Stages 1–4 below)
-- M2 — Lowering & discovery consume `oxc_ast` directly; delete `convert_ast`
-- M3 — Codegen emits `oxc_ast`, printed by `oxc_codegen`; drop JSON output
-- M4 — Delete `react_compiler_ast` + Babel bridge; add `oxc_linter` Rule
-- M5 (optional) — thin `ScopeInfo` to direct `oxc_semantic` queries
+## Foundation already in place (keep)
+- **F1** (commit 93ca32a473): recovered `react_compiler_oxc` — gives the oxc parse +
+  `SemanticBuilder` plumbing and `transform_source`/`lint_source` entry. Its
+  `convert_ast.rs` / `convert_scope.rs` are now **reference only** (port their
+  classification logic into direct oxc_semantic queries, then delete).
+- **F2** (commit e8394befba): recovered oxc-only e2e harness — the oracle.
+- **F3** (commit 85b64b2d27): baseline **1713/1803 (95%)** via `test-e2e.sh --variant oxc`.
+  Proves oxc parse+semantic produce correct compilation. Failure buckets known
+  (mostly oxc_codegen-vs-Babel printer diffs, not correctness).
 
-## Stages (M1)
+## Native milestones
+- **N1 — Native lowering + discovery** ← current focus. `oxc_ast` + `oxc_semantic` in,
+  owned HIR out. Delete `convert_ast` + `ScopeInfo` + `convert_scope`. Codegen *temporarily*
+  still emits `react_compiler_ast` for output only (deleted in N2). Invariant: HIR must stay
+  identical to the current (bridged) pipeline — same source → same HIR.
+- **N2 — Native codegen.** HIR → `oxc_ast` via `AstBuilder`, printed by `oxc_codegen`.
+  Output contract becomes oxc. Delete `convert_ast_reverse`.
+- **N3 — Finalize.** Delete `react_compiler_ast` + Babel NAPI/JSON bridge; add the
+  `oxc_linter::Rule` + build-time `transform` API.
 
-### Stage 1: Recover & build `react_compiler_oxc`
-- **Goal**: Restore the deleted crate from `d3da200820^` (convert_scope, convert_ast, convert_ast_reverse, apply_renames, prefilter, diagnostics, lib). Re-add oxc deps (was 0.135.0) to workspace + crate Cargo.toml. Fix any drift vs current `react_compiler` (post #36729 by-value AST, #36730 raw-JSON subtrees) so it builds.
-- **Depends on**: none
-- **Parallel**: no (foundational)
-- **Success criteria**: `cargo build -p react_compiler_oxc` succeeds; report what modules/tests the recovered crate already contains.
-- **Status**: Complete (commit 93ca32a473). oxc pinned 0.121.0; needs rustc 1.92.0 (`rustup run 1.92.0 cargo …`; machine default 1.91.0). Source entry already exists: `transform_source`/`lint_source`. No convert_scope tests, no fixtures. No shared-file drift (#36743 edits were pure rustfmt).
+## Oracles
+- **Primary (printer-independent): per-pass HIR diff.** Same source → same HIR regardless of
+  frontend. This is the precise oracle for the N1 rewrite (localizes the first diverging pass).
+- **Secondary: e2e compiled-code** (`test-e2e.sh --variant oxc`) — end-to-end, but
+  overcounts vs Babel (two printers). Re-baselined against oxc_codegen in N2.
 
-### Stage 2: Recover the e2e harness (oxc-only) + smoke test
-- **Goal**: Recover `react_compiler_e2e_cli` and `compiler/scripts/test-e2e.{sh,ts}` from `d3da200820^`. The CLI reads source from stdin and compiles via `--frontend oxc` (it also had `--json` and `--dump-scope`). SWC is dropped — strip SWC from the recovered CLI/harness so it's oxc-only and builds. Smoke-test: pipe one fixture through `--frontend oxc`.
-- **Depends on**: Stage 1
-- **Parallel**: no
-- **Success criteria**: `cargo build -p react_compiler_e2e_cli` (rustc 1.92.0) succeeds; piping a simple component fixture through `--frontend oxc` emits compiled code.
-- **Status**: Complete (commit e8394befba). CLI oxc-only, builds; smoke test emits memoized output. Oracle: `bash compiler/scripts/test-e2e.sh --variant oxc` compares oxc output vs in-process TS Babel-plugin baseline over ~1803 fixtures (Flow fixtures auto-skip — oxc has no Flow parser). Caveat: harness shells out to `~/.cargo/bin/cargo` (1.91.0) — pre-build with `rustup run 1.92.0` or pin that line.
+## N1 stages
 
-### Stage 3: Baseline e2e parity across the fixture corpus (oxc path)
-- **Goal**: Run the recovered `test-e2e` harness over the fixture corpus via the OXC frontend, comparing compiled output against the reference. This validates the recovered bridge (convert_scope + convert_ast + unchanged pipeline) end-to-end.
-- **Depends on**: Stage 2
-- **Parallel**: no
-- **Success criteria**: report baseline `X/total` passing + the failing fixtures and any common failure signature (use `--dump-scope` to localize scope vs ast vs codegen divergences).
+### Stage N1.0: HIR-dump on the oxc path (debugging oracle)
+- **Goal**: Add a `--dump-hir` mode to `react_compiler_e2e_cli` (oxc frontend) that runs the
+  pipeline with debug enabled and emits the per-pass HIR log (`debug_print::debug_hir`,
+  already gated on `context.debug_enabled`). Confirm it matches the TS compiler's per-pass HIR
+  on a few fixtures (reuse normalization from `scripts/test-rust-port.ts`).
+- **Depends on**: F1, F2
+- **Success criteria**: `--dump-hir` emits per-pass HIR for a fixture; spot-matches TS HIR.
 - **Status**: Not Started
 
-> Per-pass HIR-diff oracle wiring (`test-rust-port.ts` via the oxc path) is deferred to **M2**, where it localizes divergences pass-by-pass during the lowering rewrite. For M1 the e2e compiled-code comparison is the decisive oracle.
+### Stage N1.1: Scope queries direct from oxc_semantic
+- **Goal**: Introduce a scope-query module that reads `oxc_semantic` directly (get_binding,
+  binding kind Var/Let/Const/Param/Module/Hoisted/Local, import classification, declaration
+  node, scope kind incl. For-vs-Block, parent walk, reference→symbol). Port the classification
+  logic from the reference `convert_scope.rs`. NO `ScopeInfo` struct — functions over
+  `&Semantic`. (Coupled with N1.2 since binding lookups are keyed by oxc AST nodes.)
+- **Depends on**: N1.0
+- **Success criteria**: module compiles; unit-resolves bindings for sample sources matching
+  the recovered convert_scope semantics.
+- **Status**: Not Started
 
-## Verification (M1 done)
-`cargo build` workspace green · `cargo test -p react_compiler_oxc` green · scope parity green ·
-`bash compiler/scripts/test-rust-port.sh` via oxc path at target parity · `/compiler-verify` clean.
+### Stage N1.2: Lowering reads oxc_ast directly (the core rewrite)
+- **Goal**: Rewrite `react_compiler_lowering` (`build_hir.rs`, `hir_builder.rs`) to dispatch on
+  `oxc_ast` enums (statements/expressions/patterns/JSX; oxc separates `Declaration`; TS
+  annotation nodes largely ignored) and use N1.1 scope queries. Input becomes
+  `&'a oxc_ast::Program<'a>`; HIR stays owned (no lifetime leak). Delete `convert_ast`.
+- **Depends on**: N1.1
+- **Success criteria**: drive to HIR-diff parity with the bridged baseline, fixture-by-fixture (`X/1803`).
+- **Status**: Not Started
+
+### Stage N1.3: Discovery + context-identifiers native
+- **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
+  `identifier_loc_index.rs` walk `oxc_ast` + oxc_semantic. Remove last `react_compiler_ast`
+  uses on the input side; delete `ScopeInfo`/`convert_scope`.
+- **Depends on**: N1.2
+- **Success criteria**: full `test-e2e.sh --variant oxc` ≥ 95% baseline (codegen still react_compiler_ast); no react_compiler_ast on input path; `cargo build` green.
+- **Status**: Not Started
+
+## Verification (N1 done)
+HIR-diff parity vs baseline · `test-e2e.sh --variant oxc` ≥ 1713/1803 · `grep -rl react_compiler_ast compiler/crates/react_compiler_lowering` empty · `/compiler-verify` clean.
