@@ -103,6 +103,15 @@ oxc↔babel-AST conversion).
   **SEMANTIC-pass 1422→1446 (80.2%), HIR-MATCH 978→1009 (+31), BAIL 127→92**, 0 regressions, all tests + test-babel-ast.sh green.
   - **N2.8 (next)**: re-categorize OTHER (~239), attack achievable correctness sub-buckets (memo-mismatch ~43, arrow-vs-fn
     ~20); DEFER JSX-outlining (~111) + SSR/gating/instrumentation. Then N-VAL (15), Family-B inlining (BAIL ~26).
+
+  **N2.8 ✅ (0313f66f19)** **SEMANTIC-pass 1446→1593 (88.4%)**, 0 regressions, HIR-MATCH steady 1009. THREE root-cause fixes:
+  (1) native outlined-function emission (+98 — the "JSX-outlining ~111" was ONE codegen gap, NOT deferred! `compile_fn`
+  drains `env.take_outlined_functions()`, codegen_assembly appends them as top-level FunctionDeclarations);
+  (2) `@outputMode:lint` passthrough (+41 — drop artifacts in Lint mode → emit source); (3) top-level arrow codegen (+8).
+  OTHER 250→103. Remaining deferred-feature shrank to: gating 13, instrument 2, fbt ~22, TypeCast 3, SSR (few).
+  Remaining ACHIEVABLE: dependency-granularity cluster (PropagateScopeDependencies fidelity), scattered inference small-diffs
+  (~80), N-VAL 15, BAIL Family-B ~26.
+  - **N2.9 (next)**: dependency-granularity + scattered inference-fidelity OTHER. Then N-VAL, Family-B, then N2.final + N3 cleanup.
   - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
     Babel NAPI/JSON; add oxc_linter Rule + transform API). Deferred features tracked in a handoff note.
 
