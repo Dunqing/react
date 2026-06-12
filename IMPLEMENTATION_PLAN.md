@@ -36,6 +36,17 @@ oxc↔babel-AST conversion).
   - **N2.2+**: broaden codegen coverage; drive `test-e2e --variant oxc` up toward/above the 95% bridge baseline;
     fix real lowering+codegen bugs the CODE oracle localizes (this is where the 742 get settled).
   - **N2.final**: delete `convert_ast_reverse` + the old react_compiler_ast codegen path.
+
+  **N2.1 ✅ (e5f0606)** native codegen works end-to-end. New: `codegen_oxc.rs` (~920L, ReactiveFunction→oxc via
+  AstBuilder), `codegen_assembly.rs` (~230L, re-parse source into fresh Allocator + splice compiled fns by span +
+  inject `_c` import + oxc_codegen print), `native_codegen.rs` (~45L, `NativeArtifact` carrier — env moved out
+  after the dead react_compiler_ast codegen reads it; compile_program returns `CompileProgramResult{result, native_artifacts}`).
+  **CODE oracle test-e2e --variant oxc: Code 584/1803, Events 1325/1803, both 240/1803** (from 0). Real: fn shell+ident
+  params, `_c(n)` + reactive-scope if/else cache wrapping, const/let/reassign, call/member/object/array/binary/unary/
+  logical/conditional/primitive/LoadGlobal, JSX. Bail (un-memoized): early-return scopes, destructuring/function/catch
+  stores, loops/switch/try/break/continue/label terminals, sequence/optional values, object methods, template, fn-expr.
+  ~918 fns bail (dominant lever). Cosmetic: `x=x+b` vs `+=`, `let v;` vs `let v=0;`, JSX `/>`, `x["a"]` vs `x.a`, comments.
+  Next: N2.2 broaden codegen (terminals + early-return), N2.3 (remaining values/stores), N2.4 cosmetic/codegen-choice polish.
 - **N3 — Finalize.** Delete `react_compiler_ast` + Babel NAPI/JSON bridge; add the
   `oxc_linter::Rule` + build-time `transform` API.
 
