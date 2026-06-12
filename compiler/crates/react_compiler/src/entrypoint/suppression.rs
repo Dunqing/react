@@ -4,11 +4,73 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-use react_compiler_ast::common::{Comment, CommentData};
+use react_compiler_ast::common::{Comment, CommentData, Position, SourceLocation};
 use react_compiler_diagnostics::{
     CompilerDiagnostic, CompilerDiagnosticDetail, CompilerError, CompilerSuggestion,
     CompilerSuggestionOperation, ErrorCategory,
 };
+
+/// Convert oxc program comments into the `react_compiler_ast` comment shape used
+/// by [`find_program_suppressions`]. Mirrors Babel's `t.Comment`:
+/// - `value` is the comment's inner text (delimiters stripped), matching
+///   Babel's `comment.value`.
+/// - `start`/`end` are the *full* comment span (including `/* */` or `//`),
+///   matching Babel's `comment.start`/`comment.end` used for range checks and
+///   the removal suggestion.
+pub fn oxc_comments_to_ast_comments(
+    comments: &[oxc_ast::ast::Comment],
+    source_text: &str,
+) -> Vec<Comment> {
+    comments
+        .iter()
+        .map(|comment| {
+            let full_span = comment.span;
+            let content_span = comment.content_span();
+            let value = source_text
+                .get(content_span.start as usize..content_span.end as usize)
+                .unwrap_or("")
+                .to_string();
+            let loc = SourceLocation {
+                start: position_of_offset(source_text, full_span.start),
+                end: position_of_offset(source_text, full_span.end),
+                filename: None,
+                identifier_name: None,
+            };
+            let data = CommentData {
+                value,
+                start: Some(full_span.start),
+                end: Some(full_span.end),
+                loc: Some(loc),
+            };
+            if comment.is_line() {
+                Comment::CommentLine(data)
+            } else {
+                Comment::CommentBlock(data)
+            }
+        })
+        .collect()
+}
+
+/// Compute a 1-based line / 0-based column `Position` from a byte offset.
+fn position_of_offset(source: &str, offset: u32) -> Position {
+    let off = offset as usize;
+    let mut line: u32 = 1;
+    let mut line_start: usize = 0;
+    for (i, b) in source.as_bytes().iter().enumerate() {
+        if i >= off {
+            break;
+        }
+        if *b == b'\n' {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+    Position {
+        line,
+        column: (off.saturating_sub(line_start)) as u32,
+        index: Some(offset),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum SuppressionSource {

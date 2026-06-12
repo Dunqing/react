@@ -523,9 +523,40 @@ pub fn compile_program(
         };
     }
 
-    // TODO(N1.3): port should_skip_compilation (existing runtime imports),
-    // restricted-import validation, and suppressions to the oxc AST. Skipped
-    // for the N1.2 input flip.
+    // TODO(N1.3): port should_skip_compilation (existing runtime imports) and
+    // restricted-import validation to the oxc AST. Skipped for the N1.2 input
+    // flip.
+
+    // React ESLint / Flow suppressions: if any suppression range affects a
+    // function, that function is *not* compiled and an error is reported. This
+    // mirrors `findProgramSuppressions` + the per-function check in
+    // `Entrypoint/Program.ts`. When the compiler already validates both hooks
+    // usage and exhaustive memoization deps, ESLint suppressions are NOT checked
+    // (TS passes `ruleNames = null`); Flow suppressions are always honored.
+    const DEFAULT_ESLINT_SUPPRESSIONS: &[&str] =
+        &["react-hooks/exhaustive-deps", "react-hooks/rules-of-hooks"];
+    let rule_names: Option<Vec<String>> = if options.environment.validate_exhaustive_memoization_dependencies
+        && options.environment.validate_hooks_usage
+    {
+        None
+    } else {
+        Some(
+            options
+                .eslint_suppression_rules
+                .clone()
+                .unwrap_or_else(|| {
+                    DEFAULT_ESLINT_SUPPRESSIONS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect()
+                }),
+        )
+    };
+    let suppressions = super::suppression::find_program_suppressions(
+        &super::suppression::oxc_comments_to_ast_comments(&program.comments, source_text),
+        rule_names.as_deref(),
+        options.flow_suppressions,
+    );
 
     // A top-level `'use no forget'` / `'use no memo'` (or custom opt-out)
     // program directive disables memoization for the entire module: every
@@ -544,7 +575,7 @@ pub fn compile_program(
         options.clone(),
         options.filename.clone(),
         options.source_code.clone(),
-        Vec::new(), // suppressions: TODO(N1.3)
+        suppressions,
         has_module_scope_opt_out,
     );
     context.set_source_filename(options.filename.clone());
@@ -557,6 +588,51 @@ pub fn compile_program(
     let queue = find_functions_to_compile(program, compile_all);
 
     for source in &queue {
+        // A React ESLint / Flow suppression that overlaps this function means
+        // the user disabled a React rule for it. The compiler refuses to
+        // optimize such a function and reports an error instead of compiling
+        // it. Mirrors the per-function suppression check in `processFn`
+        // (`Entrypoint/Program.ts`): the function is skipped (no pipeline run)
+        // and its error is routed through the normal error handler.
+        let suppressions_in_fn = super::suppression::filter_suppressions_that_affect_function(
+            &context.suppressions,
+            source.fn_span.start,
+            source.fn_span.end,
+        );
+        if !suppressions_in_fn.is_empty() {
+            let suppression_ranges: Vec<_> =
+                suppressions_in_fn.into_iter().cloned().collect();
+            let err = super::suppression::suppressions_to_compiler_error(&suppression_ranges);
+            let fn_loc =
+                span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
+            if let Some(result) = handle_error(&err, fn_loc, &mut context) {
+                return CompileProgramResult {
+                    result,
+                    native_artifacts: Vec::new(),
+                };
+            }
+            continue;
+        }
+
+        // When dynamic gating is configured, the function's `'use memo if(...)'`
+        // directives are validated: a non-identifier gating expression, or more
+        // than one gating directive, is an error and the function is not
+        // compiled. Mirrors `findDirectivesDynamicGating` /
+        // `tryFindDirectiveEnablingMemoization` in `Entrypoint/Program.ts`.
+        if context.opts.dynamic_gating.is_some()
+            && let Some(err) =
+                validate_dynamic_gating_directives(source.func.body_directives(), source_text)
+        {
+            let fn_loc = span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
+            if let Some(result) = handle_error(&err, fn_loc, &mut context) {
+                return CompileProgramResult {
+                    result,
+                    native_artifacts: Vec::new(),
+                };
+            }
+            continue;
+        }
+
         // Record how many native artifacts existed before compiling this
         // function so we can discard exactly the ones it produces (the main
         // artifact plus any outlined-function artifacts) if it turns out to be
@@ -685,6 +761,106 @@ fn success(
         renames: renames.unwrap_or_default(),
         timing: Vec::new(),
     }
+}
+
+// =============================================================================
+// Dynamic gating directive validation (`'use memo if(<ident>)'`)
+// =============================================================================
+
+/// Convert an oxc byte-offset span into a diagnostics `SourceLocation`.
+fn span_to_diag_loc(source: &str, span: Span) -> SourceLocation {
+    let start = position_of_offset(source, span.start);
+    let end = position_of_offset(source, span.end);
+    SourceLocation {
+        start: react_compiler_diagnostics::Position {
+            line: start.line,
+            column: start.column,
+            index: start.index,
+        },
+        end: react_compiler_diagnostics::Position {
+            line: end.line,
+            column: end.column,
+            index: end.index,
+        },
+    }
+}
+
+/// A name is a valid JavaScript identifier if it is a syntactically valid
+/// identifier *and* not a reserved word. Mirrors Babel's `t.isValidIdentifier`
+/// (used by `findDirectivesDynamicGating`).
+fn is_valid_js_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && oxc_syntax::identifier::is_identifier_name(name)
+        && !oxc_syntax::keyword::is_reserved_keyword(name)
+}
+
+/// Validate the `'use memo if(<ident>)'` dynamic-gating directives on a
+/// function's body. Returns `Some(error)` when a directive is malformed (the
+/// gating expression is not a valid identifier) or when more than one gating
+/// directive is present. Mirrors `findDirectivesDynamicGating` in
+/// `Entrypoint/Program.ts`. Only runs when dynamic gating is configured.
+fn validate_dynamic_gating_directives(
+    directives: &[oxc::Directive],
+    source_text: &str,
+) -> Option<CompilerError> {
+    const PREFIX: &str = "use memo if(";
+    let mut error = CompilerError::new();
+    let mut matches: Vec<&oxc::Directive> = Vec::new();
+
+    for directive in directives {
+        let value = directive.expression.value.as_str();
+        // Match `^use memo if\(([^)]*)\)$`.
+        let Some(inner) = value
+            .strip_prefix(PREFIX)
+            .and_then(|rest| rest.strip_suffix(')'))
+        else {
+            continue;
+        };
+        // `[^)]*` — the captured group must not contain a `)`.
+        if inner.contains(')') {
+            continue;
+        }
+        if is_valid_js_identifier(inner) {
+            matches.push(directive);
+        } else {
+            let diag = react_compiler_diagnostics::CompilerDiagnostic::new(
+                ErrorCategory::Gating,
+                "Dynamic gating directive is not a valid JavaScript identifier",
+                Some(format!("Found '{value}'")),
+            )
+            .with_detail(react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
+                loc: Some(span_to_diag_loc(source_text, directive.span)),
+                message: None,
+                identifier_name: None,
+            });
+            error.push_diagnostic(diag);
+        }
+    }
+
+    if error.has_any_errors() {
+        return Some(error);
+    }
+    if matches.len() > 1 {
+        let found = matches
+            .iter()
+            .map(|d| d.expression.value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut error = CompilerError::new();
+        let diag = react_compiler_diagnostics::CompilerDiagnostic::new(
+            ErrorCategory::Gating,
+            "Multiple dynamic gating directives found",
+            Some(format!("Expected a single directive but found [{found}]")),
+        )
+        .with_detail(react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
+            loc: Some(span_to_diag_loc(source_text, matches[0].span)),
+            message: None,
+            identifier_name: None,
+        });
+        error.push_diagnostic(diag);
+        return Some(error);
+    }
+    None
 }
 
 // =============================================================================
