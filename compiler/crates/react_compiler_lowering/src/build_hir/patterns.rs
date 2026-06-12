@@ -935,6 +935,13 @@ fn lower_object_assignment_target(
     let mut properties: Vec<ObjectPropertyOrSpread> = Vec::new();
     let mut followups: Vec<(Place, FollowupTarget)> = Vec::new();
 
+    // Mirror the reference `forceTemporaries`: a destructuring *reassignment*
+    // that contains a rest element or any property whose target is not a simple
+    // resolvable identifier must route ALL of its targets through promoted
+    // temporaries (and emit the real reassignments as followups). Otherwise
+    // simple non-context identifiers can be destructured directly into place.
+    let force_temporaries = target_object_force_temporaries(builder, pattern)?;
+
     for prop in &pattern.properties {
         match prop {
             oxc::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(shorthand) => {
@@ -943,15 +950,37 @@ fn lower_object_assignment_target(
                 let key = ObjectPropertyKey::Identifier {
                     name: shorthand.binding.name.to_string(),
                 };
-                let id_loc = Some(builder.loc_of_span(shorthand.binding.span));
-                let temp = build_temporary_place(builder, id_loc.clone());
-                promote_temporary(builder, temp.identifier);
-                properties.push(ObjectPropertyOrSpread::Property(ObjectProperty {
-                    key,
-                    property_type: ObjectPropertyType::Property,
-                    place: temp.clone(),
-                }));
-                followups.push((temp, FollowupTarget::ShorthandIdentifier(shorthand)));
+                // A bare shorthand `{ foo }` (no default) that targets a simple
+                // non-context local can be destructured directly into place,
+                // mirroring the reference's direct-identifier branch. Otherwise
+                // (default value, context var, or forceTemporaries) use a temp +
+                // followup.
+                let direct = if shorthand.init.is_none() && !force_temporaries {
+                    direct_simple_identifier_reference_place(
+                        builder,
+                        &shorthand.binding,
+                        InstructionKind::Reassign,
+                    )?
+                } else {
+                    None
+                };
+                if let Some(place) = direct {
+                    properties.push(ObjectPropertyOrSpread::Property(ObjectProperty {
+                        key,
+                        property_type: ObjectPropertyType::Property,
+                        place,
+                    }));
+                } else {
+                    let id_loc = Some(builder.loc_of_span(shorthand.binding.span));
+                    let temp = build_temporary_place(builder, id_loc.clone());
+                    promote_temporary(builder, temp.identifier);
+                    properties.push(ObjectPropertyOrSpread::Property(ObjectProperty {
+                        key,
+                        property_type: ObjectPropertyType::Property,
+                        place: temp.clone(),
+                    }));
+                    followups.push((temp, FollowupTarget::ShorthandIdentifier(shorthand)));
+                }
             }
             oxc::AssignmentTargetProperty::AssignmentTargetPropertyProperty(named) => {
                 // `({ prop: target } = obj)`.
@@ -959,9 +988,12 @@ fn lower_object_assignment_target(
                     Some(k) => k,
                     None => continue,
                 };
-                if let Some(place) =
+                let direct = if force_temporaries {
+                    None
+                } else {
                     direct_simple_target_place(builder, &named.binding, InstructionKind::Reassign)?
-                {
+                };
+                if let Some(place) = direct {
                     properties.push(ObjectPropertyOrSpread::Property(ObjectProperty {
                         key,
                         property_type: ObjectPropertyType::Property,
@@ -1111,4 +1143,92 @@ fn direct_simple_assignment_target_place(
         }
         _ => Ok(None),
     }
+}
+
+/// Resolve a bare shorthand binding (`IdentifierReference`) to an existing local
+/// place, returning `None` (signalling "use a promoted temporary + followup")
+/// for context variables or non-`Identifier` bindings. Mirrors the reference's
+/// direct-identifier branch where `getStoreKind === 'StoreLocal'`.
+fn direct_simple_identifier_reference_place(
+    builder: &mut HirBuilder,
+    ident: &oxc::IdentifierReference,
+    _kind: InstructionKind,
+) -> Result<Option<Place>, CompilerError> {
+    let symbol_id = sq::resolve_identifier_reference(builder.semantic(), ident);
+    if builder.is_context_symbol(symbol_id) {
+        return Ok(None);
+    }
+    let ident_loc = Some(builder.loc_of_span(ident.span));
+    match builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc.clone())? {
+        VariableBinding::Identifier { identifier, .. } => Ok(Some(Place {
+            identifier,
+            effect: Effect::Unknown,
+            reactive: false,
+            loc: ident_loc,
+        })),
+        _ => Ok(None),
+    }
+}
+
+/// Mirror of the reference `forceTemporaries` for an object destructuring
+/// *reassignment* target: true if the pattern has a rest element, or any
+/// property whose target is not a simple resolvable identifier (a default value,
+/// a nested pattern, or a member-expression target). When true, every property
+/// is routed through a promoted temporary so the followup reassignments run in
+/// order.
+fn target_object_force_temporaries(
+    builder: &mut HirBuilder,
+    pattern: &oxc::ObjectAssignmentTarget,
+) -> Result<bool, CompilerError> {
+    if pattern.rest.is_some() {
+        return Ok(true);
+    }
+    for prop in &pattern.properties {
+        match prop {
+            oxc::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(shorthand) => {
+                // `{ foo = dflt }` has a default → not a plain identifier target.
+                if shorthand.init.is_some() {
+                    return Ok(true);
+                }
+                let symbol_id =
+                    sq::resolve_identifier_reference(builder.semantic(), &shorthand.binding);
+                let id_loc = Some(builder.loc_of_span(shorthand.binding.span));
+                match builder.resolve_identifier_symbol(
+                    &shorthand.binding.name,
+                    symbol_id,
+                    id_loc,
+                )? {
+                    VariableBinding::Identifier { .. } => {}
+                    _ => return Ok(true),
+                }
+            }
+            oxc::AssignmentTargetProperty::AssignmentTargetPropertyProperty(named) => {
+                // `{ prop: target }`: only a bare, resolvable, non-default
+                // identifier target keeps us out of forceTemporaries.
+                let is_plain_identifier = match &named.binding {
+                    oxc::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(_) => false,
+                    other => match other.as_assignment_target() {
+                        Some(oxc::AssignmentTarget::AssignmentTargetIdentifier(ident)) => {
+                            let symbol_id =
+                                sq::resolve_identifier_reference(builder.semantic(), ident);
+                            let id_loc = Some(builder.loc_of_span(ident.span));
+                            matches!(
+                                builder.resolve_identifier_symbol(
+                                    &ident.name,
+                                    symbol_id,
+                                    id_loc
+                                )?,
+                                VariableBinding::Identifier { .. }
+                            )
+                        }
+                        _ => false,
+                    },
+                };
+                if !is_plain_identifier {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
