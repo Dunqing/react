@@ -320,7 +320,16 @@ pub fn compile_program(
     // N1.2: HIR-oracle `ast` stays None; N2.1 native codegen happens in
     // `react_compiler_oxc::transform` using the artifacts returned below.
     let renames = convert_renames(&context.renames);
-    let native_artifacts = std::mem::take(&mut context.native_artifacts);
+    // In lint output mode the compiler runs purely for diagnostics: the original
+    // source is emitted unchanged and no compiled function is inserted. Mirrors
+    // TS `applyCompiledFunction` in `Entrypoint/Program.ts`, which returns `null`
+    // (skipping insertion) when `outputMode === 'lint'`. Dropping the native
+    // artifacts makes assembly fall back to source passthrough.
+    let native_artifacts = if output_mode == CompilerOutputMode::Lint {
+        Vec::new()
+    } else {
+        std::mem::take(&mut context.native_artifacts)
+    };
     CompileProgramResult {
         result: CompileResult::Success {
             ast: None,

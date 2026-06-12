@@ -1168,6 +1168,63 @@ pub fn compile_fn(
         context.merge_uid_known_names(&uid_names);
     }
 
+    // N2.1: emit outlined functions for native oxc codegen.
+    //
+    // `outline_functions` records each extracted closure as a lowered HIR
+    // FunctionExpression on `env` (via `env.outline_function`, depth-first so
+    // transitively-nested closures are already flattened into the list). These
+    // carry a `null` React type, which TS never re-queues through the full
+    // pipeline; instead the parent's reactive-scope codegen emits each via a
+    // SHORT sequence (build_reactive_function → prune_unused_labels →
+    // prune_unused_lvalues → prune_hoisted_contexts → rename_variables). We
+    // mirror that: for each outlined HIR function, create a child env (cloning
+    // the parent's arenas so the outlined HIR's id references stay valid), build
+    // its reactive function, and push a NativeArtifact with a sentinel span of
+    // (0, 0). Assembly appends these as top-level `function <name>() {...}`
+    // declarations rather than splicing by source span (they have no location).
+    //
+    // A worklist handles the (rare) case of an outlined entry surfacing further
+    // outlined entries on its child env; in practice the depth-first outlining
+    // above already flattens them, so the queue typically drains in one pass.
+    //
+    // `env` is moved into the main artifact below, so the outlined entries (and
+    // any child envs we need) must be taken/created BEFORE that move.
+    let mut outlined_queue: Vec<react_compiler_hir::environment::OutlinedFunctionEntry> =
+        env.take_outlined_functions();
+    while let Some(entry) = outlined_queue.pop() {
+        let react_compiler_hir::environment::OutlinedFunctionEntry { func, fn_type } = entry;
+        let resolved_type = fn_type.unwrap_or(ReactFunctionType::Other);
+        let mut child_env = env.for_outlined_fn(resolved_type);
+        match build_outlined_reactive_fn(&func, &mut child_env, context) {
+            Ok((reactive_fn, unique_identifiers)) => {
+                // Drain any further outlined functions surfaced on the child env.
+                outlined_queue.extend(child_env.take_outlined_functions());
+                if let Some(uid_names) = child_env.take_uid_known_names() {
+                    context.merge_uid_known_names(&uid_names);
+                }
+                context.native_artifacts.push(native::NativeArtifact {
+                    reactive_fn,
+                    env: child_env,
+                    unique_identifiers,
+                    // Sentinel span: assembly appends this as a top-level
+                    // function declaration rather than splicing by source span.
+                    fn_span: (0, 0),
+                    fn_type: resolved_type,
+                    // Outlined functions are emitted as function declarations.
+                    is_arrow: false,
+                    // The generated name (e.g. `_temp`) is carried on the
+                    // reactive function's `id`, so codegen names the declaration.
+                    fn_name: None,
+                });
+            }
+            Err(_err) => {
+                // If an outlined function fails to build, skip it (matches the
+                // prior compile_outlined_fn Err→skip behavior). Drop the child
+                // env without emitting an artifact.
+            }
+        }
+    }
+
     // N2.1: record the native codegen artifact only on full success, after all
     // error checks above. We move `env` in here (the dead codegen above only
     // read its scope/identifier arenas); native codegen re-runs cache-slot
@@ -1220,150 +1277,39 @@ pub fn compile_outlined_fn(
     Ok(codegen_fn)
 }
 
-/// Run the compilation pipeline passes on an HIR function (everything after lowering).
+/// Build the `ReactiveFunction` + reserved unique identifiers for an outlined
+/// function, ready for native oxc codegen.
 ///
-/// This is extracted from `compile_fn` to allow reuse for outlined functions.
-/// Returns the compiled CodegenFunction on success.
+/// Outlined functions are NOT re-run through the full pipeline. They are stored
+/// by `outline_functions` (as the lowered inner FunctionExpression HIR, already
+/// SSA'd / effect-analyzed in the parent's pass run) with a `null` React type,
+/// which TS never re-queues. Instead, the parent's reactive-scope codegen
+/// processes them with a SHORT sequence — `buildReactiveFunction`,
+/// `pruneUnusedLabels`, `pruneUnusedLValues`, `pruneHoistedContexts`,
+/// `renameVariables` — and emits them directly (see
+/// `CodegenReactiveFunction.ts` `codegenFunction`, and the equivalent Rust
+/// reference path in `codegen_reactive_function.rs`). Running the full pipeline
+/// here would re-run validations (e.g. global-mutation checks) that are not
+/// meant to apply to outlined functions.
 ///
-/// Currently unused: outlined-function re-compilation is deferred to N2 (see
-/// `compile_outlined_fn`). Retained for that revival.
-#[allow(dead_code)]
-fn run_pipeline_passes(
-    hir: &mut react_compiler_hir::HirFunction,
+/// This mirrors that short sequence and stops before `codegen_reactive_function`,
+/// returning the reactive function + unique identifiers for native codegen to
+/// build oxc AST later, after the input semantic borrow ends.
+fn build_outlined_reactive_fn(
+    hir: &react_compiler_hir::HirFunction,
     env: &mut Environment,
     context: &mut ProgramContext,
-) -> Result<CodegenFunction, CompilerError> {
-    react_compiler_optimization::prune_maybe_throws(hir, &mut env.functions)?;
-
-    react_compiler_optimization::drop_manual_memoization(hir, env)?;
-
-    react_compiler_optimization::inline_immediately_invoked_function_expressions(hir, env);
-
-    react_compiler_optimization::merge_consecutive_blocks::merge_consecutive_blocks(
-        hir,
-        &mut env.functions,
-    );
-
-    react_compiler_ssa::enter_ssa(hir, env).map_err(|diag| {
-        let loc = diag.primary_location().cloned();
-        let mut err = CompilerError::new();
-        err.push_error_detail(react_compiler_diagnostics::CompilerErrorDetail {
-            category: diag.category,
-            reason: diag.reason,
-            description: diag.description,
-            loc,
-            suggestions: diag.suggestions,
-        });
-        err
-    })?;
-
-    react_compiler_ssa::eliminate_redundant_phi(hir, env);
-
-    react_compiler_optimization::constant_propagation(hir, env);
-
-    react_compiler_typeinference::infer_types(hir, env)?;
-
-    if env.enable_validations() {
-        if env.config.validate_hooks_usage {
-            react_compiler_validation::validate_hooks_usage(hir, env)?;
-        }
-    }
-
-    react_compiler_optimization::optimize_props_method_calls(hir, env);
-
-    react_compiler_inference::analyse_functions(hir, env, &mut |_inner_func, _inner_env| {})?;
-
-    if env.has_invariant_errors() {
-        return Err(env.take_invariant_errors());
-    }
-
-    react_compiler_inference::infer_mutation_aliasing_effects(hir, env, false)?;
-
-    if env.output_mode == OutputMode::Ssr {
-        react_compiler_optimization::optimize_for_ssr(hir, env);
-    }
-
-    react_compiler_optimization::dead_code_elimination(hir, env);
-
-    react_compiler_optimization::prune_maybe_throws(hir, &mut env.functions)?;
-
-    react_compiler_inference::infer_mutation_aliasing_ranges(hir, env, false)?;
-
-    if env.enable_validations() {
-        react_compiler_validation::validate_locals_not_reassigned_after_render(hir, env);
-
-        if env.config.validate_ref_access_during_render {
-            react_compiler_validation::validate_no_ref_access_in_render(hir, env);
-        }
-
-        if env.config.validate_no_set_state_in_render {
-            react_compiler_validation::validate_no_set_state_in_render(hir, env)?;
-        }
-
-        react_compiler_validation::validate_no_freezing_known_mutable_functions(hir, env);
-    }
-
-    react_compiler_inference::infer_reactive_places(hir, env)?;
-
-    if env.enable_validations() {
-        react_compiler_validation::validate_exhaustive_dependencies(hir, env)?;
-    }
-
-    react_compiler_ssa::rewrite_instruction_kinds_based_on_reassignment(hir, env)?;
-
-    if env.enable_memoization() {
-        react_compiler_inference::infer_reactive_scope_variables(hir, env)?;
-    }
-
-    let fbt_operands =
-        react_compiler_inference::memoize_fbt_and_macro_operands_in_same_scope(hir, env);
-
-    // Don't run outline_jsx on outlined functions (they're already outlined)
-
-    if env.config.enable_name_anonymous_functions {
-        react_compiler_optimization::name_anonymous_functions(hir, env);
-    }
-
-    if env.config.enable_function_outlining {
-        react_compiler_optimization::outline_functions(hir, env, &fbt_operands);
-    }
-
-    react_compiler_inference::align_method_call_scopes(hir, env);
-    react_compiler_inference::align_object_method_scopes(hir, env);
-
-    react_compiler_optimization::prune_unused_labels_hir(hir);
-
-    react_compiler_inference::align_reactive_scopes_to_block_scopes_hir(hir, env);
-    react_compiler_inference::merge_overlapping_reactive_scopes_hir(hir, env);
-
-    react_compiler_inference::build_reactive_scope_terminals_hir(hir, env);
-    react_compiler_inference::flatten_reactive_loops_hir(hir);
-    react_compiler_inference::flatten_scopes_with_hooks_or_use_hir(hir, env)?;
-    react_compiler_inference::propagate_scope_dependencies_hir(hir, env);
+) -> Result<
+    (
+        react_compiler_hir::reactive::ReactiveFunction,
+        std::collections::HashSet<String>,
+    ),
+    CompilerError,
+> {
     let mut reactive_fn = react_compiler_reactive_scopes::build_reactive_function(hir, env)?;
-
-    react_compiler_reactive_scopes::assert_well_formed_break_targets(&reactive_fn, env);
-
     react_compiler_reactive_scopes::prune_unused_labels(&mut reactive_fn, env)?;
-
-    react_compiler_reactive_scopes::assert_scope_instructions_within_scopes(&reactive_fn, env)?;
-
-    react_compiler_reactive_scopes::prune_non_escaping_scopes(&mut reactive_fn, env)?;
-    react_compiler_reactive_scopes::prune_non_reactive_dependencies(&mut reactive_fn, env);
-    react_compiler_reactive_scopes::prune_unused_scopes(&mut reactive_fn, env)?;
-    react_compiler_reactive_scopes::merge_reactive_scopes_that_invalidate_together(
-        &mut reactive_fn,
-        env,
-    )?;
-    react_compiler_reactive_scopes::prune_always_invalidating_scopes(&mut reactive_fn, env)?;
-    react_compiler_reactive_scopes::propagate_early_returns(&mut reactive_fn, env);
     react_compiler_reactive_scopes::prune_unused_lvalues(&mut reactive_fn, env);
-    react_compiler_reactive_scopes::promote_used_temporaries(&mut reactive_fn, env);
-    react_compiler_reactive_scopes::extract_scope_declarations_from_destructuring(
-        &mut reactive_fn,
-        env,
-    )?;
-    react_compiler_reactive_scopes::stabilize_block_ids(&mut reactive_fn, env);
+    react_compiler_reactive_scopes::prune_hoisted_contexts(&mut reactive_fn, env)?;
 
     let unique_identifiers =
         react_compiler_reactive_scopes::rename_variables(&mut reactive_fn, env);
@@ -1371,57 +1317,7 @@ fn run_pipeline_passes(
         context.add_new_reference(name.clone());
     }
 
-    react_compiler_reactive_scopes::prune_hoisted_contexts(&mut reactive_fn, env)?;
-
-    if env.config.enable_preserve_existing_memoization_guarantees
-        || env.config.validate_preserve_existing_memoization_guarantees
-    {
-        react_compiler_validation::validate_preserved_manual_memoization(&reactive_fn, env);
-    }
-
-    let codegen_result = react_compiler_reactive_scopes::codegen_function(
-        &reactive_fn,
-        env,
-        unique_identifiers,
-        fbt_operands,
-    )?;
-
-    Ok(CodegenFunction {
-        loc: codegen_result.loc,
-        id: codegen_result.id,
-        name_hint: codegen_result.name_hint,
-        params: codegen_result.params,
-        body: codegen_result.body,
-        generator: codegen_result.generator,
-        is_async: codegen_result.is_async,
-        memo_slots_used: codegen_result.memo_slots_used,
-        memo_blocks: codegen_result.memo_blocks,
-        memo_values: codegen_result.memo_values,
-        pruned_memo_blocks: codegen_result.pruned_memo_blocks,
-        pruned_memo_values: codegen_result.pruned_memo_values,
-        outlined: codegen_result
-            .outlined
-            .into_iter()
-            .map(|o| OutlinedFunction {
-                func: CodegenFunction {
-                    loc: o.func.loc,
-                    id: o.func.id,
-                    name_hint: o.func.name_hint,
-                    params: o.func.params,
-                    body: o.func.body,
-                    generator: o.func.generator,
-                    is_async: o.func.is_async,
-                    memo_slots_used: o.func.memo_slots_used,
-                    memo_blocks: o.func.memo_blocks,
-                    memo_values: o.func.memo_values,
-                    pruned_memo_blocks: o.func.pruned_memo_blocks,
-                    pruned_memo_values: o.func.pruned_memo_values,
-                    outlined: Vec::new(),
-                },
-                fn_type: o.fn_type,
-            })
-            .collect(),
-    })
+    Ok((reactive_fn, unique_identifiers))
 }
 
 /// Log CompilerError diagnostics as CompileError events, matching TS `env.logErrors()` behavior.

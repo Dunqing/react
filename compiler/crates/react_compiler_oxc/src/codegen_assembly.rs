@@ -71,7 +71,6 @@ pub fn assemble_and_print(
                 compiled.push(CompiledNode {
                     span: artifact.fn_span,
                     is_arrow: artifact.is_arrow,
-                    fn_name: artifact.fn_name.clone(),
                     function: output.function,
                 });
             }
@@ -89,8 +88,21 @@ pub fn assemble_and_print(
         return None;
     }
 
+    // Partition outlined functions (sentinel span (0, 0)) from spanned ones.
+    // Outlined functions have no source location, so they cannot be spliced by
+    // span; they are appended to the program body as top-level function
+    // declarations after splicing (mirroring TS `insertNewOutlinedFunctionNode`).
+    let (outlined, spanned): (Vec<CompiledNode<'_>>, Vec<CompiledNode<'_>>) =
+        compiled.into_iter().partition(|c| c.span == (0, 0));
+
     // Splice compiled functions into the program body by matching spans.
-    splice_functions(&builder, &mut program, compiled);
+    splice_functions(&builder, &mut program, spanned);
+
+    // Append outlined functions as top-level function declarations.
+    for node in outlined {
+        let decl = build_replacement(&builder, node);
+        program.body.push(decl);
+    }
 
     // Inject the runtime cache import if any compiled function used memo slots.
     if any_memo {
@@ -103,7 +115,6 @@ pub fn assemble_and_print(
 struct CompiledNode<'a> {
     span: (u32, u32),
     is_arrow: bool,
-    fn_name: Option<String>,
     function: oxc::Function<'a>,
 }
 
@@ -189,17 +200,55 @@ fn function_expression<'a>(
 ) -> oxc::Expression<'a> {
     let mut function = node.function;
     if node.is_arrow {
-        // Render the compiled function as an arrow to match the original form.
-        // oxc has no direct Function->Arrow; emit a function expression instead
-        // (semantically equivalent for component definitions). Drop the id so
-        // it reads as an anonymous expression bound to the const name.
-        function.id = None;
-        function.r#type = oxc::FunctionType::FunctionExpression;
-        if let Some(name) = &node.fn_name {
-            // Keep a name for stack traces / debugging.
-            function.id = Some(builder.binding_identifier(SPAN, builder.atom(name)));
+        // Render the compiled function as a true arrow to preserve the original
+        // form (`X = () => {...}`). Arrows are anonymous, so drop any name.
+        // Also apply the single-return optimization (`() => { return X; }`
+        // becomes `() => X`).
+        let params = function.params.unbox();
+        let is_async = function.r#async;
+        let body = function
+            .body
+            .expect("function body present after codegen")
+            .unbox();
+        let directives = body.directives;
+        let statements = body.statements;
+
+        // Single-return optimization: only when there are no directives and the
+        // sole statement is a return with an argument.
+        let single_return_arg = statements.len() == 1
+            && directives.is_empty()
+            && matches!(statements.first(), Some(oxc::Statement::ReturnStatement(r)) if r.argument.is_some());
+
+        if single_return_arg {
+            let mut statements = statements;
+            if let oxc::Statement::ReturnStatement(ret) = statements.pop().unwrap() {
+                let arg = ret.unbox().argument.unwrap();
+                let mut v = builder.vec();
+                v.push(builder.statement_expression(SPAN, arg));
+                let fn_body = builder.function_body(SPAN, builder.vec(), v);
+                return builder.expression_arrow_function(
+                    SPAN,
+                    true,
+                    is_async,
+                    None::<ArenaBox<'a, oxc::TSTypeParameterDeclaration<'a>>>,
+                    params,
+                    None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+                    fn_body,
+                );
+            }
+            unreachable!();
         }
-        oxc::Expression::FunctionExpression(builder.alloc(function))
+
+        let fn_body = builder.function_body(SPAN, directives, statements);
+        builder.expression_arrow_function(
+            SPAN,
+            false,
+            is_async,
+            None::<ArenaBox<'a, oxc::TSTypeParameterDeclaration<'a>>>,
+            params,
+            None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+            fn_body,
+        )
     } else {
         function.r#type = oxc::FunctionType::FunctionExpression;
         oxc::Expression::FunctionExpression(builder.alloc(function))
