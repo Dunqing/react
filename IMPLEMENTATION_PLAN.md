@@ -75,6 +75,16 @@ oxc↔babel-AST conversion).
   - **Functionally-correct ≈ 797 + 510 = ~1298/1803 (72%).** True remaining work = BAIL 201 + OTHER 263 + N-VAL 16.
   → Strategic fork (semantic vs byte parity; feature-gap scope) raised with user before the endgame grind. Fix the 2 bugs regardless.
 
+  **ENDGAME = SEMANTIC PARITY (user-chosen).** Oracle = structural equivalence (accept cosmetic oxc_codegen-vs-Babel
+  printer diffs; the 510 are functionally correct). Grind real correctness; defer big features.
+  - **N2.5**: fix the 2 `?.`-dropping bugs (optional-call-chained.js, optional-member-expression-chain.js) + promote the
+    N2.4 structural-equivalence normalizer to a committed reusable oracle (semantic-pass = byte-pass + cosmetic, ~1298+).
+  - **N2.6**: clear BAIL 201 (remaining un-codegen'd constructs).
+  - **N2.7**: achievable OTHER gaps (memo opt-out ~43, DCE/SSA, smaller ones); DEFER JSX-outlining (~111) + full SSR/gating.
+  - **N-VAL**: port the 16 missing validation passes (+ any others surfaced) so Rust rejects what TS rejects.
+  - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
+    Babel NAPI/JSON; add oxc_linter Rule + transform API). Deferred features tracked in a handoff note.
+
   **N-VAL (parallelizable later)**: port missing TS validation passes (validateNoSetStateInEffects,
   validateNoJSXInTryStatements, rules-of-hooks, etc.) so the Rust pipeline rejects what TS rejects. Orthogonal to codegen.
 - **N3 — Finalize.** Delete `react_compiler_ast` + Babel NAPI/JSON bridge; add the
