@@ -110,6 +110,10 @@ MATCH once ALL its constructs are done) — also track "fixtures with zero Todo 
   MATCH 241→384, 0 regressions, context-capture HIR identical. Frontier: JSX (~575) + destructuring (~656, overlap);
   destructuring bails also cause downstream `InferMutationAliasingEffects` invariant (uninitialized binding).
   Next: N1.2.6 patterns/destructuring (params + declarations + assignment targets), then N1.2.7 JSX.
+- **Status**: N1.2.6 ✅ (316c2fb628) patterns.rs 1114L, MATCH 384→487, 0 regressions, InferMutationAliasing
+  invariant resolved. oxc binding-family vs assignment-target-family are SEPARATE trees (two entry points).
+  Frontier: JSX 589 (~47%); remaining ~655 are downstream semantic divergences (mutable-range/reactive-scope) —
+  re-evaluate after JSX. catch-destructuring still bails (TS aborts there too). Next: N1.2.7 JSX.
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
