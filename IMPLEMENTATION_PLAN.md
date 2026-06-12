@@ -120,8 +120,22 @@ oxc↔babel-AST conversion).
   OTHER 103→74, 1 coincidental regression (net positive). Remaining OTHER: deferred pragma features (gating 15,
   jsx-outlining[enableJsxOutlining, distinct from fn-outlining] 10, instrument 2, fbt 2 = 29), JSX text/entity codegen 7,
   destructure/SSA lowering 5, computed-member eval 3.
-  - **N2.10 (next)**: codegen/lowering TAIL (do BEFORE N2.final deletes the reference code) — BAIL Family-B optional/logical
-    inlining ~26, JSX text/entity codegen 7, computed-member eval 3, destructure/SSA lowering 5.
+  **N2.10 ✅ (947c742388, c48a26ea53, 26addb3b60)** Cleared the achievable codegen/lowering TAIL. FOUR root-cause fixes:
+  (1) **Family-B inlining** — `method_callee` now codegens the property place directly as the callee (mirroring the
+  reference `MethodCall`), instead of extracting a property literal that fails for sequence/optional-chain-wrapped
+  properties; this ALSO cleared the computed-member double-eval bucket (3) as a side effect. Added Destructure- and
+  StoreContext-Reassign-with-outer-lvalue inline stashing (chained `f(([x]=…))`, `y=(x=…)` context vars).
+  (2) **JSX text/entity** — decode HTML entities in lowering (`decode_jsx_entities`, before trim, matching babel's
+  parser), and wrap JSX text `/[<>&{}]/` + JSX string attributes (`STRING_REQUIRES_EXPR_CONTAINER_PATTERN`) in `{"…"}`
+  expression containers. (3) **destructure/SSA lowering** — object assignment targets (`({x}=…)`) now use the
+  direct-place path for simple non-context identifiers and a ported `forceTemporaries` gate, instead of always promoting
+  a temporary. **SEMANTIC-pass 1622→1666 (92.4%), HIR-MATCH 1448→1454 (+6, entity-decode + destructure improved HIR)**,
+  BAIL 91→65 ("unnamed identifier" bucket 26→0), OTHER 74→57, N-VAL 16→15, 0 net regression (1 BAIL→OTHER cosmetic
+  arrow-body in passthrough data, no pass-count change). Deferred (diagnosis): lone-surrogate string round-trip
+  (oxc_codegen printer-level, `lone-surrogate-string-values.js`); JSX multi-line whitespace line-join nuance
+  (`jsx-preserve-whitespace.tsx`). Dominant remaining achievable OTHER: scattered single-cause (-0 const-prop, arrow
+  concise-body passthrough, enableNameAnonymousFunctions pragma) — no large bucket left; the rest is deferred pragma
+  features (gating 16, jsx-outlining 10, instrument 2, fbt 2, ssr 1).
   - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
     Babel NAPI/JSON; add oxc_linter Rule + transform API). Deferred features tracked in a handoff note.
 
