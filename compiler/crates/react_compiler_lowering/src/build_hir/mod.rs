@@ -33,6 +33,7 @@ use crate::semantic_queries as sq;
 
 mod expressions;
 mod functions;
+mod jsx;
 mod patterns;
 mod statements;
 

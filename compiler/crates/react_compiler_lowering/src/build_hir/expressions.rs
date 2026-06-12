@@ -275,6 +275,14 @@ pub(crate) fn lower_expression(
             FunctionExpressionType::FunctionExpression,
         ),
 
+        // ---- JSX ----
+        oxc::Expression::JSXElement(element) => {
+            super::jsx::lower_jsx_element_value(builder, element)
+        }
+        oxc::Expression::JSXFragment(fragment) => {
+            super::jsx::lower_jsx_fragment_value(builder, fragment)
+        }
+
         // ---- not-yet-transcribed kinds: graceful Todo bail ----
         other => Ok(todo_value(
             builder,
@@ -290,7 +298,7 @@ pub(crate) fn lower_expression(
 
 /// Lower an identifier reference to a LoadLocal / LoadContext / LoadGlobal
 /// InstructionValue.
-fn lower_identifier_value(
+pub(crate) fn lower_identifier_value(
     builder: &mut HirBuilder,
     ident: &oxc::IdentifierReference,
 ) -> Result<InstructionValue, CompilerError> {
