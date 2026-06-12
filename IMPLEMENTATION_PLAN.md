@@ -58,6 +58,13 @@ oxc↔babel-AST conversion).
     (264) + compound-temporary (159) bails resolve. Biggest remaining codegen lever.
   - Then tail: early-return scopes (36), object methods (21), PostfixUpdate (22), NextPropertyOf, spread params, etc.
 
+  **N2.3 ✅ (53a14efd5c + a21d2fdb8e)** Code-pass 756→788. Diagnosis: PromoteUsedTemporaries already ported+wired;
+  bails were codegen mishandling — fixed compound-reactive-value temp table (store ReactiveValue, rebuild via
+  codegen_value since oxc Expression isn't Clone) + member-expr JSX tags. 13 flips all N-VAL artifacts. Per-stage gains
+  shrinking (multiple bails per fixture). Next bail #1: unnamed-id via optional-chain member loads / scope-dep naming.
+  - **N2.4 (next)**: categorize the ~1015 code-failures → 3 buckets [codegen-bail / cosmetic-printer / N-VAL], size them,
+    then attack the biggest actionable (codegen) bucket. Endgame target = the 95% bridge baseline (~1713/1803) on the CODE oracle.
+
   **N-VAL (parallelizable later)**: port missing TS validation passes (validateNoSetStateInEffects,
   validateNoJSXInTryStatements, rules-of-hooks, etc.) so the Rust pipeline rejects what TS rejects. Orthogonal to codegen.
 - **N3 — Finalize.** Delete `react_compiler_ast` + Babel NAPI/JSON bridge; add the
