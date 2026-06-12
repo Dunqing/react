@@ -75,6 +75,10 @@ use react_compiler_hir::reactive::ReactiveValue;
 /// Sentinel from the reference codegen; emitted as `Symbol.for("…")`.
 const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 
+/// Sentinel marking "no early return taken"; emitted as `Symbol.for("…")` in
+/// the early-return guard appended after a reactive scope.
+const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
+
 /// Signals an unsupported construct. The caller leaves the function uncompiled.
 #[derive(Debug)]
 pub struct CodegenBail {
@@ -125,6 +129,7 @@ pub fn codegen_oxc_function<'a, 'e>(
         memo_local_name: memo_local_name.to_string(),
         temp: HashMap::new(),
         declared: HashSet::new(),
+        object_methods: HashMap::new(),
     };
 
     let (function, cache_count) = cx.codegen_function(func)?;
@@ -154,6 +159,10 @@ struct Cx<'a, 'e> {
     temp: HashMap<DeclarationId, Option<ReactiveValue>>,
     /// declaration_ids that have been `let`/`const`/param declared.
     declared: HashSet<DeclarationId>,
+    /// `ObjectMethod` instructions stashed by their lvalue `IdentifierId`, to be
+    /// retrieved when the enclosing `ObjectExpression` emits its `Method`-typed
+    /// properties. Mirrors the reference codegen's `cx.object_methods`.
+    object_methods: HashMap<IdentifierId, react_compiler_hir::LoweredFunction>,
 }
 
 impl<'a, 'e> Cx<'a, 'e> {
@@ -282,8 +291,11 @@ impl<'a, 'e> Cx<'a, 'e> {
         self.next_cache_index = 0;
 
         // Params: each param is registered (declared) so later writes reassign
-        // rather than redeclare. Params are never inlined temporaries.
+        // rather than redeclare. Params are never inlined temporaries. A spread
+        // param becomes a rest element (`...rest`), which lives in a dedicated
+        // slot on `FormalParameters` rather than the `items` list.
         let mut params: Vec<oxc::FormalParameter<'a>> = Vec::new();
+        let mut rest: Option<oxc::BindingPattern<'a>> = None;
         for p in &func.params {
             match p {
                 ParamPattern::Place(place) => {
@@ -292,9 +304,10 @@ impl<'a, 'e> Cx<'a, 'e> {
                     let pat = self.binding_pattern(&name);
                     params.push(self.formal_param(pat));
                 }
-                ParamPattern::Spread(_) => {
-                    self.next_cache_index = saved_cache_index;
-                    bail!("spread param not yet supported");
+                ParamPattern::Spread(spread) => {
+                    let name = self.place_name(&spread.place)?;
+                    self.declared.insert(self.decl_id(&spread.place));
+                    rest = Some(self.binding_pattern(&name));
                 }
             }
         }
@@ -317,7 +330,7 @@ impl<'a, 'e> Cx<'a, 'e> {
             body_stmts.insert(0, preface);
         }
 
-        let function = self.build_function_shell(func, params, body_stmts)?;
+        let function = self.build_function_shell(func, params, rest, body_stmts)?;
         self.next_cache_index = saved_cache_index;
         Ok((function, cache_count))
     }
@@ -326,6 +339,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         &self,
         func: &ReactiveFunction,
         params: Vec<oxc::FormalParameter<'a>>,
+        rest: Option<oxc::BindingPattern<'a>>,
         body_stmts: Vec<oxc::Statement<'a>>,
     ) -> Bail<oxc::Function<'a>> {
         if func.generator {
@@ -335,11 +349,20 @@ impl<'a, 'e> Cx<'a, 'e> {
             .id
             .as_ref()
             .map(|name| self.b.binding_identifier(SPAN, self.atom(name)));
+        let rest = rest.map(|pat| {
+            let rest_elem = self.b.binding_rest_element(SPAN, pat);
+            self.b.alloc(self.b.formal_parameter_rest(
+                SPAN,
+                self.b.vec(),
+                rest_elem,
+                None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+            ))
+        });
         let formal_params = self.b.formal_parameters(
             SPAN,
             oxc::FormalParameterKind::FormalParameter,
             self.b.vec_from_iter(params),
-            None::<ArenaBox<'a, oxc::FormalParameterRest<'a>>>,
+            rest,
         );
         let body = self
             .b
@@ -417,6 +440,24 @@ impl<'a, 'e> Cx<'a, 'e> {
         // codegen_instruction_nullable).
         if let ReactiveValue::Instruction(iv) = &instr.value {
             match iv {
+                // A `StoreLocal` Reassign that is *also* referenced as an
+                // expression (the enclosing instruction has an outer lvalue)
+                // must be inlined at its use site, not emitted as a standalone
+                // statement — e.g. `f((x = makeObject()))` or `x = y = 1`.
+                // Stash the HIR value so the use site rebuilds `x = …` via the
+                // StoreLocal expression arm. `StoreContext` is excluded (it is
+                // codegen'd as a statement even with an outer lvalue). Mirrors
+                // the reference `emit_store` Reassign branch.
+                InstructionValue::StoreLocal { lvalue, .. }
+                    if matches!(lvalue.kind, InstructionKind::Reassign)
+                        && instr.lvalue.is_some() =>
+                {
+                    let outer = instr.lvalue.as_ref().unwrap();
+                    let decl_id = self.decl_id(outer);
+                    self.declared.insert(decl_id);
+                    self.temp.insert(decl_id, Some(instr.value.clone()));
+                    return Ok(());
+                }
                 InstructionValue::StoreLocal { lvalue, value, .. }
                 | InstructionValue::StoreContext { lvalue, value, .. } => {
                     return self.codegen_store(lvalue, value, out);
@@ -438,6 +479,19 @@ impl<'a, 'e> Cx<'a, 'e> {
                 }
                 InstructionValue::StartMemoize { .. } | InstructionValue::FinishMemoize { .. } => {
                     return Ok(()); // dropped
+                }
+                InstructionValue::Debugger { .. } => {
+                    out.push(self.b.statement_debugger(SPAN));
+                    return Ok(());
+                }
+                InstructionValue::ObjectMethod { lowered_func, .. } => {
+                    // Stash for retrieval by the enclosing ObjectExpression's
+                    // Method-typed property; emit no statement of its own.
+                    if let Some(lvalue) = &instr.lvalue {
+                        self.object_methods
+                            .insert(lvalue.identifier, lowered_func.clone());
+                    }
+                    return Ok(());
                 }
                 _ => {}
             }
@@ -795,10 +849,6 @@ impl<'a, 'e> Cx<'a, 'e> {
         let scope_id = scope_block.scope;
         let scope = self.scope(scope_id)?.clone();
 
-        if scope.early_return_value.is_some() {
-            bail!("reactive scope with early return not yet supported");
-        }
-
         // --- Dependencies: one slot each (sorted for stable order). ---
         let mut deps = scope.dependencies.clone();
         deps.sort_by(|a, b| compare_scope_dependency(a, b));
@@ -913,6 +963,31 @@ impl<'a, 'e> Cx<'a, 'e> {
             )
         };
         out.push(self.b.statement_if(SPAN, test, consequent, alternate));
+
+        // --- Early return guard. ---
+        // If this scope carries an early-return value, append:
+        //   if (name !== Symbol.for("react.early_return_sentinel")) {
+        //     return name;
+        //   }
+        // The early-return value identifier has been promoted to a named
+        // variable by the time codegen runs. Mirrors the reference codegen.
+        if let Some(early_return) = &scope.early_return_value {
+            let name = self.ident_name(early_return.value).map_err(|_| {
+                CodegenBail::new("early return value not promoted to a named variable")
+            })?;
+            let sentinel = self.symbol_for(EARLY_RETURN_SENTINEL);
+            let test = self.b.expression_binary(
+                SPAN,
+                self.ident_expr(&name),
+                OxcBinOp::StrictInequality,
+                sentinel,
+            );
+            let mut ret_body = self.b.vec();
+            ret_body.push(self.b.statement_return(SPAN, Some(self.ident_expr(&name))));
+            let consequent = self.b.statement_block(SPAN, ret_body);
+            out.push(self.b.statement_if(SPAN, test, consequent, None));
+        }
+
         Ok(())
     }
 
@@ -1734,6 +1809,29 @@ impl<'a, 'e> Cx<'a, 'e> {
                 let property_id = self.b.identifier_name(SPAN, self.atom(property));
                 Ok(self.b.expression_meta_property(SPAN, meta_id, property_id))
             }
+            InstructionValue::NextPropertyOf { value, .. } => {
+                // In a for-in loop's lowered form the loop variable's value IS
+                // the place itself; just emit the inner expression.
+                self.place_expr(value)
+            }
+            InstructionValue::StoreLocal { lvalue, value, .. } => {
+                // StoreLocal reaches expression context only as a reassignment
+                // (e.g. a for-loop update or while-condition assignment):
+                // `name = value`.
+                debug_assert!(matches!(lvalue.kind, InstructionKind::Reassign));
+                let name = self.place_name(&lvalue.place)?;
+                let target = oxc::AssignmentTarget::AssignmentTargetIdentifier(
+                    self.b
+                        .alloc(self.b.identifier_reference(SPAN, self.atom(&name))),
+                );
+                let val = self.place_expr(value)?;
+                Ok(self.b.expression_assignment(
+                    SPAN,
+                    oxc_syntax::operator::AssignmentOperator::Assign,
+                    target,
+                    val,
+                ))
+            }
             other => bail!("instruction value not yet supported: {}", iv_kind(other)),
         }
     }
@@ -1776,6 +1874,28 @@ impl<'a, 'e> Cx<'a, 'e> {
                 Ok(oxc::Expression::FunctionExpression(self.b.alloc(function)))
             }
         }
+    }
+
+    /// Build the function value for an object-literal method (`{ m() {…} }`).
+    /// Same nested-codegen path as `function_expression`, but the result is a
+    /// `FunctionExpression` (with `id: None`) used as the method's value while
+    /// the enclosing `ObjectProperty` carries `method: true`.
+    fn build_method_function(
+        &mut self,
+        lowered_func: &react_compiler_hir::LoweredFunction,
+    ) -> Bail<oxc::Expression<'a>> {
+        let hir = &self.env.functions[lowered_func.func.0 as usize];
+        let mut reactive_fn =
+            crate::build_reactive_function::build_reactive_function(hir, self.env)
+                .map_err(|_| CodegenBail::new("object method: build_reactive_function failed"))?;
+        crate::prune_unused_labels::prune_unused_labels(&mut reactive_fn, self.env)
+            .map_err(|_| CodegenBail::new("object method: prune_unused_labels failed"))?;
+        crate::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn, self.env);
+
+        let (mut function, _nested_cache) = self.codegen_function(&reactive_fn)?;
+        function.r#type = oxc::FunctionType::FunctionExpression;
+        function.id = None;
+        Ok(oxc::Expression::FunctionExpression(self.b.alloc(function)))
     }
 
     /// Convert a built `oxc::Function` into an arrow expression, applying the
@@ -2025,13 +2145,37 @@ impl<'a, 'e> Cx<'a, 'e> {
         for p in properties {
             match p {
                 ObjectPropertyOrSpread::Property(prop) => {
+                    let (key, computed) = self.object_key(&prop.key)?;
                     if matches!(
                         prop.property_type,
                         react_compiler_hir::ObjectPropertyType::Method
                     ) {
-                        bail!("object method not yet supported");
+                        // Method shorthand: `{ name(params) { body } }`. The
+                        // lowered function was stashed by `codegen_instruction`
+                        // keyed by the property's lvalue identifier.
+                        let lowered_func = self
+                            .object_methods
+                            .get(&prop.place.identifier)
+                            .cloned()
+                            .ok_or_else(|| {
+                                CodegenBail::new("object method: no stashed ObjectMethod instruction")
+                            })?;
+                        let value = self.build_method_function(&lowered_func)?;
+                        let object_property = self.b.object_property(
+                            SPAN,
+                            oxc::PropertyKind::Init,
+                            key,
+                            value,
+                            // method, shorthand, computed
+                            true,
+                            false,
+                            computed,
+                        );
+                        props.push(oxc::ObjectPropertyKind::ObjectProperty(
+                            self.b.alloc(object_property),
+                        ));
+                        continue;
                     }
-                    let (key, computed) = self.object_key(&prop.key)?;
                     let value = self.place_expr(&prop.place)?;
                     let object_property = self.b.object_property(
                         SPAN,
@@ -2300,11 +2444,17 @@ impl<'a, 'e> Cx<'a, 'e> {
     ) -> Bail<oxc::Expression<'a>> {
         let base_name = self.ident_name(dep.identifier)?;
         let mut expr = self.ident_expr(&base_name);
+        // If any link in the path is optional, the entire chain is built as
+        // optional member expressions (each link keeping its own `optional`
+        // flag) and wrapped in a single `ChainExpression`, e.g. `a?.b.c`
+        // prints from links `[b(optional), c(non-optional)]`. Mirrors the
+        // reference `codegen_dependency`.
+        let has_optional = dep.path.iter().any(|p| p.optional);
         for entry in &dep.path {
-            if entry.optional {
-                bail!("optional dependency path not yet supported");
-            }
             expr = self.member(expr, &entry.property);
+            if has_optional {
+                expr = self.to_optional(expr, entry.optional)?;
+            }
         }
         Ok(expr)
     }
