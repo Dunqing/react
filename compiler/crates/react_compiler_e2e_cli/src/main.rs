@@ -21,6 +21,7 @@ use std::process;
 
 use clap::Parser;
 use react_compiler::entrypoint::compile_result::LoggerEvent;
+use react_compiler::entrypoint::compile_result::OrderedLogItem;
 use react_compiler::entrypoint::plugin_options::PluginOptions;
 
 #[derive(Parser)]
@@ -45,6 +46,13 @@ struct Cli {
     /// Dump ScopeInfo as JSON to stderr (for debugging scope analysis differences)
     #[arg(long)]
     dump_scope: bool,
+
+    /// Dump the per-pass HIR debug log to stdout instead of compiled code.
+    /// Enables debug logging, runs the oxc compile, and prints each pass's
+    /// state as `## <PassName>` blocks (matching test-rust-port.ts format),
+    /// to use as a printer-independent oracle. Implies `compilationMode: all`.
+    #[arg(long)]
+    dump_hir: bool,
 }
 
 /// Result of compiling via a frontend, carrying both code/error and logger events.
@@ -52,6 +60,9 @@ struct CompileOutput {
     code: Option<String>,
     error: Option<String>,
     events: Vec<LoggerEvent>,
+    /// Unified per-pass debug log (events + HIR dumps). Only populated when
+    /// debug logging is enabled (via `--dump-hir`).
+    ordered_log: Vec<OrderedLogItem>,
 }
 
 fn main() {
@@ -66,8 +77,15 @@ fn main() {
             process::exit(1);
         });
 
-    // Parse options — merge provided JSON over sensible defaults
-    let default_json = r#"{"shouldCompile":true,"enableReanimated":false,"isDev":false}"#;
+    // Parse options — merge provided JSON over sensible defaults.
+    // When dumping HIR, enable debug logging and compile every function
+    // (compilationMode: "all"), matching the test-rust-port.ts oracle so the
+    // two per-pass HIR logs can be diffed.
+    let default_json = if cli.dump_hir {
+        r#"{"shouldCompile":true,"enableReanimated":false,"isDev":false,"__debug":true,"compilationMode":"all"}"#
+    } else {
+        r#"{"shouldCompile":true,"enableReanimated":false,"isDev":false}"#
+    };
     let options: PluginOptions = if let Some(ref json) = cli.options {
         // Merge: start with defaults, override with provided values
         let mut base: serde_json::Value = serde_json::from_str(default_json).unwrap();
@@ -101,6 +119,17 @@ fn main() {
         }
     };
 
+    if cli.dump_hir {
+        // Dump-HIR mode: print the per-pass HIR debug log to stdout in the
+        // same textual format test-rust-port.ts uses for the TS side, so the
+        // two can be diffed. Each debug entry becomes a `## <name>` block.
+        // The synthetic `EnvironmentConfig` entry is skipped (matching the
+        // test-rust-port.ts debugLogIRs handler), and logger events are
+        // omitted since this oracle only compares per-pass HIR state.
+        print_hir_dump(&output.ordered_log);
+        return;
+    }
+
     if cli.json {
         // JSON envelope mode: always output JSON to stdout, exit 0
         let envelope = serde_json::json!({
@@ -124,6 +153,34 @@ fn main() {
             }
         }
     }
+}
+
+/// Print the per-pass HIR debug log to stdout, matching the textual format
+/// `test-rust-port.ts` uses for its TS-side oracle.
+///
+/// Each debug entry is rendered as `## <name>\n<value>`, blocks joined by a
+/// blank-newline boundary (the `value` itself ends without a trailing newline,
+/// so blocks are separated by a single `\n`). The synthetic `EnvironmentConfig`
+/// entry is skipped to match the TS-side `debugLogIRs` handler. Logger events
+/// are not printed: this oracle compares per-pass HIR state only.
+///
+/// Opaque-ID normalization (renumbering IdentifierId/Type/block IDs, stripping
+/// mutableRange) is intentionally NOT applied here — `test-rust-port.ts` applies
+/// it symmetrically to both sides at diff time, so the raw dump is the right
+/// thing to emit.
+fn print_hir_dump(ordered_log: &[OrderedLogItem]) {
+    let mut blocks: Vec<String> = Vec::new();
+    for item in ordered_log {
+        if let OrderedLogItem::Debug { entry } = item {
+            if entry.name == "EnvironmentConfig" {
+                continue;
+            }
+            blocks.push(format!("## {}\n{}", entry.name, entry.value));
+        }
+    }
+    // Join with a single newline so the output matches `formatLog` (which joins
+    // formatted items with "\n").
+    println!("{}", blocks.join("\n"));
 }
 
 fn compile_oxc(
@@ -154,6 +211,7 @@ fn compile_oxc(
             code: None,
             error: Some(format!("OXC parse errors: {}", err_msgs.join("; "))),
             events: vec![],
+            ordered_log: vec![],
         };
     }
 
@@ -167,9 +225,10 @@ fn compile_oxc(
         eprintln!("{}", serde_json::to_string_pretty(&scope_info).unwrap());
     }
 
-    let result = react_compiler_oxc::transform(&parsed.program, &semantic, source, options);
-    let events = result.events;
-    let rename_plan = result.rename_plan;
+    let mut result = react_compiler_oxc::transform(&parsed.program, &semantic, source, options);
+    let events = std::mem::take(&mut result.events);
+    let ordered_log = std::mem::take(&mut result.ordered_log);
+    let rename_plan = std::mem::take(&mut result.rename_plan);
 
     // Check for error-level diagnostics, similar to SWC path.
     // OxcDiagnostic uses miette's Severity.
@@ -190,6 +249,7 @@ fn compile_oxc(
                 )),
                 error: None,
                 events,
+                ordered_log,
             }
         }
         None => {
@@ -204,6 +264,7 @@ fn compile_oxc(
                     code: None,
                     error: Some(messages.join("\n")),
                     events,
+                    ordered_log,
                 }
             } else {
                 // No changes — emit the original parsed program (already has comments)
@@ -211,6 +272,7 @@ fn compile_oxc(
                     code: Some(oxc_codegen::Codegen::new().build(&parsed.program).code),
                     error: None,
                     events,
+                    ordered_log,
                 }
             }
         }

@@ -13,6 +13,7 @@ use convert_scope::convert_scope_info;
 use diagnostics::compile_result_to_diagnostics;
 use prefilter::has_react_like_functions;
 use react_compiler::entrypoint::compile_result::LoggerEvent;
+use react_compiler::entrypoint::compile_result::OrderedLogItem;
 use react_compiler::entrypoint::plugin_options::PluginOptions;
 
 /// Result of compiling a program via the OXC frontend.
@@ -21,6 +22,11 @@ pub struct TransformResult {
     pub file: Option<react_compiler_ast::File>,
     pub diagnostics: Vec<oxc_diagnostics::OxcDiagnostic>,
     pub events: Vec<LoggerEvent>,
+    /// Unified ordered log interleaving logger events and debug entries
+    /// (per-pass HIR dumps) in emission order. Only populated when
+    /// `options.debug` (i.e. `__debug`) is enabled. Used by the e2e CLI's
+    /// `--dump-hir` flag as a printer-independent oracle.
+    pub ordered_log: Vec<OrderedLogItem>,
     /// Pre-computed rename plan: maps source positions (span.start) to new
     /// identifier names. Built from the compiler's binding renames and the
     /// original scope info. Applied during `emit()` to fix references in
@@ -46,6 +52,7 @@ pub fn transform(
             file: None,
             diagnostics: vec![],
             events: vec![],
+            ordered_log: vec![],
             rename_plan: HashMap::new(),
         };
     }
@@ -61,16 +68,19 @@ pub fn transform(
         react_compiler::entrypoint::program::compile_program(file, scope_info.clone(), options);
 
     let diagnostics = compile_result_to_diagnostics(&result);
-    let (program_ast, events, renames) = match result {
+    let (program_ast, events, ordered_log, renames) = match result {
         react_compiler::entrypoint::compile_result::CompileResult::Success {
             ast,
             events,
+            ordered_log,
             renames,
             ..
-        } => (ast, events, renames),
+        } => (ast, events, ordered_log, renames),
         react_compiler::entrypoint::compile_result::CompileResult::Error {
-            events, ..
-        } => (None, events, Vec::new()),
+            events,
+            ordered_log,
+            ..
+        } => (None, events, ordered_log, Vec::new()),
     };
 
     // Build the rename plan from the original scope info + compiler renames.
@@ -81,6 +91,7 @@ pub fn transform(
         file: program_ast,
         diagnostics,
         events,
+        ordered_log,
         rename_plan,
     }
 }
