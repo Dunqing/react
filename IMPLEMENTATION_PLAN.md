@@ -44,7 +44,7 @@ oxc↔babel-AST conversion).
   on a few fixtures (reuse normalization from `scripts/test-rust-port.ts`).
 - **Depends on**: F1, F2
 - **Success criteria**: `--dump-hir` emits per-pass HIR for a fixture; spot-matches TS HIR.
-- **Status**: Not Started
+- **Status**: Complete (commit a8b5fbbdd8). `--dump-hir` on the oxc CLI emits per-pass HIR in test-rust-port.ts format; post-lowering `HIR` matches TS on `useMemo-simple.js` + `simple-alias.js`. `__debug` (PluginOptions.debug) drives `context.debug_enabled`; oxc `transform()` now carries `ordered_log` through.
 
 ### Stage N1.1: Scope queries direct from oxc_semantic
 - **Goal**: Introduce a scope-query module that reads `oxc_semantic` directly (get_binding,
