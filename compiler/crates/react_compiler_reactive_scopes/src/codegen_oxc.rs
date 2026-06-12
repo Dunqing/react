@@ -458,9 +458,47 @@ impl<'a, 'e> Cx<'a, 'e> {
                     self.temp.insert(decl_id, Some(instr.value.clone()));
                     return Ok(());
                 }
+                // A `StoreContext` Reassign that is *also* referenced as an
+                // expression (the enclosing instruction has an outer lvalue that
+                // is an unnamed temporary) must be inlined at its use site, e.g.
+                // a chained `y = (x = {})` where `x` is a context variable.
+                // Stash the HIR value so the use site rebuilds `x = …` via the
+                // StoreContext expression arm. Mirrors the reference codegen,
+                // which for StoreContext re-dispatches to `codegenInstruction`,
+                // and that stashes when the outer lvalue is an unnamed temp.
+                InstructionValue::StoreContext { lvalue, .. }
+                    if matches!(lvalue.kind, InstructionKind::Reassign)
+                        && instr
+                            .lvalue
+                            .as_ref()
+                            .is_some_and(|lv| self.env.identifiers[lv.identifier.0 as usize].name.is_none()) =>
+                {
+                    let outer = instr.lvalue.as_ref().unwrap();
+                    let decl_id = self.decl_id(outer);
+                    self.declared.insert(decl_id);
+                    self.temp.insert(decl_id, Some(instr.value.clone()));
+                    return Ok(());
+                }
                 InstructionValue::StoreLocal { lvalue, value, .. }
                 | InstructionValue::StoreContext { lvalue, value, .. } => {
                     return self.codegen_store(lvalue, value, out);
+                }
+                // A `Destructure` Reassign that is *also* referenced as an
+                // expression (the enclosing instruction has an outer lvalue)
+                // must be inlined at its use site, e.g. `f(([x] = makeObject()))`.
+                // Stash the HIR value so the use site rebuilds `[x] = …` via the
+                // Destructure expression arm. Mirrors the reference codegen's
+                // `Reassign` branch (`cx.temp.set(...)` when `instr.lvalue !==
+                // null` and kind !== StoreContext).
+                InstructionValue::Destructure { lvalue, .. }
+                    if matches!(lvalue.kind, InstructionKind::Reassign)
+                        && instr.lvalue.is_some() =>
+                {
+                    let outer = instr.lvalue.as_ref().unwrap();
+                    let decl_id = self.decl_id(outer);
+                    self.declared.insert(decl_id);
+                    self.temp.insert(decl_id, Some(instr.value.clone()));
+                    return Ok(());
                 }
                 InstructionValue::Destructure { lvalue, value, .. } => {
                     return self.codegen_destructure(lvalue, value, out);
@@ -1814,9 +1852,11 @@ impl<'a, 'e> Cx<'a, 'e> {
                 // the place itself; just emit the inner expression.
                 self.place_expr(value)
             }
-            InstructionValue::StoreLocal { lvalue, value, .. } => {
-                // StoreLocal reaches expression context only as a reassignment
-                // (e.g. a for-loop update or while-condition assignment):
+            InstructionValue::StoreLocal { lvalue, value, .. }
+            | InstructionValue::StoreContext { lvalue, value, .. } => {
+                // StoreLocal/StoreContext reach expression context only as a
+                // reassignment (e.g. a for-loop update, while-condition
+                // assignment, or chained `y = (x = …)` for a context variable):
                 // `name = value`.
                 debug_assert!(matches!(lvalue.kind, InstructionKind::Reassign));
                 let name = self.place_name(&lvalue.place)?;
@@ -1824,6 +1864,20 @@ impl<'a, 'e> Cx<'a, 'e> {
                     self.b
                         .alloc(self.b.identifier_reference(SPAN, self.atom(&name))),
                 );
+                let val = self.place_expr(value)?;
+                Ok(self.b.expression_assignment(
+                    SPAN,
+                    oxc_syntax::operator::AssignmentOperator::Assign,
+                    target,
+                    val,
+                ))
+            }
+            InstructionValue::Destructure { lvalue, value, .. } => {
+                // Destructure reaches expression context only as a reassignment
+                // referenced inline (e.g. `f(([x] = makeObject()))`): build
+                // `pattern = value`. Mirrors the reference `Reassign` branch.
+                debug_assert!(matches!(lvalue.kind, InstructionKind::Reassign));
+                let target = self.assignment_target_from_pattern(&lvalue.pattern)?;
                 let val = self.place_expr(value)?;
                 Ok(self.b.expression_assignment(
                     SPAN,
@@ -1958,26 +2012,17 @@ impl<'a, 'e> Cx<'a, 'e> {
         )
     }
 
-    /// Build the callee for a `MethodCall`. The `property` Place is a
-    /// PropertyLoad temporary; we look it up in the temp table to find the
-    /// member name, building `receiver.name`.
-    fn method_callee(&mut self, receiver: &Place, property: &Place) -> Bail<oxc::Expression<'a>> {
-        // Resolve the property temporary back to its PropertyLoad.
-        let prop_decl = self.decl_id(property);
-        if let Some(Some(ReactiveValue::Instruction(InstructionValue::PropertyLoad {
-            property: prop_lit,
-            ..
-        }))) = self.temp.get(&prop_decl).cloned()
-        {
-            let obj = self.place_expr(receiver)?;
-            return Ok(self.member(obj, &prop_lit));
-        }
-        // Fallback: computed member receiver[property].
-        let obj = self.place_expr(receiver)?;
-        let prop = self.place_expr(property)?;
-        Ok(oxc::Expression::ComputedMemberExpression(self.b.alloc(
-            self.b.computed_member_expression(SPAN, obj, prop, false),
-        )))
+    /// Build the callee for a `MethodCall`. The `property` Place is an
+    /// unpromoted, unmemoized `MemberExpression` temporary whose object IS the
+    /// receiver. Mirroring the reference `CodegenReactiveFunction`, we codegen
+    /// the property place to an expression and use it directly as the callee:
+    /// the property's stashed value already encodes `receiver.member` (possibly
+    /// wrapped in a sequence that re-loads the receiver, or an optional chain).
+    ///
+    /// `_receiver` is retained for signature parity; the reference only asserts
+    /// the member's object equals the receiver, it does not rebuild from it.
+    fn method_callee(&mut self, _receiver: &Place, property: &Place) -> Bail<oxc::Expression<'a>> {
+        self.place_expr(property)
     }
 
     /// Build an assignment target for `object.property` / `object[number]`.
