@@ -39,22 +39,27 @@ use oxc_syntax::operator::LogicalOperator as OxcLogOp;
 use oxc_syntax::operator::UnaryOperator as OxcUnOp;
 
 use react_compiler_hir::ArrayElement;
+use react_compiler_hir::ArrayPatternElement;
 use react_compiler_hir::BinaryOperator;
 use react_compiler_hir::DeclarationId;
+use react_compiler_hir::FunctionExpressionType;
 use react_compiler_hir::IdentifierId;
 use react_compiler_hir::InstructionKind;
 use react_compiler_hir::InstructionValue;
 use react_compiler_hir::JsxAttribute;
 use react_compiler_hir::JsxTag;
+use react_compiler_hir::LValuePattern;
 use react_compiler_hir::LogicalOperator;
 use react_compiler_hir::ObjectPropertyKey;
 use react_compiler_hir::ObjectPropertyOrSpread;
 use react_compiler_hir::ParamPattern;
+use react_compiler_hir::Pattern;
 use react_compiler_hir::Place;
 use react_compiler_hir::PlaceOrSpread;
 use react_compiler_hir::PrimitiveValue;
 use react_compiler_hir::PropertyLiteral;
 use react_compiler_hir::ScopeId;
+use react_compiler_hir::TemplateQuasi;
 use react_compiler_hir::UnaryOperator;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::reactive::ReactiveBlock;
@@ -62,6 +67,7 @@ use react_compiler_hir::reactive::ReactiveFunction;
 use react_compiler_hir::reactive::ReactiveScopeBlock;
 use react_compiler_hir::reactive::ReactiveStatement;
 use react_compiler_hir::reactive::ReactiveTerminal;
+use react_compiler_hir::reactive::ReactiveTerminalTargetKind;
 use react_compiler_hir::reactive::ReactiveValue;
 
 /// Sentinel from the reference codegen; emitted as `Symbol.for("…")`.
@@ -119,40 +125,7 @@ pub fn codegen_oxc_function<'a, 'e>(
         declared: HashSet::new(),
     };
 
-    // Params: each param is registered (declared) so later writes reassign
-    // rather than redeclare. Params are never inlined temporaries.
-    let mut params: Vec<oxc::FormalParameter<'a>> = Vec::new();
-    for p in &func.params {
-        match p {
-            ParamPattern::Place(place) => {
-                let name = cx.place_name(place)?;
-                cx.declared.insert(cx.decl_id(place));
-                let pat = cx.binding_pattern(&name);
-                params.push(cx.formal_param(pat));
-            }
-            ParamPattern::Spread(_) => bail!("spread param not yet supported"),
-        }
-    }
-
-    // Body.
-    let mut body_stmts: Vec<oxc::Statement<'a>> = Vec::new();
-    cx.codegen_block(&func.body, &mut body_stmts)?;
-
-    // Strip a trailing bare `return undefined;` (matches the reference).
-    if let Some(oxc::Statement::ReturnStatement(r)) = body_stmts.last() {
-        if r.argument.is_none() {
-            body_stmts.pop();
-        }
-    }
-
-    // Cache var preface: const $ = _c(N);
-    let cache_count = cx.next_cache_index;
-    if cache_count != 0 {
-        let preface = cx.cache_var_decl(cache_count);
-        body_stmts.insert(0, preface);
-    }
-
-    let function = cx.build_function_shell(func, params, body_stmts)?;
+    let (function, cache_count) = cx.codegen_function(func)?;
 
     Ok(OxcCodegenOutput {
         function,
@@ -290,6 +263,56 @@ impl<'a, 'e> Cx<'a, 'e> {
         oxc::Statement::VariableDeclaration(self.b.alloc(decl))
     }
 
+    /// Codegen a full `oxc::Function` from a `ReactiveFunction`, returning the
+    /// function and the number of memo cache slots it used. Nested functions
+    /// call this recursively with a saved/restored cache counter.
+    fn codegen_function(&mut self, func: &ReactiveFunction) -> Bail<(oxc::Function<'a>, u32)> {
+        // Save and reset the cache counter so the function gets its own
+        // `const $ = _c(N)` numbering independent of any enclosing function.
+        let saved_cache_index = self.next_cache_index;
+        self.next_cache_index = 0;
+
+        // Params: each param is registered (declared) so later writes reassign
+        // rather than redeclare. Params are never inlined temporaries.
+        let mut params: Vec<oxc::FormalParameter<'a>> = Vec::new();
+        for p in &func.params {
+            match p {
+                ParamPattern::Place(place) => {
+                    let name = self.place_name(place)?;
+                    self.declared.insert(self.decl_id(place));
+                    let pat = self.binding_pattern(&name);
+                    params.push(self.formal_param(pat));
+                }
+                ParamPattern::Spread(_) => {
+                    self.next_cache_index = saved_cache_index;
+                    bail!("spread param not yet supported");
+                }
+            }
+        }
+
+        // Body.
+        let mut body_stmts: Vec<oxc::Statement<'a>> = Vec::new();
+        self.codegen_block(&func.body, &mut body_stmts)?;
+
+        // Strip a trailing bare `return undefined;` (matches the reference).
+        if let Some(oxc::Statement::ReturnStatement(r)) = body_stmts.last() {
+            if r.argument.is_none() {
+                body_stmts.pop();
+            }
+        }
+
+        // Cache var preface: const $ = _c(N);
+        let cache_count = self.next_cache_index;
+        if cache_count != 0 {
+            let preface = self.cache_var_decl(cache_count);
+            body_stmts.insert(0, preface);
+        }
+
+        let function = self.build_function_shell(func, params, body_stmts)?;
+        self.next_cache_index = saved_cache_index;
+        Ok((function, cache_count))
+    }
+
     fn build_function_shell(
         &self,
         func: &ReactiveFunction,
@@ -347,7 +370,29 @@ impl<'a, 'e> Cx<'a, 'e> {
                     self.codegen_block(&pruned.instructions, out)?;
                 }
                 ReactiveStatement::Terminal(term) => {
-                    self.codegen_terminal(&term.terminal, out)?;
+                    // Emit the terminal into a scratch buffer so we can apply a
+                    // label wrapper (if the statement carries a non-implicit
+                    // label) and flatten implicit labels / bare blocks inline.
+                    match &term.label {
+                        Some(label) if !label.implicit => {
+                            let mut scratch = Vec::new();
+                            self.codegen_terminal(&term.terminal, &mut scratch)?;
+                            // The label wraps a single statement; if the terminal
+                            // produced exactly one block, unwrap to it.
+                            let inner = if scratch.len() == 1 {
+                                scratch.pop().unwrap()
+                            } else {
+                                self.b.statement_block(SPAN, self.b.vec_from_iter(scratch))
+                            };
+                            let label_id = self
+                                .b
+                                .label_identifier(SPAN, self.atom(&codegen_label(label.id)));
+                            out.push(self.b.statement_labeled(SPAN, label_id, inner));
+                        }
+                        _ => {
+                            self.codegen_terminal(&term.terminal, out)?;
+                        }
+                    }
                 }
             }
         }
@@ -366,6 +411,9 @@ impl<'a, 'e> Cx<'a, 'e> {
                 InstructionValue::StoreLocal { lvalue, value, .. }
                 | InstructionValue::StoreContext { lvalue, value, .. } => {
                     return self.codegen_store(lvalue, value, out);
+                }
+                InstructionValue::Destructure { lvalue, value, .. } => {
+                    return self.codegen_destructure(lvalue, value, out);
                 }
                 InstructionValue::DeclareLocal { lvalue, .. }
                 | InstructionValue::DeclareContext { lvalue, .. } => {
@@ -469,6 +517,237 @@ impl<'a, 'e> Cx<'a, 'e> {
             InstructionKind::Catch => bail!("catch-kind store not yet supported"),
         }
         Ok(())
+    }
+
+    /// Codegen a `Destructure { lvalue: {pattern, kind}, value }`.
+    /// Const/Let -> a variable declaration with a binding pattern.
+    /// Reassign -> an assignment-expression statement (or stashed temporary).
+    fn codegen_destructure(
+        &mut self,
+        lvalue: &LValuePattern,
+        value: &Place,
+        out: &mut Vec<oxc::Statement<'a>>,
+    ) -> Bail<()> {
+        // Register unnamed pattern operands as declared-but-no-expression so
+        // they resolve to bare identifiers (matches the reference).
+        if !matches!(lvalue.kind, InstructionKind::Reassign) {
+            self.register_pattern_decls(&lvalue.pattern);
+        }
+        let rhs = self.place_expr(value)?;
+        match lvalue.kind {
+            InstructionKind::Const | InstructionKind::HoistedConst => {
+                let pat = self.binding_pattern_from_pattern(&lvalue.pattern, lvalue.kind)?;
+                out.push(self.var_decl_pattern(
+                    oxc::VariableDeclarationKind::Const,
+                    pat,
+                    Some(rhs),
+                ));
+                Ok(())
+            }
+            InstructionKind::Let | InstructionKind::HoistedLet => {
+                let pat = self.binding_pattern_from_pattern(&lvalue.pattern, lvalue.kind)?;
+                out.push(self.var_decl_pattern(oxc::VariableDeclarationKind::Let, pat, Some(rhs)));
+                Ok(())
+            }
+            InstructionKind::Reassign => {
+                let target = self.assignment_target_from_pattern(&lvalue.pattern)?;
+                let assign = self.b.expression_assignment(
+                    SPAN,
+                    oxc_syntax::operator::AssignmentOperator::Assign,
+                    target,
+                    rhs,
+                );
+                out.push(self.b.statement_expression(SPAN, assign));
+                Ok(())
+            }
+            InstructionKind::Function | InstructionKind::HoistedFunction => {
+                bail!("function-kind destructure not yet supported")
+            }
+            InstructionKind::Catch => bail!("catch-kind destructure not yet supported"),
+        }
+    }
+
+    /// Register each unnamed operand of a pattern as a declared bare identifier.
+    fn register_pattern_decls(&mut self, pattern: &Pattern) {
+        let mut places: Vec<Place> = Vec::new();
+        collect_pattern_places(pattern, &mut places);
+        for place in &places {
+            if self.env.identifiers[place.identifier.0 as usize]
+                .name
+                .is_none()
+            {
+                let decl_id = self.decl_id(place);
+                self.declared.insert(decl_id);
+                self.temp.insert(decl_id, None);
+            } else {
+                let decl_id = self.decl_id(place);
+                self.declared.insert(decl_id);
+            }
+        }
+    }
+
+    /// Build a `VariableDeclaration` statement with a destructuring pattern.
+    fn var_decl_pattern(
+        &self,
+        kind: oxc::VariableDeclarationKind,
+        pat: oxc::BindingPattern<'a>,
+        init: Option<oxc::Expression<'a>>,
+    ) -> oxc::Statement<'a> {
+        let declarator = self.b.variable_declarator(
+            SPAN,
+            kind,
+            pat,
+            None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+            init,
+            false,
+        );
+        let mut decls = self.b.vec();
+        decls.push(declarator);
+        let decl = self.b.variable_declaration(SPAN, kind, decls, false);
+        oxc::Statement::VariableDeclaration(self.b.alloc(decl))
+    }
+
+    /// Build a binding pattern (for declarations) from an HIR `Pattern`.
+    fn binding_pattern_from_pattern(
+        &mut self,
+        pattern: &Pattern,
+        _kind: InstructionKind,
+    ) -> Bail<oxc::BindingPattern<'a>> {
+        match pattern {
+            Pattern::Array(arr) => {
+                let mut elements = self.b.vec();
+                let mut rest: Option<oxc::BindingRestElement<'a>> = None;
+                for item in &arr.items {
+                    match item {
+                        ArrayPatternElement::Place(p) => {
+                            let name = self.place_name(p)?;
+                            elements.push(Some(self.binding_pattern(&name)));
+                        }
+                        ArrayPatternElement::Hole => {
+                            elements.push(None);
+                        }
+                        ArrayPatternElement::Spread(s) => {
+                            let name = self.place_name(&s.place)?;
+                            let arg = self.binding_pattern(&name);
+                            rest = Some(self.b.binding_rest_element(SPAN, arg));
+                        }
+                    }
+                }
+                Ok(self.b.binding_pattern_array_pattern(SPAN, elements, rest))
+            }
+            Pattern::Object(obj) => {
+                let mut properties = self.b.vec();
+                let mut rest: Option<oxc::BindingRestElement<'a>> = None;
+                for prop in &obj.properties {
+                    match prop {
+                        ObjectPropertyOrSpread::Property(p) => {
+                            let (key, computed) = self.object_key(&p.key)?;
+                            let value_name = self.place_name(&p.place)?;
+                            let value = self.binding_pattern(&value_name);
+                            let shorthand = object_key_matches_name(&p.key, &value_name);
+                            properties.push(
+                                self.b
+                                    .binding_property(SPAN, key, value, shorthand, computed),
+                            );
+                        }
+                        ObjectPropertyOrSpread::Spread(s) => {
+                            let name = self.place_name(&s.place)?;
+                            let arg = self.binding_pattern(&name);
+                            rest = Some(self.b.binding_rest_element(SPAN, arg));
+                        }
+                    }
+                }
+                Ok(self
+                    .b
+                    .binding_pattern_object_pattern(SPAN, properties, rest))
+            }
+        }
+    }
+
+    /// Build an assignment target (for reassignments) from an HIR `Pattern`.
+    fn assignment_target_from_pattern(
+        &mut self,
+        pattern: &Pattern,
+    ) -> Bail<oxc::AssignmentTarget<'a>> {
+        match pattern {
+            Pattern::Array(arr) => {
+                let mut elements = self.b.vec();
+                let mut rest: Option<oxc::AssignmentTargetRest<'a>> = None;
+                for item in &arr.items {
+                    match item {
+                        ArrayPatternElement::Place(p) => {
+                            let name = self.place_name(p)?;
+                            let t = oxc::AssignmentTargetMaybeDefault::from(
+                                self.assignment_target_identifier(&name),
+                            );
+                            elements.push(Some(t));
+                        }
+                        ArrayPatternElement::Hole => elements.push(None),
+                        ArrayPatternElement::Spread(s) => {
+                            let name = self.place_name(&s.place)?;
+                            let target = self.assignment_target_identifier(&name);
+                            rest = Some(self.b.assignment_target_rest(SPAN, target));
+                        }
+                    }
+                }
+                Ok(self
+                    .b
+                    .assignment_target_pattern_array_assignment_target(SPAN, elements, rest)
+                    .into())
+            }
+            Pattern::Object(obj) => {
+                let mut properties = self.b.vec();
+                let mut rest: Option<oxc::AssignmentTargetRest<'a>> = None;
+                for prop in &obj.properties {
+                    match prop {
+                        ObjectPropertyOrSpread::Property(p) => {
+                            let value_name = self.place_name(&p.place)?;
+                            if object_key_matches_name(&p.key, &value_name) {
+                                // Shorthand: { x } -> identifier property.
+                                let binding =
+                                    self.b.identifier_reference(SPAN, self.atom(&value_name));
+                                properties.push(
+                                    self.b
+                                        .assignment_target_property_assignment_target_property_identifier(
+                                            SPAN,
+                                            binding,
+                                            None,
+                                        ),
+                                );
+                            } else {
+                                let (key, computed) = self.object_key(&p.key)?;
+                                let binding = oxc::AssignmentTargetMaybeDefault::from(
+                                    self.assignment_target_identifier(&value_name),
+                                );
+                                properties.push(
+                                    self.b
+                                        .assignment_target_property_assignment_target_property_property(
+                                            SPAN, key, binding, computed,
+                                        ),
+                                );
+                            }
+                        }
+                        ObjectPropertyOrSpread::Spread(s) => {
+                            let name = self.place_name(&s.place)?;
+                            let target = self.assignment_target_identifier(&name);
+                            rest = Some(self.b.assignment_target_rest(SPAN, target));
+                        }
+                    }
+                }
+                Ok(self
+                    .b
+                    .assignment_target_pattern_object_assignment_target(SPAN, properties, rest)
+                    .into())
+            }
+        }
+    }
+
+    /// `name` as a simple assignment target.
+    fn assignment_target_identifier(&self, name: &str) -> oxc::AssignmentTarget<'a> {
+        oxc::AssignmentTarget::AssignmentTargetIdentifier(
+            self.b
+                .alloc(self.b.identifier_reference(SPAN, self.atom(name))),
+        )
     }
 
     fn const_decl(&self, name: &str, init: Option<oxc::Expression<'a>>) -> oxc::Statement<'a> {
@@ -684,7 +963,13 @@ impl<'a, 'e> Cx<'a, 'e> {
                     out.push(self.b.statement_return(SPAN, None));
                 } else {
                     let expr = self.place_expr(value)?;
-                    out.push(self.b.statement_return(SPAN, Some(expr)));
+                    // A resolved `undefined` identifier (e.g. an inlined
+                    // Primitive::Undefined temporary) also means `return;`.
+                    if is_undefined_identifier(&expr) {
+                        out.push(self.b.statement_return(SPAN, None));
+                    } else {
+                        out.push(self.b.statement_return(SPAN, Some(expr)));
+                    }
                 }
                 Ok(())
             }
@@ -711,7 +996,370 @@ impl<'a, 'e> Cx<'a, 'e> {
                 out.push(self.b.statement_if(SPAN, test_expr, cons_stmt, alt_stmt));
                 Ok(())
             }
-            other => bail!("terminal not yet supported: {:?}", terminal_kind(other)),
+            ReactiveTerminal::Throw { value, .. } => {
+                let expr = self.place_expr(value)?;
+                out.push(self.b.statement_throw(SPAN, expr));
+                Ok(())
+            }
+            ReactiveTerminal::Break {
+                target,
+                target_kind,
+                ..
+            } => {
+                match target_kind {
+                    ReactiveTerminalTargetKind::Implicit => { /* fall-through: emit nothing */ }
+                    ReactiveTerminalTargetKind::Labeled => {
+                        let label = self
+                            .b
+                            .label_identifier(SPAN, self.atom(&codegen_label(*target)));
+                        out.push(self.b.statement_break(SPAN, Some(label)));
+                    }
+                    ReactiveTerminalTargetKind::Unlabeled => {
+                        out.push(self.b.statement_break(SPAN, None));
+                    }
+                }
+                Ok(())
+            }
+            ReactiveTerminal::Continue {
+                target,
+                target_kind,
+                ..
+            } => {
+                match target_kind {
+                    ReactiveTerminalTargetKind::Implicit => { /* fall-through: emit nothing */ }
+                    ReactiveTerminalTargetKind::Labeled => {
+                        let label = self
+                            .b
+                            .label_identifier(SPAN, self.atom(&codegen_label(*target)));
+                        out.push(self.b.statement_continue(SPAN, Some(label)));
+                    }
+                    ReactiveTerminalTargetKind::Unlabeled => {
+                        out.push(self.b.statement_continue(SPAN, None));
+                    }
+                }
+                Ok(())
+            }
+            ReactiveTerminal::While {
+                test, loop_block, ..
+            } => {
+                let test_expr = self.codegen_value(test)?;
+                let body = self.codegen_block_as_block_stmt(loop_block)?;
+                out.push(self.b.statement_while(SPAN, test_expr, body));
+                Ok(())
+            }
+            ReactiveTerminal::DoWhile {
+                loop_block, test, ..
+            } => {
+                let body = self.codegen_block_as_block_stmt(loop_block)?;
+                let test_expr = self.codegen_value(test)?;
+                out.push(self.b.statement_do_while(SPAN, body, test_expr));
+                Ok(())
+            }
+            ReactiveTerminal::For {
+                init,
+                test,
+                update,
+                loop_block,
+                ..
+            } => {
+                let init_part = self.codegen_for_init(init)?;
+                let test_expr = self.codegen_value(test)?;
+                let update_expr = match update {
+                    Some(u) => Some(self.codegen_value(u)?),
+                    None => None,
+                };
+                let body = self.codegen_block_as_block_stmt(loop_block)?;
+                out.push(self.b.statement_for(
+                    SPAN,
+                    Some(init_part),
+                    Some(test_expr),
+                    update_expr,
+                    body,
+                ));
+                Ok(())
+            }
+            ReactiveTerminal::ForIn {
+                init, loop_block, ..
+            } => {
+                // init is a SequenceExpression with exactly 2 instructions:
+                // [0] = iterable collection, [1] = iterable item (the left).
+                let instrs = self.sequence_instructions(init)?;
+                if instrs.len() != 2 {
+                    bail!("for-in init not a 2-instruction sequence");
+                }
+                let right = self.instruction_value_expr(&instrs[0].value)?;
+                let left = self.extract_for_in_of_left(&instrs[1].value)?;
+                let body = self.codegen_block_as_block_stmt(loop_block)?;
+                out.push(self.b.statement_for_in(SPAN, left, right, body));
+                Ok(())
+            }
+            ReactiveTerminal::ForOf {
+                init,
+                test,
+                loop_block,
+                ..
+            } => {
+                // init is a 1-instruction sequence of GetIterator { collection };
+                // test is a 2-instruction sequence whose [1] yields the left.
+                let init_instrs = self.sequence_instructions(init)?;
+                if init_instrs.len() != 1 {
+                    bail!("for-of init not a 1-instruction sequence");
+                }
+                let collection = match &init_instrs[0].value {
+                    ReactiveValue::Instruction(InstructionValue::GetIterator {
+                        collection,
+                        ..
+                    }) => collection.clone(),
+                    _ => bail!("for-of init is not GetIterator"),
+                };
+                let test_instrs = self.sequence_instructions(test)?;
+                if test_instrs.len() != 2 {
+                    bail!("for-of test not a 2-instruction sequence");
+                }
+                let left = self.extract_for_in_of_left(&test_instrs[1].value)?;
+                let right = self.place_expr(&collection)?;
+                let body = self.codegen_block_as_block_stmt(loop_block)?;
+                out.push(self.b.statement_for_of(SPAN, false, left, right, body));
+                Ok(())
+            }
+            ReactiveTerminal::Switch { test, cases, .. } => {
+                let discriminant = self.place_expr(test)?;
+                let mut oxc_cases = self.b.vec();
+                for case in cases {
+                    let test_expr = match &case.test {
+                        Some(p) => Some(self.place_expr(p)?),
+                        None => None,
+                    };
+                    // Each case's block is wrapped in its own braced block.
+                    let consequent = if let Some(block) = &case.block {
+                        let mut stmts = Vec::new();
+                        self.codegen_block(block, &mut stmts)?;
+                        if stmts.is_empty() {
+                            self.b.vec()
+                        } else {
+                            let block_stmt =
+                                self.b.statement_block(SPAN, self.b.vec_from_iter(stmts));
+                            let mut v = self.b.vec();
+                            v.push(block_stmt);
+                            v
+                        }
+                    } else {
+                        self.b.vec()
+                    };
+                    oxc_cases.push(self.b.switch_case(SPAN, test_expr, consequent));
+                }
+                out.push(self.b.statement_switch(SPAN, discriminant, oxc_cases));
+                Ok(())
+            }
+            ReactiveTerminal::Try {
+                block,
+                handler_binding,
+                handler,
+                ..
+            } => {
+                let try_block = self.codegen_block_as_block_stmt(block)?;
+                // Register the catch binding as declared-but-no-expression.
+                let catch_param = match handler_binding {
+                    Some(place) => {
+                        let name = self.place_name(place)?;
+                        let decl_id = self.decl_id(place);
+                        self.declared.insert(decl_id);
+                        self.temp.insert(decl_id, None);
+                        let pat = self.binding_pattern(&name);
+                        Some(self.b.catch_parameter(
+                            SPAN,
+                            pat,
+                            None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+                        ))
+                    }
+                    None => None,
+                };
+                let handler_block = self.codegen_block_as_block_stmt(handler)?;
+                let catch_clause =
+                    self.b
+                        .catch_clause(SPAN, catch_param, self.statement_to_block(handler_block));
+                out.push(self.b.statement_try(
+                    SPAN,
+                    self.statement_to_block(try_block),
+                    Some(catch_clause),
+                    None::<ArenaBox<'a, oxc::BlockStatement<'a>>>,
+                ));
+                Ok(())
+            }
+            ReactiveTerminal::Label { block, .. } => {
+                // The label wrapping (if any) is applied by the caller based on
+                // the terminal statement's `label`. Here we flatten the block.
+                self.codegen_block(block, out)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Codegen a block into a single `BlockStatement`.
+    fn codegen_block_as_block_stmt(&mut self, block: &ReactiveBlock) -> Bail<oxc::Statement<'a>> {
+        let mut stmts = Vec::new();
+        self.codegen_block(block, &mut stmts)?;
+        Ok(self.b.statement_block(SPAN, self.b.vec_from_iter(stmts)))
+    }
+
+    /// Unwrap a `Statement::BlockStatement` into the owned `BlockStatement`
+    /// (try/catch builders require `BlockStatement`, not `Statement`).
+    fn statement_to_block(
+        &self,
+        stmt: oxc::Statement<'a>,
+    ) -> ArenaBox<'a, oxc::BlockStatement<'a>> {
+        match stmt {
+            oxc::Statement::BlockStatement(b) => b,
+            other => {
+                let mut v = self.b.vec();
+                v.push(other);
+                self.b.alloc(self.b.block_statement(SPAN, v))
+            }
+        }
+    }
+
+    /// Build a `ForStatementInit` from a For-loop `init` ReactiveValue.
+    /// A sequence init is folded into a single VariableDeclaration; otherwise
+    /// the init is emitted as an expression.
+    fn codegen_for_init(&mut self, init: &ReactiveValue) -> Bail<oxc::ForStatementInit<'a>> {
+        if let ReactiveValue::SequenceExpression { instructions, .. } = init {
+            // Emit the instructions as statements, then fold into a single
+            // `let`/`const` declaration (matching the reference's logic).
+            let mut stmts: Vec<oxc::Statement<'a>> = Vec::new();
+            for instr in instructions {
+                self.codegen_instruction(instr, &mut stmts)?;
+            }
+            let decl = self.fold_for_init_statements(stmts)?;
+            return Ok(oxc::ForStatementInit::VariableDeclaration(
+                self.b.alloc(decl),
+            ));
+        }
+        let expr = self.codegen_value(init)?;
+        Ok(oxc::ForStatementInit::from(expr))
+    }
+
+    /// Fold the statements produced by a for-init sequence into one variable
+    /// declaration. Handles the `let i; i = 0` -> `let i = 0` re-association the
+    /// reference performs, and merges multiple declarators.
+    fn fold_for_init_statements(
+        &self,
+        stmts: Vec<oxc::Statement<'a>>,
+    ) -> Bail<oxc::VariableDeclaration<'a>> {
+        let mut declarators: Vec<oxc::VariableDeclarator<'a>> = Vec::new();
+        let mut any_let = false;
+        for stmt in stmts {
+            match stmt {
+                oxc::Statement::VariableDeclaration(decl) => {
+                    let decl = decl.unbox();
+                    if matches!(decl.kind, oxc::VariableDeclarationKind::Let) {
+                        any_let = true;
+                    }
+                    for d in decl.declarations {
+                        declarators.push(d);
+                    }
+                }
+                oxc::Statement::ExpressionStatement(es) => {
+                    // `i = expr;` — fold RHS into the matching last declarator
+                    // whose init is None.
+                    let es = es.unbox();
+                    if let oxc::Expression::AssignmentExpression(assign) = es.expression {
+                        let assign = assign.unbox();
+                        if let oxc::AssignmentTarget::AssignmentTargetIdentifier(target) =
+                            &assign.left
+                        {
+                            let name = target.name.as_str().to_string();
+                            if let Some(d) = declarators.iter_mut().rev().find(|d| {
+                                d.init.is_none()
+                                    && binding_pattern_name(&d.id) == Some(name.as_str())
+                            }) {
+                                d.init = Some(assign.right);
+                                continue;
+                            }
+                        }
+                        bail!("for-init: unfoldable assignment");
+                    }
+                    bail!("for-init: non-assignment expression statement");
+                }
+                _ => bail!("for-init: unexpected statement kind"),
+            }
+        }
+        if declarators.is_empty() {
+            bail!("for-init: empty declarators");
+        }
+        let kind = if any_let {
+            oxc::VariableDeclarationKind::Let
+        } else {
+            oxc::VariableDeclarationKind::Const
+        };
+        Ok(self
+            .b
+            .variable_declaration(SPAN, kind, self.b.vec_from_iter(declarators), false))
+    }
+
+    /// Get the instructions of a sequence ReactiveValue (for for-in/of inits).
+    fn sequence_instructions<'b>(
+        &self,
+        value: &'b ReactiveValue,
+    ) -> Bail<&'b [react_compiler_hir::reactive::ReactiveInstruction]> {
+        match value {
+            ReactiveValue::SequenceExpression { instructions, .. } => Ok(instructions),
+            _ => bail!("expected sequence expression"),
+        }
+    }
+
+    /// Build a ReactiveValue expression for the for-in iterable.
+    fn instruction_value_expr(&mut self, value: &ReactiveValue) -> Bail<oxc::Expression<'a>> {
+        self.codegen_value(value)
+    }
+
+    /// Extract the `for (LEFT of/in ...)` left side from the item instruction
+    /// value (StoreLocal or Destructure).
+    fn extract_for_in_of_left(&mut self, value: &ReactiveValue) -> Bail<oxc::ForStatementLeft<'a>> {
+        let iv = match value {
+            ReactiveValue::Instruction(iv) => iv,
+            _ => bail!("for-in/of left is not an instruction"),
+        };
+        match iv {
+            InstructionValue::StoreLocal { lvalue, .. } => {
+                let kind = var_decl_kind(lvalue.kind)?;
+                let name = self.place_name(&lvalue.place)?;
+                let decl_id = self.decl_id(&lvalue.place);
+                self.declared.insert(decl_id);
+                let pat = self.binding_pattern(&name);
+                let declarator = self.b.variable_declarator(
+                    SPAN,
+                    kind,
+                    pat,
+                    None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+                    None,
+                    false,
+                );
+                let mut decls = self.b.vec();
+                decls.push(declarator);
+                let decl = self.b.variable_declaration(SPAN, kind, decls, false);
+                Ok(oxc::ForStatementLeft::VariableDeclaration(
+                    self.b.alloc(decl),
+                ))
+            }
+            InstructionValue::Destructure { lvalue, .. } => {
+                let kind = var_decl_kind(lvalue.kind)?;
+                let pat = self.binding_pattern_from_pattern(&lvalue.pattern, lvalue.kind)?;
+                let declarator = self.b.variable_declarator(
+                    SPAN,
+                    kind,
+                    pat,
+                    None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+                    None,
+                    false,
+                );
+                let mut decls = self.b.vec();
+                decls.push(declarator);
+                let decl = self.b.variable_declaration(SPAN, kind, decls, false);
+                Ok(oxc::ForStatementLeft::VariableDeclaration(
+                    self.b.alloc(decl),
+                ))
+            }
+            _ => bail!("for-in/of left is not a StoreLocal or Destructure"),
         }
     }
 
@@ -743,13 +1391,91 @@ impl<'a, 'e> Cx<'a, 'e> {
                 let a = self.codegen_value(alternate)?;
                 Ok(self.b.expression_conditional(SPAN, t, c, a))
             }
-            ReactiveValue::SequenceExpression { .. } => {
-                bail!("sequence expression not yet supported")
+            ReactiveValue::SequenceExpression {
+                instructions,
+                value,
+                ..
+            } => {
+                // Emit the sequence's instructions; most resolve to inline
+                // temporaries (emitting no statement). Any statement-producing
+                // instruction becomes a comma-expression operand.
+                let mut exprs: Vec<oxc::Expression<'a>> = Vec::new();
+                for instr in instructions {
+                    let mut stmts = Vec::new();
+                    self.codegen_instruction(instr, &mut stmts)?;
+                    for stmt in stmts {
+                        match stmt {
+                            oxc::Statement::ExpressionStatement(es) => {
+                                exprs.push(es.unbox().expression);
+                            }
+                            _ => bail!("sequence: non-expression statement"),
+                        }
+                    }
+                }
+                let final_expr = self.codegen_value(value)?;
+                if exprs.is_empty() {
+                    Ok(final_expr)
+                } else {
+                    exprs.push(final_expr);
+                    Ok(self
+                        .b
+                        .expression_sequence(SPAN, self.b.vec_from_iter(exprs)))
+                }
             }
-            ReactiveValue::OptionalExpression { .. } => {
-                bail!("optional expression not yet supported")
+            ReactiveValue::OptionalExpression {
+                value, optional, ..
+            } => {
+                let inner = self.codegen_value(value)?;
+                self.to_optional(inner, *optional)
             }
         }
+    }
+
+    /// Promote a member/call expression to its optional variant (`a?.b`,
+    /// `a?.()`), or wrap in a chain expression as needed.
+    fn to_optional(&self, expr: oxc::Expression<'a>, optional: bool) -> Bail<oxc::Expression<'a>> {
+        match expr {
+            oxc::Expression::StaticMemberExpression(m) => {
+                let mut m = m.unbox();
+                m.optional = optional;
+                let mem = oxc::MemberExpression::StaticMemberExpression(self.b.alloc(m));
+                Ok(self.wrap_chain(mem))
+            }
+            oxc::Expression::ComputedMemberExpression(m) => {
+                let mut m = m.unbox();
+                m.optional = optional;
+                let mem = oxc::MemberExpression::ComputedMemberExpression(self.b.alloc(m));
+                Ok(self.wrap_chain(mem))
+            }
+            oxc::Expression::CallExpression(c) => {
+                let mut c = c.unbox();
+                c.optional = optional;
+                let chain = oxc::ChainElement::CallExpression(self.b.alloc(c));
+                Ok(oxc::Expression::ChainExpression(
+                    self.b.alloc(self.b.chain_expression(SPAN, chain)),
+                ))
+            }
+            oxc::Expression::ChainExpression(c) => {
+                // Already a chain (nested optional) — pass through.
+                Ok(oxc::Expression::ChainExpression(c))
+            }
+            _ => bail!("optional expression on non-member/call"),
+        }
+    }
+
+    fn wrap_chain(&self, mem: oxc::MemberExpression<'a>) -> oxc::Expression<'a> {
+        let elem = match mem {
+            oxc::MemberExpression::StaticMemberExpression(m) => {
+                oxc::ChainElement::StaticMemberExpression(m)
+            }
+            oxc::MemberExpression::ComputedMemberExpression(m) => {
+                oxc::ChainElement::ComputedMemberExpression(m)
+            }
+            oxc::MemberExpression::PrivateFieldExpression(m) => {
+                oxc::ChainElement::PrivateFieldExpression(m)
+            }
+        };
+        oxc::Expression::ChainExpression(self.b.alloc(self.b.chain_expression(SPAN, elem)))
     }
 
     fn codegen_instruction_value(&mut self, iv: &InstructionValue) -> Bail<oxc::Expression<'a>> {
@@ -838,8 +1564,186 @@ impl<'a, 'e> Cx<'a, 'e> {
                     .b
                     .expression_string_literal(SPAN, self.atom(value), None))
             }
+            InstructionValue::NewExpression { callee, args, .. } => {
+                let callee_expr = self.place_expr(callee)?;
+                let arguments = self.arguments(args)?;
+                Ok(self.b.expression_new(
+                    SPAN,
+                    callee_expr,
+                    None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+                    arguments,
+                ))
+            }
+            InstructionValue::PropertyStore {
+                object,
+                property,
+                value,
+                ..
+            } => {
+                let obj = self.place_expr(object)?;
+                let target = self.member_assignment_target(obj, property);
+                let val = self.place_expr(value)?;
+                Ok(self.b.expression_assignment(
+                    SPAN,
+                    oxc_syntax::operator::AssignmentOperator::Assign,
+                    target,
+                    val,
+                ))
+            }
+            InstructionValue::ComputedStore {
+                object,
+                property,
+                value,
+                ..
+            } => {
+                let obj = self.place_expr(object)?;
+                let prop = self.place_expr(property)?;
+                let mem = self.b.computed_member_expression(SPAN, obj, prop, false);
+                let target = oxc::AssignmentTarget::ComputedMemberExpression(self.b.alloc(mem));
+                let val = self.place_expr(value)?;
+                Ok(self.b.expression_assignment(
+                    SPAN,
+                    oxc_syntax::operator::AssignmentOperator::Assign,
+                    target,
+                    val,
+                ))
+            }
+            InstructionValue::StoreGlobal { name, value, .. } => {
+                let target = self.assignment_target_identifier(name);
+                let val = self.place_expr(value)?;
+                Ok(self.b.expression_assignment(
+                    SPAN,
+                    oxc_syntax::operator::AssignmentOperator::Assign,
+                    target,
+                    val,
+                ))
+            }
+            InstructionValue::TemplateLiteral {
+                subexprs, quasis, ..
+            } => self.template_literal(subexprs, quasis),
+            InstructionValue::TaggedTemplateExpression { tag, value, .. } => {
+                let tag_expr = self.place_expr(tag)?;
+                // A tagged template's lowered value carries a single quasi.
+                let quasi = self.single_quasi_template(value);
+                Ok(self.b.expression_tagged_template(
+                    SPAN,
+                    tag_expr,
+                    None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+                    quasi,
+                ))
+            }
+            InstructionValue::Await { value, .. } => {
+                let v = self.place_expr(value)?;
+                Ok(self.b.expression_await(SPAN, v))
+            }
+            InstructionValue::FunctionExpression {
+                name,
+                lowered_func,
+                expr_type,
+                ..
+            } => self.function_expression(name, lowered_func, *expr_type),
             other => bail!("instruction value not yet supported: {}", iv_kind(other)),
         }
+    }
+
+    /// Codegen a nested function expression / arrow. Builds the lowered HIR
+    /// function into a reactive function, prunes it, then recursively codegens
+    /// it (inheriting the outer inline-temporary table so captured temporaries
+    /// resolve).
+    fn function_expression(
+        &mut self,
+        name: &Option<String>,
+        lowered_func: &react_compiler_hir::LoweredFunction,
+        expr_type: FunctionExpressionType,
+    ) -> Bail<oxc::Expression<'a>> {
+        let hir = &self.env.functions[lowered_func.func.0 as usize];
+        let mut reactive_fn =
+            crate::build_reactive_function::build_reactive_function(hir, self.env)
+                .map_err(|_| CodegenBail::new("nested function: build_reactive_function failed"))?;
+        crate::prune_unused_labels::prune_unused_labels(&mut reactive_fn, self.env)
+            .map_err(|_| CodegenBail::new("nested function: prune_unused_labels failed"))?;
+        crate::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn, self.env);
+        crate::prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn, self.env)
+            .map_err(|_| CodegenBail::new("nested function: prune_hoisted_contexts failed"))?;
+
+        // Recurse. The nested function shares this Cx (arena, temp table,
+        // declared set) and gets its own cache numbering.
+        let (function, _nested_cache) = self.codegen_function(&reactive_fn)?;
+
+        match expr_type {
+            FunctionExpressionType::ArrowFunctionExpression => {
+                Ok(self.build_arrow_from_function(function, &reactive_fn))
+            }
+            _ => {
+                // Function expression: keep the name (if any) for the binding id.
+                let mut function = function;
+                function.r#type = oxc::FunctionType::FunctionExpression;
+                function.id = name
+                    .as_ref()
+                    .map(|n| self.b.binding_identifier(SPAN, self.atom(n)));
+                Ok(oxc::Expression::FunctionExpression(self.b.alloc(function)))
+            }
+        }
+    }
+
+    /// Convert a built `oxc::Function` into an arrow expression, applying the
+    /// single-return-statement -> expression-body optimization.
+    fn build_arrow_from_function(
+        &self,
+        function: oxc::Function<'a>,
+        reactive_fn: &ReactiveFunction,
+    ) -> oxc::Expression<'a> {
+        let params = function.params.unbox();
+        let is_async = function.r#async;
+        let body = function
+            .body
+            .expect("function body present after codegen_function")
+            .unbox();
+        let directives = body.directives;
+        let statements = body.statements;
+
+        // Single-return optimization: `() => { return X; }` becomes `() => X`,
+        // only when there are no directives and the sole statement is a return
+        // with an argument.
+        let single_return_arg = if statements.len() == 1
+            && directives.is_empty()
+            && reactive_fn.directives.is_empty()
+        {
+            matches!(statements.first(), Some(oxc::Statement::ReturnStatement(r)) if r.argument.is_some())
+        } else {
+            false
+        };
+
+        if single_return_arg {
+            let mut statements = statements;
+            if let oxc::Statement::ReturnStatement(ret) = statements.pop().unwrap() {
+                let arg = ret.unbox().argument.unwrap();
+                let mut v = self.b.vec();
+                v.push(self.b.statement_expression(SPAN, arg));
+                let fn_body = self.b.function_body(SPAN, self.b.vec(), v);
+                return self.b.expression_arrow_function(
+                    SPAN,
+                    true,
+                    is_async,
+                    None::<ArenaBox<'a, oxc::TSTypeParameterDeclaration<'a>>>,
+                    params,
+                    None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+                    fn_body,
+                );
+            }
+            unreachable!();
+        }
+
+        let fn_body = self.b.function_body(SPAN, directives, statements);
+        self.b.expression_arrow_function(
+            SPAN,
+            false,
+            is_async,
+            None::<ArenaBox<'a, oxc::TSTypeParameterDeclaration<'a>>>,
+            params,
+            None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+            fn_body,
+        )
     }
 
     /// Build the callee for a `MethodCall`. The `property` Place is a
@@ -861,6 +1765,75 @@ impl<'a, 'e> Cx<'a, 'e> {
         Ok(oxc::Expression::ComputedMemberExpression(self.b.alloc(
             self.b.computed_member_expression(SPAN, obj, prop, false),
         )))
+    }
+
+    /// Build an assignment target for `object.property` / `object[number]`.
+    fn member_assignment_target(
+        &self,
+        object: oxc::Expression<'a>,
+        property: &PropertyLiteral,
+    ) -> oxc::AssignmentTarget<'a> {
+        match property {
+            PropertyLiteral::String(name) => {
+                let mem = self.b.static_member_expression(
+                    SPAN,
+                    object,
+                    self.b.identifier_name(SPAN, self.atom(name)),
+                    false,
+                );
+                oxc::AssignmentTarget::StaticMemberExpression(self.b.alloc(mem))
+            }
+            PropertyLiteral::Number(n) => {
+                let prop = self.b.expression_numeric_literal(
+                    SPAN,
+                    n.value(),
+                    None,
+                    oxc::NumberBase::Decimal,
+                );
+                let mem = self.b.computed_member_expression(SPAN, object, prop, false);
+                oxc::AssignmentTarget::ComputedMemberExpression(self.b.alloc(mem))
+            }
+        }
+    }
+
+    /// Build a `TemplateLiteral` expression from quasis + subexprs.
+    fn template_literal(
+        &mut self,
+        subexprs: &[Place],
+        quasis: &[TemplateQuasi],
+    ) -> Bail<oxc::Expression<'a>> {
+        let template = self.build_template(subexprs, quasis)?;
+        Ok(oxc::Expression::TemplateLiteral(self.b.alloc(template)))
+    }
+
+    fn build_template(
+        &mut self,
+        subexprs: &[Place],
+        quasis: &[TemplateQuasi],
+    ) -> Bail<oxc::TemplateLiteral<'a>> {
+        let mut elems = self.b.vec();
+        let last = quasis.len().saturating_sub(1);
+        for (i, q) in quasis.iter().enumerate() {
+            let raw = self.atom(&q.raw);
+            let cooked = q.cooked.as_ref().map(|c| self.atom(c));
+            let value = oxc::TemplateElementValue { raw, cooked };
+            elems.push(self.b.template_element(SPAN, value, i == last, false));
+        }
+        let mut exprs = self.b.vec();
+        for s in subexprs {
+            exprs.push(self.place_expr(s)?);
+        }
+        Ok(self.b.template_literal(SPAN, elems, exprs))
+    }
+
+    /// Build a single-quasi `TemplateLiteral` for a tagged template.
+    fn single_quasi_template(&self, value: &TemplateQuasi) -> oxc::TemplateLiteral<'a> {
+        let raw = self.atom(&value.raw);
+        let cooked = value.cooked.as_ref().map(|c| self.atom(c));
+        let tv = oxc::TemplateElementValue { raw, cooked };
+        let mut elems = self.b.vec();
+        elems.push(self.b.template_element(SPAN, tv, true, false));
+        self.b.template_literal(SPAN, elems, self.b.vec())
     }
 
     fn member(
@@ -1325,6 +2298,72 @@ fn iv_kind(iv: &InstructionValue) -> &'static str {
     }
 }
 
+/// Label name for a break/continue/labeled target (mirrors `codegen_label`).
+fn codegen_label(id: react_compiler_hir::BlockId) -> String {
+    format!("bb{}", id.0)
+}
+
+/// Whether an expression is the bare `undefined` identifier.
+fn is_undefined_identifier(expr: &oxc::Expression) -> bool {
+    matches!(expr, oxc::Expression::Identifier(id) if id.name.as_str() == "undefined")
+}
+
+/// Collect all binding Places of a pattern (recursing into nested patterns is
+/// unnecessary here: HIR destructure patterns are one level — nested object/
+/// array patterns are lowered to separate Destructure instructions).
+fn collect_pattern_places(pattern: &Pattern, out: &mut Vec<Place>) {
+    match pattern {
+        Pattern::Array(arr) => {
+            for item in &arr.items {
+                match item {
+                    ArrayPatternElement::Place(p) => out.push(p.clone()),
+                    ArrayPatternElement::Spread(s) => out.push(s.place.clone()),
+                    ArrayPatternElement::Hole => {}
+                }
+            }
+        }
+        Pattern::Object(obj) => {
+            for prop in &obj.properties {
+                match prop {
+                    ObjectPropertyOrSpread::Property(p) => out.push(p.place.clone()),
+                    ObjectPropertyOrSpread::Spread(s) => out.push(s.place.clone()),
+                }
+            }
+        }
+    }
+}
+
+/// Whether an object-pattern key matches the bound value name (shorthand form).
+fn object_key_matches_name(key: &ObjectPropertyKey, value_name: &str) -> bool {
+    match key {
+        ObjectPropertyKey::Identifier { name } | ObjectPropertyKey::String { name } => {
+            name == value_name
+        }
+        _ => false,
+    }
+}
+
+/// Map an `InstructionKind` to a `VariableDeclarationKind` for for-in/of lefts.
+fn var_decl_kind(kind: InstructionKind) -> Bail<oxc::VariableDeclarationKind> {
+    match kind {
+        InstructionKind::Const | InstructionKind::HoistedConst => {
+            Ok(oxc::VariableDeclarationKind::Const)
+        }
+        InstructionKind::Let | InstructionKind::HoistedLet => Ok(oxc::VariableDeclarationKind::Let),
+        _ => bail!("invalid for-in/of binding kind"),
+    }
+}
+
+/// Extract the single binding-identifier name from a binding pattern (used by
+/// the for-init folding to match `let i; i = 0`).
+fn binding_pattern_name<'a>(pat: &'a oxc::BindingPattern<'a>) -> Option<&'a str> {
+    match pat {
+        oxc::BindingPattern::BindingIdentifier(id) => Some(id.name.as_str()),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]
 fn terminal_kind(t: &ReactiveTerminal) -> &'static str {
     match t {
         ReactiveTerminal::Break { .. } => "Break",
