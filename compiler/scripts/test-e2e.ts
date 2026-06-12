@@ -101,7 +101,7 @@ function discoverFixtures(rootPath: string): string[] {
 console.log('Building Rust native module and e2e CLI...');
 try {
   execSync(
-    '~/.cargo/bin/cargo build -p react_compiler_napi -p react_compiler_e2e_cli',
+    'rustup run 1.92.0 cargo build -p react_compiler_napi -p react_compiler_e2e_cli',
     {
       cwd: path.join(REPO_ROOT, 'compiler/crates'),
       stdio: ['inherit', 'pipe', 'pipe'],
