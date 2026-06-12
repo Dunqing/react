@@ -86,7 +86,15 @@ oxc↔babel-AST conversion).
   (`chain_subtree_has_optional` recursion) + codegen_oxc (`to_optional`/`unchain`/`chain` flatten). Semantic oracle
   `compiler/scripts/compare-code.ts` committed (PRIMARY metric). **SEMANTIC-pass 1326→1337/1803 (74.2%)** = byte 801 +
   structural 536. Buckets: N-VAL 15, BAIL 202, OTHER 249. test-babel-ast.sh still 1787/1787.
-  - **N2.7**: achievable OTHER gaps (memo opt-out ~43, DCE/SSA, smaller ones); DEFER JSX-outlining (~111) + full SSR/gating.
+  - **N2.7**: diagnose+fix the ~75 upstream-PIPELINE errors (EnterSSA/Refs/destructure invariants on native HIR — real
+    lowering-fidelity or ported-pass bugs), then achievable OTHER gaps (memo opt-out ~43, DCE/SSA); DEFER JSX-outlining
+    (~111) + full SSR/gating + fbt (~22) + TypeCast (3).
+
+  **N2.6 ✅ (3114c4737f)** codegen_oxc +150L. BAIL 202→127, **SEMANTIC-pass 1337→1422 (78.9%)**, 0 regressions.
+  Implemented: early-return scope guard, object methods, optional dep paths, reassign-as-expr StoreLocal, spread params,
+  NextPropertyOf, Debugger. Of BAIL: **75 are upstream-PIPELINE errors (NOT codegen)** — EnterSSA hoisting / Refs
+  validation / destructure invariants tripping on native HIR; +26 Family-B optional/logical inlining; +22 fbt (deferred);
+  +3 TypeCast (deferred). OTHER 249→239, N-VAL 15.
   - **N-VAL**: port the 16 missing validation passes (+ any others surfaced) so Rust rejects what TS rejects.
   - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
     Babel NAPI/JSON; add oxc_linter Rule + transform API). Deferred features tracked in a handoff note.
