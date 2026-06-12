@@ -2052,17 +2052,65 @@ impl<'a, 'e> Cx<'a, 'e> {
         Ok(oxc::Expression::JSXFragment(self.b.alloc(frag)))
     }
 
-    fn jsx_element_name(&self, tag: &JsxTag) -> Bail<oxc::JSXElementName<'a>> {
+    fn jsx_element_name(&mut self, tag: &JsxTag) -> Bail<oxc::JSXElementName<'a>> {
         match tag {
             JsxTag::Builtin(builtin) => Ok(self
                 .b
                 .jsx_element_name_identifier(SPAN, self.atom(&builtin.name))),
             JsxTag::Place(place) => {
-                let name = self.place_name(place)?;
+                // The tag may be an unnamed temporary holding a member load
+                // (`<Foo.Bar>`); inline it via `place_expr` and convert the
+                // resulting expression to a JSX element name. Mirrors the
+                // reference's `expression_to_jsx_tag`.
+                let expr = self.place_expr(place)?;
+                self.expr_to_jsx_element_name(expr)
+            }
+        }
+    }
+
+    /// Convert an inlined tag expression (identifier or member chain) into a
+    /// `JSXElementName`. Mirrors the reference `expression_to_jsx_tag`.
+    fn expr_to_jsx_element_name(
+        &self,
+        expr: oxc::Expression<'a>,
+    ) -> Bail<oxc::JSXElementName<'a>> {
+        match expr {
+            oxc::Expression::Identifier(ident) => Ok(self
+                .b
+                .jsx_element_name_identifier_reference(SPAN, ident.unbox().name)),
+            oxc::Expression::StaticMemberExpression(m) => {
+                let m = m.unbox();
+                let object = self.expr_to_jsx_member_object(m.object)?;
+                let property = self.b.jsx_identifier(SPAN, m.property.name);
                 Ok(self
                     .b
-                    .jsx_element_name_identifier_reference(SPAN, self.atom(&name)))
+                    .jsx_element_name_member_expression(SPAN, object, property))
             }
+            _ => bail!("jsx tag expression is not an identifier or member chain"),
+        }
+    }
+
+    /// Convert the object side of a member-expression tag into a
+    /// `JSXMemberExpressionObject` (recursing for nested `A.B.C`).
+    fn expr_to_jsx_member_object(
+        &self,
+        expr: oxc::Expression<'a>,
+    ) -> Bail<oxc::JSXMemberExpressionObject<'a>> {
+        match expr {
+            oxc::Expression::Identifier(ident) => Ok(self
+                .b
+                .jsx_member_expression_object_identifier_reference(SPAN, ident.unbox().name)),
+            oxc::Expression::StaticMemberExpression(m) => {
+                let m = m.unbox();
+                let object = self.expr_to_jsx_member_object(m.object)?;
+                let property = self
+                    .b
+                    .jsx_identifier(SPAN, m.property.name);
+                Ok(self
+                    .b
+                    .jsx_member_expression_object_member_expression(SPAN, object, property))
+            }
+            _ => bail!("jsx member tag object is not an identifier or member chain"),
         }
     }
 
