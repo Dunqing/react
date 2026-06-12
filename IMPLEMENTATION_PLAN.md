@@ -136,8 +136,24 @@ oxc↔babel-AST conversion).
   (`jsx-preserve-whitespace.tsx`). Dominant remaining achievable OTHER: scattered single-cause (-0 const-prop, arrow
   concise-body passthrough, enableNameAnonymousFunctions pragma) — no large bucket left; the rest is deferred pragma
   features (gating 16, jsx-outlining 10, instrument 2, fbt 2, ssr 1).
-  - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
-    Babel NAPI/JSON; add oxc_linter Rule + transform API). Deferred features tracked in a handoff note.
+  **N2.11 ✅ (c742c5d734)** Ported suppression detection (build ranges from program.comments; was a TODO stub) +
+  dynamic-gating directive validation. **SEMANTIC-pass 1666→1673 (92.8%), N-VAL 15→8**, 0 false-positives. Remaining 8
+  N-VAL are lowering-Todos / inference-invariants (deferred, false-positive risk).
+
+  **=== FINALIZATION (N2.final + N3) — the core deliverable: delete react_compiler_ast ===**
+  Scoping recon: react_compiler_ast still used by — lowering/hir (TRIVIAL: only `scope::*` enums, ~6 refs → swap for
+  semantic_queries enums); react_compiler_reactive_scopes (dead `codegen_reactive_function.rs` + the OLD codegen STILL
+  CALLED at pipeline.rs:1072, `codegen_result` entangled); react_compiler_oxc (convert_ast_reverse, convert_scope,
+  apply_renames); react_compiler (5 files: CompileResult/codegen wiring). Steps:
+  - **N2.final-a**: stop running the old react_compiler_ast codegen (pipeline.rs:1072) — migrate any still-needed outputs
+    (memo stats?) to the native path, delete `codegen_reactive_function.rs`, drop react_compiler_ast from reactive_scopes.
+  - **N2.final-b**: swap lowering/hir `react_compiler_ast::scope::*` → `semantic_queries` enums; clear react_compiler uses.
+  - **N2.final-c**: delete `convert_ast_reverse.rs` + `convert_scope.rs` (+ apply_renames if unused) from react_compiler_oxc.
+  - **N3**: delete the `react_compiler_ast` crate; delete Babel NAPI bridge (`packages/babel-plugin-react-compiler-rust/native`
+    JSON `compile`) + bridge.ts + babel-ast-to-json.mjs; retire test-babel-ast.sh; add `oxc_linter::Rule` (ReactCompilerRule).
+  Validate each step: `cargo build` green + compare-code.ts SEMANTIC-pass ≥ 1673 (cleanup must not regress).
+  Handoff note for deferred: pragma features (gating/jsx-outlining/instrument/fbt/SSR ~31), fbt BAIL (~22), 8 N-VAL,
+  ~26 scattered single-cause OTHER (-0 const-prop, arrow concise-body, enableNameAnonymousFunctions, lone-surrogate, etc.).
 
   **N-VAL (parallelizable later)**: port missing TS validation passes (validateNoSetStateInEffects,
   validateNoJSXInTryStatements, rules-of-hooks, etc.) so the Rust pipeline rejects what TS rejects. Orthogonal to codegen.
