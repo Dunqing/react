@@ -122,6 +122,17 @@ MATCH once ALL its constructs are done) — also track "fixtures with zero Todo 
   Remaining 752 = real bails (un-transcribed; block codegen → must finish) + cosmetic order-diffs (compile fine → N2 settles).
   Plan: finish the real bails, then move to N2 (native codegen) and use the code oracle as truth — do NOT chase cosmetic HIR diffs.
   Next: N1.2.8 categorize the 752 + finish remaining real bails.
+- **Status**: Frontier analysis (752): only **~10 real bails** left (rare: update-expr ×3, TSEnumDeclaration ×2,
+  tagged-template, reassignment, Yield, MetaProperty, ClassExpression) → lowering transcription is essentially DONE.
+  **742 lower fully** but HIR differs; sample (51): ~7 pure-renumber, ~44 have a real HIR delta. The HIR oracle
+  CANNOT determine if these compile identically (downstream DCE/const-prop/etc. normalize benign lowering deltas
+  before codegen). → The HIR oracle has reached its useful limit; the CODE oracle (test-e2e --variant oxc) is now
+  the right measure. **DECISION POINT (N2 approach):** re-enable code output to measure true correctness.
+  - Option A (validate-first): reuse existing HIR→react_compiler_ast codegen + kept `convert_ast_reverse`
+    (react_compiler_ast→oxc) + oxc_codegen to print; run test-e2e --variant oxc NOW to see true pass rate.
+    Fast, reuses code, but transiently uses convert_ast_reverse (an output-side bridge, deleted in full native codegen).
+  - Option B (no-bridge-ever): go straight to full native codegen (HIR→oxc_ast via AstBuilder); validate only after.
+  Real bails (~10) finished opportunistically either way.
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
