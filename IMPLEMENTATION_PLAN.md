@@ -114,6 +114,14 @@ MATCH once ALL its constructs are done) — also track "fixtures with zero Todo 
   invariant resolved. oxc binding-family vs assignment-target-family are SEPARATE trees (two entry points).
   Frontier: JSX 589 (~47%); remaining ~655 are downstream semantic divergences (mutable-range/reactive-scope) —
   re-evaluate after JSX. catch-destructuring still bails (TS aborts there too). Next: N1.2.7 JSX.
+- **Status**: N1.2.7 ✅ (b136174be8) jsx.rs (~30KB), **MATCH 487→978/1783**, 0 regression (spot-checked + baseline
+  saved to compiler/oxc-hir-match-baseline.txt). **Frontier @ later-pass = 0** → once lowering matches, the whole
+  pipeline matches faithfully. KEY INSIGHT: the HIR oracle is STRICTER than correctness — some frontiers (e.g.
+  while-logical.js) are pure identifier/block-ID renumbering (isomorphic HIR, different alloc order) that compile to
+  IDENTICAL code. So 978 is a strict LOWER BOUND on correctness; the true measure is the e2e CODE oracle (returns in N2).
+  Remaining 752 = real bails (un-transcribed; block codegen → must finish) + cosmetic order-diffs (compile fine → N2 settles).
+  Plan: finish the real bails, then move to N2 (native codegen) and use the code oracle as truth — do NOT chase cosmetic HIR diffs.
+  Next: N1.2.8 categorize the 752 + finish remaining real bails.
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
