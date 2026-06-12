@@ -77,6 +77,10 @@ pub fn assemble_and_print(
             }
             Err(_bail) => {
                 // Graceful bail: leave this function uncompiled.
+                // For categorization tooling, optionally emit the bail reason.
+                if std::env::var("REACT_COMPILER_CODEGEN_BAIL_DEBUG").is_ok() {
+                    eprintln!("CODEGEN_BAIL: {}", _bail.reason);
+                }
             }
         }
     }

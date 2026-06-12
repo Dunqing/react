@@ -37,6 +37,7 @@ use oxc_span::SPAN;
 use oxc_syntax::operator::BinaryOperator as OxcBinOp;
 use oxc_syntax::operator::LogicalOperator as OxcLogOp;
 use oxc_syntax::operator::UnaryOperator as OxcUnOp;
+use oxc_syntax::operator::UpdateOperator as OxcUpOp;
 
 use react_compiler_hir::ArrayElement;
 use react_compiler_hir::ArrayPatternElement;
@@ -61,6 +62,7 @@ use react_compiler_hir::PropertyLiteral;
 use react_compiler_hir::ScopeId;
 use react_compiler_hir::TemplateQuasi;
 use react_compiler_hir::UnaryOperator;
+use react_compiler_hir::UpdateOperator;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::reactive::ReactiveBlock;
 use react_compiler_hir::reactive::ReactiveFunction;
@@ -1646,6 +1648,48 @@ impl<'a, 'e> Cx<'a, 'e> {
                 expr_type,
                 ..
             } => self.function_expression(name, lowered_func, *expr_type),
+            InstructionValue::PostfixUpdate {
+                operation, lvalue, ..
+            } => self.update_expression(*operation, lvalue, false),
+            InstructionValue::PrefixUpdate {
+                operation, lvalue, ..
+            } => self.update_expression(*operation, lvalue, true),
+            InstructionValue::PropertyDelete {
+                object, property, ..
+            } => {
+                // `delete obj.prop`
+                let obj = self.place_expr(object)?;
+                let member = self.member(obj, property);
+                Ok(self.b.expression_unary(SPAN, OxcUnOp::Delete, member))
+            }
+            InstructionValue::ComputedDelete {
+                object, property, ..
+            } => {
+                // `delete obj[prop]`
+                let obj = self.place_expr(object)?;
+                let prop = self.place_expr(property)?;
+                let member = oxc::Expression::ComputedMemberExpression(
+                    self.b
+                        .alloc(self.b.computed_member_expression(SPAN, obj, prop, false)),
+                );
+                Ok(self.b.expression_unary(SPAN, OxcUnOp::Delete, member))
+            }
+            InstructionValue::RegExpLiteral { pattern, flags, .. } => {
+                let parsed_flags = parse_regexp_flags(flags);
+                let regex = oxc::RegExp {
+                    pattern: oxc::RegExpPattern {
+                        text: self.atom(pattern),
+                        pattern: None,
+                    },
+                    flags: parsed_flags,
+                };
+                Ok(self.b.expression_reg_exp_literal(SPAN, regex, None))
+            }
+            InstructionValue::MetaProperty { meta, property, .. } => {
+                let meta_id = self.b.identifier_name(SPAN, self.atom(meta));
+                let property_id = self.b.identifier_name(SPAN, self.atom(property));
+                Ok(self.b.expression_meta_property(SPAN, meta_id, property_id))
+            }
             other => bail!("instruction value not yet supported: {}", iv_kind(other)),
         }
     }
@@ -1868,6 +1912,26 @@ impl<'a, 'e> Cx<'a, 'e> {
                 )
             }
         }
+    }
+
+    /// Build an `x++` / `x--` / `++x` / `--x` update expression. The lvalue is a
+    /// `Place` that resolves to a simple identifier target (mirrors the reference
+    /// codegen, where the argument is a Place rendered as an expression).
+    fn update_expression(
+        &self,
+        operation: UpdateOperator,
+        lvalue: &Place,
+        prefix: bool,
+    ) -> Bail<oxc::Expression<'a>> {
+        let name = self.place_name(lvalue)?;
+        let target = self
+            .b
+            .simple_assignment_target_assignment_target_identifier(SPAN, self.atom(&name));
+        let op = match operation {
+            UpdateOperator::Increment => OxcUpOp::Increment,
+            UpdateOperator::Decrement => OxcUpOp::Decrement,
+        };
+        Ok(self.b.expression_update(SPAN, op, prefix, target))
     }
 
     fn primitive(&self, value: &PrimitiveValue) -> Bail<oxc::Expression<'a>> {
@@ -2349,6 +2413,26 @@ fn iv_kind(iv: &InstructionValue) -> &'static str {
         InstructionValue::FinishMemoize { .. } => "FinishMemoize",
         InstructionValue::UnsupportedNode { .. } => "UnsupportedNode",
     }
+}
+
+/// Parse a regexp flags string (e.g. "gi") into oxc's `RegExpFlags` bitset.
+/// Mirrors `parse_regexp_flags` in `convert_ast_reverse`.
+fn parse_regexp_flags(flags_str: &str) -> oxc::RegExpFlags {
+    let mut flags = oxc::RegExpFlags::empty();
+    for ch in flags_str.chars() {
+        match ch {
+            'd' => flags |= oxc::RegExpFlags::D,
+            'g' => flags |= oxc::RegExpFlags::G,
+            'i' => flags |= oxc::RegExpFlags::I,
+            'm' => flags |= oxc::RegExpFlags::M,
+            's' => flags |= oxc::RegExpFlags::S,
+            'u' => flags |= oxc::RegExpFlags::U,
+            'v' => flags |= oxc::RegExpFlags::V,
+            'y' => flags |= oxc::RegExpFlags::Y,
+            _ => {}
+        }
+    }
+    flags
 }
 
 /// Label name for a break/continue/labeled target (mirrors `codegen_label`).
