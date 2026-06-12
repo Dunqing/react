@@ -4,10 +4,10 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# End-to-end test runner comparing the Rust compiler (Babel/NAPI bridge)
-# against the TS reference plugin.
+# End-to-end test runner for the compiler frontends (Babel, OXC).
+# (The SWC frontend has been removed.)
 #
-# Usage: bash compiler/scripts/test-e2e.sh [fixtures-path] [--variant babel] [--limit N] [--no-color]
+# Usage: bash compiler/scripts/test-e2e.sh [fixtures-path] [--variant babel|oxc] [--limit N] [--no-color]
 
 set -eo pipefail
 
