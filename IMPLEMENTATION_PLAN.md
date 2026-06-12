@@ -96,6 +96,13 @@ oxc↔babel-AST conversion).
   validation / destructure invariants tripping on native HIR; +26 Family-B optional/logical inlining; +22 fbt (deferred);
   +3 TypeCast (deferred). OTHER 249→239, N-VAL 15.
   - **N-VAL**: port the 16 missing validation passes (+ any others surfaced) so Rust rejects what TS rejects.
+
+  **N2.7 ✅ (54e4075881)** Real LOWERING bug found+fixed: native lowering never ported BuildHIR BlockStatement hoisting
+  (DeclareContext for Hoisted Const/Let/Function + mark as context idents). Cleared EnterSSA/InferMutationAliasing
+  invariants. Also fixed `'use no memo'`/`'use no forget'` opt-out (log+skip per-fn, not fatal-bail whole file).
+  **SEMANTIC-pass 1422→1446 (80.2%), HIR-MATCH 978→1009 (+31), BAIL 127→92**, 0 regressions, all tests + test-babel-ast.sh green.
+  - **N2.8 (next)**: re-categorize OTHER (~239), attack achievable correctness sub-buckets (memo-mismatch ~43, arrow-vs-fn
+    ~20); DEFER JSX-outlining (~111) + SSR/gating/instrumentation. Then N-VAL (15), Family-B inlining (BAIL ~26).
   - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
     Babel NAPI/JSON; add oxc_linter Rule + transform API). Deferred features tracked in a handoff note.
 
