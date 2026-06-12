@@ -15,6 +15,7 @@ react_compiler_ssa = { path = "../react_compiler_ssa" }
 react_compiler_typeinference = { path = "../react_compiler_typeinference" }
 react_compiler_validation = { path = "../react_compiler_validation" }
 oxc_ast = "0.121"
+oxc_ast_visit = "0.121"
 oxc_semantic = "0.121"
 oxc_span = "0.121"
 oxc_syntax = "0.121"

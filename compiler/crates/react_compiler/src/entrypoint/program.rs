@@ -22,6 +22,7 @@
 //! `// TODO(N1.3): ...`.
 
 use oxc_ast::ast as oxc;
+use oxc_ast_visit::Visit;
 use oxc_semantic::Semantic;
 use oxc_span::GetSpan;
 use oxc_span::Span;
@@ -91,18 +92,291 @@ fn is_component_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
-/// Classify a function by name. Returns `None` for names that are neither a
-/// component nor a hook (in `compilationMode: "all"` these still compile as
-/// `Other`, handled by the caller).
-fn classify_by_name(name: Option<&str>) -> Option<ReactFunctionType> {
+/// Classify a function, mirroring TS `getReactFunctionType` for the
+/// `compilationMode: "all"` / `"infer"` paths.
+///
+/// This ports `getComponentOrHookLike` (Program.ts ~1096): a component-named
+/// function is only a `Component` if it calls hooks or creates JSX in its own
+/// body, has valid component params, and does not return a non-node value; a
+/// hook-named function is only a `Hook` if it calls hooks or creates JSX. The
+/// final fallback differs by mode: when `compile_all` is true a `None` result
+/// becomes `Other`, otherwise it stays `None` (function is skipped).
+///
+/// (The `forwardRef`/`memo` callback branch of `getComponentOrHookLike` is not
+/// yet ported — current oxc discovery does not surface those anyway.)
+fn classify_function(
+    name: Option<&str>,
+    params: &oxc::FormalParameters,
+    body: &dyn FnBody,
+    compile_all: bool,
+) -> Option<ReactFunctionType> {
+    let result = get_component_or_hook_like(name, params, body);
+    match result {
+        Some(t) => Some(t),
+        None if compile_all => Some(ReactFunctionType::Other),
+        None => None,
+    }
+}
+
+/// Abstraction over the two function forms (`Function` / arrow) for the body
+/// heuristics. `walk_body` traverses the function's own statements (pruning
+/// nested functions); `concise_return` is the arrow expression-body return value
+/// (`() => expr`), or `None` for block bodies.
+trait FnBody {
+    /// The statements making up the function body (empty for a bodyless TS
+    /// declaration).
+    fn statements(&self) -> &[oxc::Statement<'_>];
+    /// For an arrow with a concise (expression) body, the returned expression;
+    /// `None` for block-bodied functions and arrows.
+    fn concise_return(&self) -> Option<&oxc::Expression<'_>>;
+}
+
+struct FunctionBodyRef<'a, 'b>(&'b oxc::Function<'a>);
+impl<'a, 'b> FnBody for FunctionBodyRef<'a, 'b> {
+    fn statements(&self) -> &[oxc::Statement<'_>] {
+        self.0.body.as_ref().map_or(&[], |b| b.statements.as_slice())
+    }
+    fn concise_return(&self) -> Option<&oxc::Expression<'_>> {
+        None
+    }
+}
+
+struct ArrowBodyRef<'a, 'b>(&'b oxc::ArrowFunctionExpression<'a>);
+impl<'a, 'b> FnBody for ArrowBodyRef<'a, 'b> {
+    fn statements(&self) -> &[oxc::Statement<'_>] {
+        self.0.body.statements.as_slice()
+    }
+    fn concise_return(&self) -> Option<&oxc::Expression<'_>> {
+        if !self.0.expression {
+            return None;
+        }
+        // A concise arrow body is parsed as a `FunctionBody` containing a single
+        // `ExpressionStatement` whose expression is the implicit return value.
+        match self.0.body.statements.first() {
+            Some(oxc::Statement::ExpressionStatement(stmt)) => Some(&stmt.expression),
+            _ => None,
+        }
+    }
+}
+
+/// Port of `getComponentOrHookLike` (Program.ts ~1096-1125). Returns the
+/// classification implied by name + body, or `None`.
+fn get_component_or_hook_like(
+    name: Option<&str>,
+    params: &oxc::FormalParameters,
+    body: &dyn FnBody,
+) -> Option<ReactFunctionType> {
     let name = name?;
     if is_component_name(name) {
-        Some(ReactFunctionType::Component)
+        let is_component = calls_hooks_or_creates_jsx(body)
+            && is_valid_component_params(params)
+            && !returns_non_node(body);
+        if is_component {
+            Some(ReactFunctionType::Component)
+        } else {
+            None
+        }
     } else if is_hook_name(name) {
-        Some(ReactFunctionType::Hook)
+        // Hooks have hook invocations or JSX, but can take any # of arguments.
+        if calls_hooks_or_creates_jsx(body) {
+            Some(ReactFunctionType::Hook)
+        } else {
+            None
+        }
     } else {
         None
     }
+}
+
+/// Port of `isHook` (Program.ts ~953) for an expression callee: a hook is either
+/// an identifier whose name matches `use[A-Z0-9]`, or a non-computed member
+/// expression `<PascalCaseNamespace>.useX`.
+fn is_hook_callee(callee: &oxc::Expression) -> bool {
+    match callee {
+        oxc::Expression::Identifier(ident) => is_hook_name(&ident.name),
+        oxc::Expression::StaticMemberExpression(member) => {
+            // `!path.node.computed` is implied by `StaticMemberExpression`.
+            is_hook_name(&member.property.name)
+                && matches!(
+                    &member.object,
+                    oxc::Expression::Identifier(obj) if is_pascal_case_namespace(&obj.name)
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Matches the TS `/^[A-Z].*/` namespace check in `isHook`.
+fn is_pascal_case_namespace(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
+/// Port of `callsHooksOrCreatesJsx` (Program.ts ~1143): traverse the function's
+/// own body and return true if any JSX element/fragment is created or any call
+/// to a hook is found. Nested functions are pruned (their hooks/JSX do not
+/// count).
+fn calls_hooks_or_creates_jsx(body: &dyn FnBody) -> bool {
+    let mut visitor = HooksOrJsxVisitor { found: false };
+    visitor.visit_function_statements(body.statements());
+    visitor.found
+}
+
+struct HooksOrJsxVisitor {
+    found: bool,
+}
+
+impl HooksOrJsxVisitor {
+    fn visit_function_statements<'a>(&mut self, statements: &[oxc::Statement<'a>]) {
+        for stmt in statements {
+            if self.found {
+                return;
+            }
+            self.visit_statement(stmt);
+        }
+    }
+}
+
+impl<'a> Visit<'a> for HooksOrJsxVisitor {
+    fn visit_jsx_element(&mut self, _it: &oxc::JSXElement<'a>) {
+        self.found = true;
+    }
+
+    fn visit_jsx_fragment(&mut self, _it: &oxc::JSXFragment<'a>) {
+        self.found = true;
+    }
+
+    fn visit_call_expression(&mut self, call: &oxc::CallExpression<'a>) {
+        if self.found {
+            return;
+        }
+        if is_hook_callee(&call.callee) {
+            self.found = true;
+            return;
+        }
+        // Keep descending (arguments may contain JSX or further hook calls).
+        oxc_ast_visit::walk::walk_call_expression(self, call);
+    }
+
+    // Skip nested functions: hooks/JSX inside them do not count.
+    fn visit_function(&mut self, _func: &oxc::Function<'a>, _flags: oxc_semantic::ScopeFlags) {}
+    fn visit_arrow_function_expression(&mut self, _expr: &oxc::ArrowFunctionExpression<'a>) {}
+}
+
+/// Port of `isValidPropsAnnotation` (Program.ts ~1019). A param with no type
+/// annotation is valid; with a TS annotation it is invalid only for the listed
+/// "primitive-ish" types. (Flow annotations are not represented in oxc's
+/// `type_annotation` field, so only the TS branch is ported.)
+fn is_valid_props_annotation(param: &oxc::FormalParameter) -> bool {
+    let Some(annot) = &param.type_annotation else {
+        return true;
+    };
+    !matches!(
+        &annot.type_annotation,
+        oxc::TSType::TSArrayType(_)
+            | oxc::TSType::TSBigIntKeyword(_)
+            | oxc::TSType::TSBooleanKeyword(_)
+            | oxc::TSType::TSConstructorType(_)
+            | oxc::TSType::TSFunctionType(_)
+            | oxc::TSType::TSLiteralType(_)
+            | oxc::TSType::TSNeverKeyword(_)
+            | oxc::TSType::TSNumberKeyword(_)
+            | oxc::TSType::TSStringKeyword(_)
+            | oxc::TSType::TSSymbolKeyword(_)
+            | oxc::TSType::TSTupleType(_)
+    )
+}
+
+/// Port of `isValidComponentParams` (Program.ts ~1064).
+fn is_valid_component_params(params: &oxc::FormalParameters) -> bool {
+    let items = &params.items;
+    let has_rest = params.rest.is_some();
+    // Total param count, including a trailing rest element.
+    let total = items.len() + usize::from(has_rest);
+
+    if total == 0 {
+        return true;
+    }
+    if total > 2 {
+        return false;
+    }
+
+    // The first param: if there is at least one non-rest item, it is `items[0]`;
+    // otherwise the only param is the rest element.
+    if let Some(first) = items.first() {
+        if !is_valid_props_annotation(first) {
+            return false;
+        }
+    }
+
+    if total == 1 {
+        // A single rest param (`...props`) is not valid.
+        return !(items.is_empty() && has_rest);
+    }
+
+    // total == 2: the second param must be an identifier whose name looks like a
+    // ref. If the second slot is the rest element, it is not an identifier.
+    match items.get(1) {
+        Some(second) => match &second.pattern {
+            oxc::BindingPattern::BindingIdentifier(id) => {
+                id.name.contains("ref") || id.name.contains("Ref")
+            }
+            _ => false,
+        },
+        None => false,
+    }
+}
+
+/// Port of `isNonNode` (Program.ts ~1169): an absent argument is treated as a
+/// non-node, as are object/function/class/bigint/new expressions.
+fn is_non_node(expr: Option<&oxc::Expression>) -> bool {
+    let Some(expr) = expr else {
+        return true;
+    };
+    matches!(
+        expr.get_inner_expression(),
+        oxc::Expression::ObjectExpression(_)
+            | oxc::Expression::ArrowFunctionExpression(_)
+            | oxc::Expression::FunctionExpression(_)
+            | oxc::Expression::BigIntLiteral(_)
+            | oxc::Expression::ClassExpression(_)
+            | oxc::Expression::NewExpression(_)
+    )
+}
+
+/// Port of `returnsNonNode` (Program.ts ~1185). For a concise-body arrow the
+/// result is `isNonNode(body)`. Otherwise the body's return statements are
+/// traversed (pruning nested functions and object methods) and the LAST return
+/// seen wins (matching the TS overwrite-on-each-return behavior).
+fn returns_non_node(body: &dyn FnBody) -> bool {
+    if let Some(concise) = body.concise_return() {
+        return is_non_node(Some(concise));
+    }
+    let mut visitor = ReturnsNonNodeVisitor { value: false };
+    visitor.visit_function_statements(body.statements());
+    visitor.value
+}
+
+struct ReturnsNonNodeVisitor {
+    value: bool,
+}
+
+impl ReturnsNonNodeVisitor {
+    fn visit_function_statements<'a>(&mut self, statements: &[oxc::Statement<'a>]) {
+        for stmt in statements {
+            self.visit_statement(stmt);
+        }
+    }
+}
+
+impl<'a> Visit<'a> for ReturnsNonNodeVisitor {
+    fn visit_return_statement(&mut self, ret: &oxc::ReturnStatement<'a>) {
+        // TS overwrites on every return, so the last one encountered wins.
+        self.value = is_non_node(ret.argument.as_ref());
+    }
+
+    // Skip nested functions and their return statements.
+    fn visit_function(&mut self, _func: &oxc::Function<'a>, _flags: oxc_semantic::ScopeFlags) {}
+    fn visit_arrow_function_expression(&mut self, _expr: &oxc::ArrowFunctionExpression<'a>) {}
 }
 
 /// Discover the top-level functions to compile.
@@ -163,11 +437,12 @@ fn consider_function<'a>(
     let name = inferred_name
         .map(|s| s.to_string())
         .or_else(|| func.id.as_ref().map(|id| id.name.to_string()));
-    let fn_type = match classify_by_name(name.as_deref()) {
-        Some(t) => t,
-        None if compile_all => ReactFunctionType::Other,
-        None => return,
-    };
+    let fn_type =
+        match classify_function(name.as_deref(), &func.params, &FunctionBodyRef(func), compile_all)
+        {
+            Some(t) => t,
+            None => return,
+        };
     queue.push(CompileSource {
         func: FunctionForm::Function(func),
         fn_name: name,
@@ -189,9 +464,13 @@ fn consider_variable_declaration<'a>(
         let Some(init) = &decl.init else { continue };
         match init {
             oxc::Expression::ArrowFunctionExpression(arrow) => {
-                let fn_type = match classify_by_name(Some(&name)) {
+                let fn_type = match classify_function(
+                    Some(&name),
+                    &arrow.params,
+                    &ArrowBodyRef(arrow),
+                    compile_all,
+                ) {
                     Some(t) => t,
-                    None if compile_all => ReactFunctionType::Other,
                     None => continue,
                 };
                 queue.push(CompileSource {
@@ -245,8 +524,19 @@ pub fn compile_program(
     }
 
     // TODO(N1.3): port should_skip_compilation (existing runtime imports),
-    // restricted-import validation, suppressions, and module-scope opt-out
-    // directives to the oxc AST. Skipped for the N1.2 input flip.
+    // restricted-import validation, and suppressions to the oxc AST. Skipped
+    // for the N1.2 input flip.
+
+    // A top-level `'use no forget'` / `'use no memo'` (or custom opt-out)
+    // program directive disables memoization for the entire module: every
+    // function is still run through the pipeline (for validation) but its
+    // compiled output is discarded so the original source is kept. Mirrors
+    // `hasModuleScopeOptOut` in `Entrypoint/Program.ts`.
+    let has_module_scope_opt_out = react_compiler_lowering::find_directive_disabling_memoization(
+        program.directives.as_slice(),
+        options.custom_opt_out_directives.as_deref(),
+    )
+    .is_some();
 
     let compile_all = options.compilation_mode == "all";
 
@@ -255,7 +545,7 @@ pub fn compile_program(
         options.filename.clone(),
         options.source_code.clone(),
         Vec::new(), // suppressions: TODO(N1.3)
-        false,      // has_module_scope_opt_out: TODO(N1.3)
+        has_module_scope_opt_out,
     );
     context.set_source_filename(options.filename.clone());
     context.init_from_semantic(semantic);
@@ -267,6 +557,11 @@ pub fn compile_program(
     let queue = find_functions_to_compile(program, compile_all);
 
     for source in &queue {
+        // Record how many native artifacts existed before compiling this
+        // function so we can discard exactly the ones it produces (the main
+        // artifact plus any outlined-function artifacts) if it turns out to be
+        // opted out of compilation.
+        let artifacts_before = context.native_artifacts.len();
         match pipeline::compile_fn(
             &source.func,
             source.fn_name.as_deref(),
@@ -278,19 +573,55 @@ pub fn compile_program(
             &mut context,
         ) {
             Ok(codegen_fn) => {
-                context.log_event(LoggerEvent::CompileSuccess {
-                    fn_loc: span_to_logger_loc(
-                        source_text,
-                        source.fn_span,
-                        context.filename.clone(),
-                    ),
-                    fn_name: source.fn_name.clone(),
-                    memo_slots: codegen_fn.memo_slots_used,
-                    memo_blocks: codegen_fn.memo_blocks,
-                    memo_values: codegen_fn.memo_values,
-                    pruned_memo_blocks: codegen_fn.pruned_memo_blocks,
-                    pruned_memo_values: codegen_fn.pruned_memo_values,
-                });
+                // A function is left uncompiled (original source kept) when
+                // either the module carries a module-scope opt-out directive,
+                // or `ignore_use_no_forget` is false and the function body has
+                // an opt-out directive. The compiler still ran the function
+                // through the pipeline (for validation) — we just discard the
+                // compiled output. Mirrors `applyCompiledFunction`
+                // (`hasModuleScopeOptOut`) and `processFn` (`directives.optOut`)
+                // in `Entrypoint/Program.ts`.
+                let body_opt_out = react_compiler_lowering::find_directive_disabling_memoization(
+                    source.func.body_directives(),
+                    context.opts.custom_opt_out_directives.as_deref(),
+                );
+                let body_skip = !context.opts.ignore_use_no_forget && body_opt_out.is_some();
+                let skip_emit = has_module_scope_opt_out || body_skip;
+
+                let fn_loc =
+                    span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
+
+                if skip_emit {
+                    // Drop the artifacts this function just produced so source
+                    // assembly falls back to the original (uncompiled) source.
+                    context.native_artifacts.truncate(artifacts_before);
+                }
+
+                if body_skip {
+                    // TS logs a `CompileSkip` event for a body-level opt-out
+                    // directive (the `processFn` arm).
+                    let directive = body_opt_out
+                        .map(|d| d.expression.value.as_str())
+                        .unwrap_or_default();
+                    context.log_event(LoggerEvent::CompileSkip {
+                        fn_loc,
+                        reason: format!("Skipped due to '{directive}' directive."),
+                        loc: None,
+                    });
+                } else {
+                    // Module-scope opt-out still logs CompileSuccess in TS (the
+                    // skip happens later in `applyCompiledFunction`), as does a
+                    // normally-compiled function.
+                    context.log_event(LoggerEvent::CompileSuccess {
+                        fn_loc,
+                        fn_name: source.fn_name.clone(),
+                        memo_slots: codegen_fn.memo_slots_used,
+                        memo_blocks: codegen_fn.memo_blocks,
+                        memo_values: codegen_fn.memo_values,
+                        pruned_memo_blocks: codegen_fn.pruned_memo_blocks,
+                        pruned_memo_values: codegen_fn.pruned_memo_values,
+                    });
+                }
             }
             Err(err) => {
                 let fn_loc =
@@ -673,16 +1004,10 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_by_name() {
-        assert_eq!(
-            classify_by_name(Some("Foo")),
-            Some(ReactFunctionType::Component)
-        );
-        assert_eq!(
-            classify_by_name(Some("useThing")),
-            Some(ReactFunctionType::Hook)
-        );
-        assert_eq!(classify_by_name(Some("helper")), None);
-        assert_eq!(classify_by_name(None), None);
+    fn test_is_pascal_case_namespace() {
+        assert!(is_pascal_case_namespace("React"));
+        assert!(is_pascal_case_namespace("MyLib"));
+        assert!(!is_pascal_case_namespace("react"));
+        assert!(!is_pascal_case_namespace(""));
     }
 }
