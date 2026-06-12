@@ -1,91 +1,78 @@
-use react_compiler_ast::scope::ScopeInfo;
-use react_compiler_ast::statements::FunctionDeclaration;
-use react_compiler_hir::InstructionValue;
+//! An untranscribed statement inside a function body degrades gracefully: the
+//! oxc-direct lowering records a `Todo` diagnostic (caught by the fault-tolerant
+//! pipeline) rather than panicking, and still returns an `HirFunction`.
+//!
+//! Stage N1.2.1 only lowers the function shell + trivial constructs for real;
+//! everything else bails with a graceful `Todo`. This test pins that behavior.
+
+use oxc_allocator::Allocator;
+use oxc_parser::Parser;
+use oxc_semantic::SemanticBuilder;
+use oxc_span::SourceType;
+use react_compiler_diagnostics::ErrorCategory;
 use react_compiler_hir::environment::Environment;
-use react_compiler_lowering::{FunctionNode, lower};
-use serde_json::json;
+use react_compiler_lowering::{FunctionForm, lower};
 
-/// An unknown statement inside a function body degrades like the other
-/// unsupported-statement arms: an UnsupportedSyntax error is recorded and an
-/// UnsupportedNode instruction carries the raw node verbatim.
 #[test]
-fn unknown_statement_in_function_body_records_bailout() {
-    let unknown_node = json!({
-        "type": "TSFutureStatement",
-        "start": 40,
-        "end": 52,
-        "payload": { "type": "Identifier", "name": "x" }
-    });
-    let func: FunctionDeclaration = serde_json::from_value(json!({
-        "type": "FunctionDeclaration",
-        "start": 0,
-        "end": 60,
-        "id": { "type": "Identifier", "name": "useValue", "start": 9, "end": 17 },
-        "generator": false,
-        "async": false,
-        "params": [],
-        "body": {
-            "type": "BlockStatement",
-            "start": 20,
-            "end": 60,
-            "body": [unknown_node.clone()],
-            "directives": []
-        }
-    }))
-    .unwrap();
+fn unknown_statement_in_function_body_records_todo_bailout() {
+    // A `for` statement is not yet transcribed to the oxc path, so lowering it
+    // must record a graceful Todo and still produce HIR.
+    let source = "function useValue() {\n  for (;;) {}\n}\n";
 
-    let scope_info: ScopeInfo = serde_json::from_value(json!({
-        "scopes": [
-            { "id": 0, "parent": null, "kind": "program", "bindings": { "useValue": 0 } },
-            { "id": 1, "parent": 0, "kind": "function", "bindings": {} }
-        ],
-        "bindings": [
-            {
-                "id": 0,
-                "name": "useValue",
-                "kind": "hoisted",
-                "scope": 0,
-                "declarationType": "FunctionDeclaration"
-            }
-        ],
-        "nodeToScope": { "0": 1 },
-        "referenceToBinding": {},
-        "programScope": 0
-    }))
-    .unwrap();
+    let allocator = Allocator::default();
+    let source_type = SourceType::tsx();
+    let parsed = Parser::new(&allocator, source, source_type).parse();
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let semantic_ret = SemanticBuilder::new().build(&parsed.program);
+    assert!(
+        semantic_ret.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic_ret.errors
+    );
+    let semantic = semantic_ret.semantic;
+
+    // The first top-level statement is the function declaration.
+    let func = match parsed.program.body.first() {
+        Some(oxc_ast::ast::Statement::FunctionDeclaration(f)) => f,
+        other => panic!("expected a function declaration, got {other:?}"),
+    };
 
     let mut env = Environment::new();
     let result = lower(
-        &FunctionNode::FunctionDeclaration(&func),
-        None,
-        &scope_info,
+        &FunctionForm::Function(func),
+        Some("useValue"),
+        &semantic,
+        source,
         &mut env,
     );
 
-    assert!(
-        env.has_errors(),
-        "expected a recorded error, got result {result:?}"
-    );
-    let rendered = format!("{:?}", env.errors());
-    assert!(
-        rendered.contains("Unsupported statement kind 'TSFutureStatement'"),
-        "unexpected error payload: {rendered}"
-    );
+    let hir = result.expect("lowering degrades gracefully; it does not fail outright");
+    assert!(env.has_errors(), "expected a recorded Todo error");
 
-    let hir = result.expect("lowering degrades, it does not fail outright");
-    let unsupported = hir
-        .instructions
+    // The recorded error is a Todo (graceful bailout), not an Invariant/panic.
+    let has_todo = env
+        .errors()
+        .details
         .iter()
-        .find_map(|instr| match &instr.value {
-            InstructionValue::UnsupportedNode {
-                node_type,
-                original_node,
-                ..
-            } => Some((node_type.clone(), original_node.clone())),
-            _ => None,
-        })
-        .expect("expected an UnsupportedNode instruction");
+        .any(|d| match d {
+            react_compiler_diagnostics::CompilerErrorOrDiagnostic::Diagnostic(d) => {
+                d.category == ErrorCategory::Todo
+            }
+            react_compiler_diagnostics::CompilerErrorOrDiagnostic::ErrorDetail(d) => {
+                d.category == ErrorCategory::Todo
+            }
+        });
+    assert!(
+        has_todo,
+        "expected a Todo bailout, got: {:?}",
+        env.errors()
+    );
 
-    assert_eq!(unsupported.0.as_deref(), Some("TSFutureStatement"));
-    assert_eq!(unsupported.1, Some(unknown_node));
+    // The function shell still lowers (params/body block/return exist).
+    assert_eq!(hir.id.as_deref(), Some("useValue"));
+    assert!(
+        !hir.body.blocks.is_empty(),
+        "expected the function shell to produce at least one block"
+    );
 }

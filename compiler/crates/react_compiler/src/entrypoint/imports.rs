@@ -144,6 +144,18 @@ impl ProgramContext {
         }
     }
 
+    /// Initialize known referenced names directly from the oxc semantic model.
+    ///
+    /// Mirrors [`init_from_scope`] but reads every symbol name from oxc's
+    /// `Scoping` instead of a bridged `ScopeInfo`. Used by the oxc input path.
+    pub fn init_from_semantic(&mut self, semantic: &oxc_semantic::Semantic) {
+        let scoping = semantic.scoping();
+        for symbol_id in scoping.symbol_ids() {
+            self.known_referenced_names
+                .insert(scoping.symbol_name(symbol_id).to_string());
+        }
+    }
+
     /// Check if a name conflicts with known references.
     pub fn has_reference(&self, name: &str) -> bool {
         self.known_referenced_names.contains(name)

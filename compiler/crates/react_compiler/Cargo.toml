@@ -14,6 +14,10 @@ react_compiler_reactive_scopes = { path = "../react_compiler_reactive_scopes" }
 react_compiler_ssa = { path = "../react_compiler_ssa" }
 react_compiler_typeinference = { path = "../react_compiler_typeinference" }
 react_compiler_validation = { path = "../react_compiler_validation" }
+oxc_ast = "0.121"
+oxc_semantic = "0.121"
+oxc_span = "0.121"
+oxc_syntax = "0.121"
 indexmap = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

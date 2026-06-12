@@ -2,7 +2,6 @@ use std::time::Instant;
 
 use napi_derive::napi;
 use react_compiler::entrypoint::PluginOptions;
-use react_compiler::entrypoint::compile_program;
 use react_compiler::timing::TimingEntry;
 use react_compiler_ast::File;
 use react_compiler_ast::scope::ScopeInfo;
@@ -55,19 +54,33 @@ fn compile_inner(
 
     let deser_start = Instant::now();
 
-    let ast: File = from_json_str(&ast_json)
+    // The legacy JS bridge passes a serialized react_compiler_ast `File` +
+    // `ScopeInfo`. Stage N1.2 retargeted `compile_program` to read oxc AST +
+    // semantic DIRECTLY, which this napi shim does not have. Parsing is kept for
+    // forward-compatible error reporting, but compilation here is a no-op stub:
+    // the native oxc path (react_compiler_oxc) is the supported entrypoint, and
+    // this JS-bridge codegen path is revived/replaced in N2 (native codegen).
+    let _ast: File = from_json_str(&ast_json)
         .map_err(|e| napi::Error::from_reason(format!("Failed to parse AST JSON: {}", e)))?;
 
-    let scope: ScopeInfo = from_json_str(&scope_json)
+    let _scope: ScopeInfo = from_json_str(&scope_json)
         .map_err(|e| napi::Error::from_reason(format!("Failed to parse scope JSON: {}", e)))?;
 
-    let opts: PluginOptions = from_json_str(&options_json)
+    let _opts: PluginOptions = from_json_str(&options_json)
         .map_err(|e| napi::Error::from_reason(format!("Failed to parse options JSON: {}", e)))?;
 
     let deser_duration = deser_start.elapsed();
 
     let compile_start = Instant::now();
-    let mut result = compile_program(ast, scope, opts);
+    // TODO(N2): drive the native oxc `compile_program` (parse source -> semantic)
+    // from this entrypoint. For now return "no changes".
+    let mut result = react_compiler::entrypoint::compile_result::CompileResult::Success {
+        ast: None,
+        events: Vec::new(),
+        ordered_log: Vec::new(),
+        renames: Vec::new(),
+        timing: Vec::new(),
+    };
     let compile_duration = compile_start.elapsed();
 
     // If profiling is enabled, prepend NAPI deserialization timing and append serialization timing

@@ -1,5 +1,4 @@
 pub mod apply_renames;
-pub mod convert_ast;
 pub mod convert_ast_reverse;
 pub mod convert_scope;
 pub mod diagnostics;
@@ -7,9 +6,6 @@ pub mod prefilter;
 
 use std::collections::HashMap;
 
-use apply_renames::build_rename_plan;
-use convert_ast::convert_program;
-use convert_scope::convert_scope_info;
 use diagnostics::compile_result_to_diagnostics;
 use prefilter::has_react_like_functions;
 use react_compiler::entrypoint::compile_result::LoggerEvent;
@@ -57,42 +53,35 @@ pub fn transform(
         };
     }
 
-    // Convert OXC AST to react_compiler_ast
-    let file = convert_program(program, source_text);
-
-    // Convert OXC semantic to ScopeInfo
-    let scope_info = convert_scope_info(semantic, program);
-
-    // Run the compiler
+    // N1.2: run the compiler DIRECTLY against the oxc AST + semantic model
+    // (no react_compiler_ast / ScopeInfo bridge).
     let result =
-        react_compiler::entrypoint::program::compile_program(file, scope_info.clone(), options);
+        react_compiler::entrypoint::program::compile_program(program, semantic, source_text, options);
 
     let diagnostics = compile_result_to_diagnostics(&result);
-    let (program_ast, events, ordered_log, renames) = match result {
+    let (events, ordered_log, _renames) = match result {
         react_compiler::entrypoint::compile_result::CompileResult::Success {
-            ast,
             events,
             ordered_log,
             renames,
             ..
-        } => (ast, events, ordered_log, renames),
+        } => (events, ordered_log, renames),
         react_compiler::entrypoint::compile_result::CompileResult::Error {
             events,
             ordered_log,
             ..
-        } => (None, events, ordered_log, Vec::new()),
+        } => (events, ordered_log, Vec::new()),
     };
 
-    // Build the rename plan from the original scope info + compiler renames.
-    // This maps source positions to new identifier names for uncompiled code.
-    let rename_plan = build_rename_plan(&scope_info, &renames);
-
+    // N1.2: codegen / output reassembly is deferred to N2. `file` is None and
+    // the rename plan (which fixes references in uncompiled sibling code during
+    // emit) is empty; the HIR oracle (`ordered_log`) is the contract for now.
     TransformResult {
-        file: program_ast,
+        file: None,
         diagnostics,
         events,
         ordered_log,
-        rename_plan,
+        rename_plan: HashMap::new(),
     }
 }
 

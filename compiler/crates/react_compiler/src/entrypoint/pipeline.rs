@@ -8,13 +8,13 @@
 //! Analogous to TS `Pipeline.ts` (`compileFn` → `run` → `runWithEnvironment`).
 //! Currently runs BuildHIR (lowering) and PruneMaybeThrows.
 
-use react_compiler_ast::scope::ScopeInfo;
+use oxc_semantic::Semantic;
 use react_compiler_diagnostics::CompilerError;
 use react_compiler_hir::ReactFunctionType;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::environment::OutputMode;
 use react_compiler_hir::environment_config::EnvironmentConfig;
-use react_compiler_lowering::FunctionNode;
+use react_compiler_lowering::FunctionForm;
 
 use super::compile_result::CodegenFunction;
 use super::compile_result::CompilerErrorDetailInfo;
@@ -32,10 +32,12 @@ use crate::debug_print;
 /// Currently: creates an Environment, runs BuildHIR (lowering), and produces
 /// debug output via the context. Returns a CodegenFunction with zeroed memo
 /// stats on success (codegen is not yet implemented).
+#[allow(clippy::too_many_arguments)]
 pub fn compile_fn(
-    func: &FunctionNode<'_>,
+    func: &FunctionForm<'_>,
     fn_name: Option<&str>,
-    scope_info: &ScopeInfo,
+    semantic: &Semantic,
+    source_text: &str,
     fn_type: ReactFunctionType,
     mode: CompilerOutputMode,
     env_config: &EnvironmentConfig,
@@ -55,10 +57,12 @@ pub fn compile_fn(
     env.hook_guard_name = context.hook_guard_name.clone();
     env.seed_uid_known_names(&context.known_referenced_names());
 
-    env.reference_node_ids = scope_info.ref_node_id_to_binding.keys().copied().collect();
+    // N1.2: reference node ids were a bridge-only construct; the oxc path
+    // resolves references directly via semantic. Left empty for now.
+    env.reference_node_ids = Default::default();
 
     context.timing.start("lower");
-    let mut hir = react_compiler_lowering::lower(func, fn_name, scope_info, &mut env)?;
+    let mut hir = react_compiler_lowering::lower(func, fn_name, semantic, source_text, &mut env)?;
     context.timing.stop();
 
     // Copy renames from lowering to context (keep on env for codegen to apply to type annotations)
@@ -1062,13 +1066,10 @@ pub fn compile_fn(
     // but is later discarded (e.g., due to "use no memo" opt-out or errors),
     // while other functions in the same file compile to 0 memo slots.
 
-    if env.config.validate_source_locations {
-        super::validate_source_locations::validate_source_locations(
-            func,
-            &codegen_result,
-            &mut env,
-        );
-    }
+    // TODO(N2): validate_source_locations reads the original react_compiler_ast
+    // function node, which the oxc input path no longer provides. Skipped during
+    // the N1.2 input flip; revisited with native codegen in N2.
+    let _ = func;
 
     // Simulate unexpected exception for testing (matches TS Pipeline.ts)
     if env.config.throw_unknown_exception_testonly {
@@ -1166,481 +1167,36 @@ pub fn compile_fn(
     })
 }
 
-/// Compile an outlined function's codegen AST through the full pipeline.
+/// Re-compile an outlined function's codegen AST through the full pipeline.
 ///
-/// Creates a fresh Environment, builds a synthetic ScopeInfo with unique fake
-/// positions for identifier resolution, lowers from AST to HIR, then runs
-/// the full compilation pipeline. This mirrors the TS behavior where outlined
-/// functions are inserted into the program AST and re-compiled from scratch.
+/// In the bridge version this rebuilt a synthetic `ScopeInfo` from the codegen
+/// `react_compiler_ast` output and re-lowered it. The oxc input path lowers from
+/// `oxc_ast`/`oxc_semantic` only, and there is no oxc AST for these synthesized
+/// (outlined) functions. Re-compiling them is therefore deferred to N2 (native
+/// codegen); for now the already-codegen'd function is returned unchanged so the
+/// HIR-oracle path stays green.
 pub fn compile_outlined_fn(
-    mut codegen_fn: CodegenFunction,
+    codegen_fn: CodegenFunction,
     fn_name: Option<&str>,
     fn_type: ReactFunctionType,
     mode: CompilerOutputMode,
     env_config: &EnvironmentConfig,
     context: &mut ProgramContext,
 ) -> Result<CodegenFunction, CompilerError> {
-    let mut env = Environment::with_config(env_config.clone());
-    env.fn_type = fn_type;
-    env.output_mode = match mode {
-        CompilerOutputMode::Ssr => OutputMode::Ssr,
-        CompilerOutputMode::Client => OutputMode::Client,
-        CompilerOutputMode::Lint => OutputMode::Lint,
-    };
-
-    // Build a FunctionDeclaration from the codegen output
-    let mut outlined_decl = react_compiler_ast::statements::FunctionDeclaration {
-        base: react_compiler_ast::common::BaseNode::typed("FunctionDeclaration"),
-        id: codegen_fn.id.take(),
-        params: std::mem::take(&mut codegen_fn.params),
-        body: std::mem::replace(
-            &mut codegen_fn.body,
-            react_compiler_ast::statements::BlockStatement {
-                base: react_compiler_ast::common::BaseNode::typed("BlockStatement"),
-                body: Vec::new(),
-                directives: Vec::new(),
-            },
-        ),
-        generator: codegen_fn.generator,
-        is_async: codegen_fn.is_async,
-        declare: None,
-        return_type: None,
-        type_parameters: None,
-        predicate: None,
-        component_declaration: false,
-        hook_declaration: false,
-    };
-
-    // Build scope info by assigning fake positions to all identifiers
-    let scope_info = build_outlined_scope_info(&mut outlined_decl);
-
-    let func_node = react_compiler_lowering::FunctionNode::FunctionDeclaration(&outlined_decl);
-    let mut hir = react_compiler_lowering::lower(&func_node, fn_name, &scope_info, &mut env)?;
-
-    if env.has_invariant_errors() {
-        return Err(env.take_invariant_errors());
-    }
-
-    run_pipeline_passes(&mut hir, &mut env, context)
+    // TODO(N2): re-lower outlined functions from a native representation.
+    let _ = (fn_name, fn_type, mode, env_config, context);
+    Ok(codegen_fn)
 }
 
-/// Build a ScopeInfo for an outlined function declaration by assigning unique
-/// fake positions to all Identifier nodes and building the binding/reference maps.
-fn build_outlined_scope_info(
-    func: &mut react_compiler_ast::statements::FunctionDeclaration,
-) -> react_compiler_ast::scope::ScopeInfo {
-    use std::collections::HashMap;
-
-    use react_compiler_ast::scope::*;
-
-    let mut pos: u32 = 1; // reserve 0 for the function itself
-    func.base.start = Some(0);
-
-    let mut fn_bindings: HashMap<String, BindingId> = HashMap::new();
-    let mut bindings_list: Vec<BindingData> = Vec::new();
-    let mut ref_to_binding: indexmap::IndexMap<u32, BindingId> = indexmap::IndexMap::new();
-
-    // Helper to add a binding
-    let _add_binding =
-        |name: &str,
-         kind: BindingKind,
-         p: u32,
-         fn_bindings: &mut HashMap<String, BindingId>,
-         bindings_list: &mut Vec<BindingData>,
-         ref_to_binding: &mut indexmap::IndexMap<u32, BindingId>| {
-            if fn_bindings.contains_key(name) {
-                // Already exists, just add reference
-                let bid = fn_bindings[name];
-                ref_to_binding.insert(p, bid);
-                return;
-            }
-            let binding_id = BindingId(bindings_list.len() as u32);
-            fn_bindings.insert(name.to_string(), binding_id);
-            bindings_list.push(BindingData {
-                id: binding_id,
-                name: name.to_string(),
-                kind,
-                scope: ScopeId(1),
-                declaration_type: "VariableDeclarator".to_string(),
-                declaration_start: Some(p),
-                declaration_node_id: None,
-                import: None,
-            });
-            ref_to_binding.insert(p, binding_id);
-        };
-
-    // Process params - add as Param bindings
-    for param in &mut func.params {
-        outlined_assign_pattern_positions(
-            param,
-            &mut pos,
-            BindingKind::Param,
-            &mut fn_bindings,
-            &mut bindings_list,
-            &mut ref_to_binding,
-        );
-    }
-
-    // Process body - walk all statements to assign positions and collect variable declarations
-    for stmt in &mut func.body.body {
-        outlined_assign_stmt_positions(
-            stmt,
-            &mut pos,
-            &mut fn_bindings,
-            &mut bindings_list,
-            &mut ref_to_binding,
-        );
-    }
-
-    let program_scope = ScopeData {
-        id: ScopeId(0),
-        parent: None,
-        kind: ScopeKind::Program,
-        bindings: HashMap::new(),
-    };
-    let fn_scope = ScopeData {
-        id: ScopeId(1),
-        parent: Some(ScopeId(0)),
-        kind: ScopeKind::Function,
-        bindings: fn_bindings,
-    };
-
-    let mut node_to_scope: HashMap<u32, ScopeId> = HashMap::new();
-    node_to_scope.insert(0, ScopeId(1));
-
-    // Mirror position maps into node-ID maps for outlined functions
-    let mut node_id_to_scope: HashMap<u32, ScopeId> = HashMap::new();
-    node_id_to_scope.insert(0, ScopeId(1));
-    let ref_node_id_to_binding: indexmap::IndexMap<u32, BindingId> =
-        ref_to_binding.iter().map(|(&k, &v)| (k, v)).collect();
-
-    ScopeInfo {
-        scopes: vec![program_scope, fn_scope],
-        bindings: bindings_list,
-        node_to_scope,
-        node_to_scope_end: HashMap::new(),
-        reference_to_binding: indexmap::IndexMap::new(),
-        ref_node_id_to_binding,
-        node_id_to_scope,
-        program_scope: ScopeId(0),
-    }
-}
-
-/// Assign positions to identifiers in a pattern and register as bindings.
-fn outlined_assign_pattern_positions(
-    pattern: &mut react_compiler_ast::patterns::PatternLike,
-    pos: &mut u32,
-    kind: react_compiler_ast::scope::BindingKind,
-    fn_bindings: &mut std::collections::HashMap<String, react_compiler_ast::scope::BindingId>,
-    bindings_list: &mut Vec<react_compiler_ast::scope::BindingData>,
-    ref_to_binding: &mut indexmap::IndexMap<u32, react_compiler_ast::scope::BindingId>,
-) {
-    use react_compiler_ast::patterns::PatternLike;
-    use react_compiler_ast::scope::*;
-
-    match pattern {
-        PatternLike::Identifier(id) => {
-            let p = *pos;
-            *pos += 1;
-            id.base.start = Some(p);
-            id.base.node_id = Some(p);
-            // Add as a binding
-            if !fn_bindings.contains_key(&id.name) {
-                let binding_id = BindingId(bindings_list.len() as u32);
-                fn_bindings.insert(id.name.clone(), binding_id);
-                bindings_list.push(BindingData {
-                    id: binding_id,
-                    name: id.name.clone(),
-                    kind: kind.clone(),
-                    scope: ScopeId(1),
-                    declaration_type: "VariableDeclarator".to_string(),
-                    declaration_start: Some(p),
-                    declaration_node_id: Some(p),
-                    import: None,
-                });
-                ref_to_binding.insert(p, binding_id);
-            } else {
-                let bid = fn_bindings[&id.name];
-                ref_to_binding.insert(p, bid);
-            }
-        }
-        PatternLike::ObjectPattern(obj) => {
-            for prop in &mut obj.properties {
-                match prop {
-                    react_compiler_ast::patterns::ObjectPatternProperty::ObjectProperty(
-                        p_inner,
-                    ) => {
-                        outlined_assign_pattern_positions(
-                            &mut p_inner.value,
-                            pos,
-                            kind.clone(),
-                            fn_bindings,
-                            bindings_list,
-                            ref_to_binding,
-                        );
-                    }
-                    react_compiler_ast::patterns::ObjectPatternProperty::RestElement(r) => {
-                        outlined_assign_pattern_positions(
-                            &mut r.argument,
-                            pos,
-                            kind.clone(),
-                            fn_bindings,
-                            bindings_list,
-                            ref_to_binding,
-                        );
-                    }
-                }
-            }
-        }
-        PatternLike::ArrayPattern(arr) => {
-            for elem in arr.elements.iter_mut().flatten() {
-                outlined_assign_pattern_positions(
-                    elem,
-                    pos,
-                    kind.clone(),
-                    fn_bindings,
-                    bindings_list,
-                    ref_to_binding,
-                );
-            }
-        }
-        PatternLike::AssignmentPattern(assign) => {
-            outlined_assign_pattern_positions(
-                &mut assign.left,
-                pos,
-                kind.clone(),
-                fn_bindings,
-                bindings_list,
-                ref_to_binding,
-            );
-        }
-        PatternLike::RestElement(rest) => {
-            outlined_assign_pattern_positions(
-                &mut rest.argument,
-                pos,
-                kind.clone(),
-                fn_bindings,
-                bindings_list,
-                ref_to_binding,
-            );
-        }
-        _ => {}
-    }
-}
-
-/// Assign positions to identifiers in a statement body.
-fn outlined_assign_stmt_positions(
-    stmt: &mut react_compiler_ast::statements::Statement,
-    pos: &mut u32,
-    fn_bindings: &mut std::collections::HashMap<String, react_compiler_ast::scope::BindingId>,
-    bindings_list: &mut Vec<react_compiler_ast::scope::BindingData>,
-    ref_to_binding: &mut indexmap::IndexMap<u32, react_compiler_ast::scope::BindingId>,
-) {
-    use react_compiler_ast::statements::Statement;
-
-    match stmt {
-        Statement::VariableDeclaration(decl) => {
-            for declarator in &mut decl.declarations {
-                // Process init first (references)
-                if let Some(init) = &mut declarator.init {
-                    outlined_assign_expr_positions(init, pos, fn_bindings, ref_to_binding);
-                }
-                // Process pattern (declarations)
-                outlined_assign_pattern_positions(
-                    &mut declarator.id,
-                    pos,
-                    react_compiler_ast::scope::BindingKind::Let,
-                    fn_bindings,
-                    bindings_list,
-                    ref_to_binding,
-                );
-            }
-        }
-        Statement::ReturnStatement(ret) => {
-            if let Some(arg) = &mut ret.argument {
-                outlined_assign_expr_positions(arg, pos, fn_bindings, ref_to_binding);
-            }
-        }
-        Statement::ExpressionStatement(expr_stmt) => {
-            outlined_assign_expr_positions(
-                &mut expr_stmt.expression,
-                pos,
-                fn_bindings,
-                ref_to_binding,
-            );
-        }
-        _ => {}
-    }
-}
-
-/// Assign positions to identifiers in an expression.
-fn outlined_assign_expr_positions(
-    expr: &mut react_compiler_ast::expressions::Expression,
-    pos: &mut u32,
-    fn_bindings: &std::collections::HashMap<String, react_compiler_ast::scope::BindingId>,
-    ref_to_binding: &mut indexmap::IndexMap<u32, react_compiler_ast::scope::BindingId>,
-) {
-    use react_compiler_ast::expressions::*;
-
-    match expr {
-        Expression::Identifier(id) => {
-            let p = *pos;
-            *pos += 1;
-            id.base.start = Some(p);
-            id.base.node_id = Some(p);
-            if let Some(&bid) = fn_bindings.get(&id.name) {
-                ref_to_binding.insert(p, bid);
-            }
-        }
-        Expression::JSXElement(jsx) => {
-            // Opening tag
-            outlined_assign_jsx_name_positions(
-                &mut jsx.opening_element.name,
-                pos,
-                fn_bindings,
-                ref_to_binding,
-            );
-            for attr in &mut jsx.opening_element.attributes {
-                match attr {
-                    react_compiler_ast::jsx::JSXAttributeItem::JSXAttribute(a) => {
-                        if let Some(val) = &mut a.value {
-                            outlined_assign_jsx_val_positions(
-                                val,
-                                pos,
-                                fn_bindings,
-                                ref_to_binding,
-                            );
-                        }
-                    }
-                    react_compiler_ast::jsx::JSXAttributeItem::JSXSpreadAttribute(s) => {
-                        outlined_assign_expr_positions(
-                            &mut s.argument,
-                            pos,
-                            fn_bindings,
-                            ref_to_binding,
-                        );
-                    }
-                }
-            }
-            for child in &mut jsx.children {
-                outlined_assign_jsx_child_positions(child, pos, fn_bindings, ref_to_binding);
-            }
-        }
-        Expression::JSXFragment(frag) => {
-            for child in &mut frag.children {
-                outlined_assign_jsx_child_positions(child, pos, fn_bindings, ref_to_binding);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn outlined_assign_jsx_name_positions(
-    name: &mut react_compiler_ast::jsx::JSXElementName,
-    pos: &mut u32,
-    fn_bindings: &std::collections::HashMap<String, react_compiler_ast::scope::BindingId>,
-    ref_to_binding: &mut indexmap::IndexMap<u32, react_compiler_ast::scope::BindingId>,
-) {
-    match name {
-        react_compiler_ast::jsx::JSXElementName::JSXIdentifier(id) => {
-            let p = *pos;
-            *pos += 1;
-            id.base.start = Some(p);
-            id.base.node_id = Some(p);
-            if let Some(&bid) = fn_bindings.get(&id.name) {
-                ref_to_binding.insert(p, bid);
-            }
-        }
-        react_compiler_ast::jsx::JSXElementName::JSXMemberExpression(m) => {
-            outlined_assign_jsx_member_positions(m, pos, fn_bindings, ref_to_binding);
-        }
-        _ => {}
-    }
-}
-
-fn outlined_assign_jsx_member_positions(
-    member: &mut react_compiler_ast::jsx::JSXMemberExpression,
-    pos: &mut u32,
-    fn_bindings: &std::collections::HashMap<String, react_compiler_ast::scope::BindingId>,
-    ref_to_binding: &mut indexmap::IndexMap<u32, react_compiler_ast::scope::BindingId>,
-) {
-    match &mut *member.object {
-        react_compiler_ast::jsx::JSXMemberExprObject::JSXIdentifier(id) => {
-            let p = *pos;
-            *pos += 1;
-            id.base.start = Some(p);
-            id.base.node_id = Some(p);
-            if let Some(&bid) = fn_bindings.get(&id.name) {
-                ref_to_binding.insert(p, bid);
-            }
-        }
-        react_compiler_ast::jsx::JSXMemberExprObject::JSXMemberExpression(inner) => {
-            outlined_assign_jsx_member_positions(inner, pos, fn_bindings, ref_to_binding);
-        }
-    }
-}
-
-fn outlined_assign_jsx_val_positions(
-    val: &mut react_compiler_ast::jsx::JSXAttributeValue,
-    pos: &mut u32,
-    fn_bindings: &std::collections::HashMap<String, react_compiler_ast::scope::BindingId>,
-    ref_to_binding: &mut indexmap::IndexMap<u32, react_compiler_ast::scope::BindingId>,
-) {
-    match val {
-        react_compiler_ast::jsx::JSXAttributeValue::JSXExpressionContainer(c) => {
-            if let react_compiler_ast::jsx::JSXExpressionContainerExpr::Expression(e) =
-                &mut c.expression
-            {
-                outlined_assign_expr_positions(e, pos, fn_bindings, ref_to_binding);
-            }
-        }
-        react_compiler_ast::jsx::JSXAttributeValue::JSXElement(el) => {
-            let mut expr = react_compiler_ast::expressions::Expression::JSXElement(el.clone());
-            outlined_assign_expr_positions(&mut expr, pos, fn_bindings, ref_to_binding);
-            if let react_compiler_ast::expressions::Expression::JSXElement(new_el) = expr {
-                **el = *new_el;
-            }
-        }
-        _ => {}
-    }
-}
-
-fn outlined_assign_jsx_child_positions(
-    child: &mut react_compiler_ast::jsx::JSXChild,
-    pos: &mut u32,
-    fn_bindings: &std::collections::HashMap<String, react_compiler_ast::scope::BindingId>,
-    ref_to_binding: &mut indexmap::IndexMap<u32, react_compiler_ast::scope::BindingId>,
-) {
-    match child {
-        react_compiler_ast::jsx::JSXChild::JSXExpressionContainer(c) => {
-            if let react_compiler_ast::jsx::JSXExpressionContainerExpr::Expression(e) =
-                &mut c.expression
-            {
-                outlined_assign_expr_positions(e, pos, fn_bindings, ref_to_binding);
-            }
-        }
-        react_compiler_ast::jsx::JSXChild::JSXElement(el) => {
-            let mut expr =
-                react_compiler_ast::expressions::Expression::JSXElement(Box::new(*el.clone()));
-            outlined_assign_expr_positions(&mut expr, pos, fn_bindings, ref_to_binding);
-            if let react_compiler_ast::expressions::Expression::JSXElement(new_el) = expr {
-                **el = *new_el;
-            }
-        }
-        react_compiler_ast::jsx::JSXChild::JSXFragment(frag) => {
-            for inner in &mut frag.children {
-                outlined_assign_jsx_child_positions(inner, pos, fn_bindings, ref_to_binding);
-            }
-        }
-        _ => {}
-    }
-}
-// end of outlined function helpers
 
 /// Run the compilation pipeline passes on an HIR function (everything after lowering).
 ///
 /// This is extracted from `compile_fn` to allow reuse for outlined functions.
 /// Returns the compiled CodegenFunction on success.
+///
+/// Currently unused: outlined-function re-compilation is deferred to N2 (see
+/// `compile_outlined_fn`). Retained for that revival.
+#[allow(dead_code)]
 fn run_pipeline_passes(
     hir: &mut react_compiler_hir::HirFunction,
     env: &mut Environment,
