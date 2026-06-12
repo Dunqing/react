@@ -24,8 +24,18 @@ oxc↔babel-AST conversion).
   owned HIR out. Delete `convert_ast` + `ScopeInfo` + `convert_scope`. Codegen *temporarily*
   still emits `react_compiler_ast` for output only (deleted in N2). Invariant: HIR must stay
   identical to the current (bridged) pipeline — same source → same HIR.
-- **N2 — Native codegen.** HIR → `oxc_ast` via `AstBuilder`, printed by `oxc_codegen`.
-  Output contract becomes oxc. Delete `convert_ast_reverse`.
+- **N2 — Native codegen** (user-chosen: no-bridge-ever; full native, no interim convert_ast_reverse).
+  HIR → `oxc_ast` via `AstBuilder`, spliced into the oxc Program, printed by `oxc_codegen`. The CODE oracle
+  (`test-e2e --variant oxc`, the F3 harness) becomes the truth — should resolve most of the 742 (benign HIR deltas
+  that compile identically). References (read-only, deleted at end of N2): existing `codegen_reactive_function.rs`
+  (~4300L, HIR→react_compiler_ast — the LOGIC) + `convert_ast_reverse.rs` (1942L, react_compiler_ast→oxc — the
+  AstBuilder CONSTRUCTION patterns); fuse them so codegen builds oxc directly.
+  - **N2.1**: vertical slice — native codegen for core constructs (fn + memoization cache emission `_c(n)`/`$[…]`
+    + scope wrapping + return + var-decls + calls + members + JSX) + program assembly (splice compiled fns into the
+    oxc Program) + print via oxc_codegen; wire `test-e2e --variant oxc`. Green via bailouts. Report code-oracle pass count.
+  - **N2.2+**: broaden codegen coverage; drive `test-e2e --variant oxc` up toward/above the 95% bridge baseline;
+    fix real lowering+codegen bugs the CODE oracle localizes (this is where the 742 get settled).
+  - **N2.final**: delete `convert_ast_reverse` + the old react_compiler_ast codegen path.
 - **N3 — Finalize.** Delete `react_compiler_ast` + Babel NAPI/JSON bridge; add the
   `oxc_linter::Rule` + build-time `transform` API.
 
