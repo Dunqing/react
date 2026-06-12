@@ -56,13 +56,19 @@ Sub-stages:
 - **N1.2.0** (stays GREEN): split `build_hir.rs` (7358L) into a `build_hir/` module dir by concern
   (`mod.rs` = `lower()` + driver; `statements.rs`, `expressions.rs`, `jsx.rs`, `patterns.rs`,
   `hoisting.rs`/context). Pure mechanical extraction — `cargo test` + `--dump-hir` parity unchanged.
-- **N1.2.1** (goes RED): flip the input type — `lower()` + HIRBuilder take `&'a oxc_ast` + `&Semantic`
-  (+ `semantic_queries`); update `pipeline.rs:61/1218` and `react_compiler_oxc::transform()` to pass
-  oxc directly; **delete `convert_ast.rs`**. HIR stays owned (no lifetime leak past lowering).
-- **N1.2.2…k** (RED, shrinking errors): transcribe each `build_hir/` module to oxc_ast +
-  semantic_queries, one agent per module, sequential (same file family). Order: function/params →
+- **N1.2.1** (boundary flip; kept GREEN via temporary bailouts): flip the input type — `lower()` +
+  HIRBuilder take `&'a oxc_ast` + `&Semantic` (+ `semantic_queries`); `compile_program` →
+  `(&Program, &Semantic, …)`; minimal oxc discovery to find functions; update `pipeline.rs:61/1218`
+  and `react_compiler_oxc::transform()` to pass oxc directly; **delete `convert_ast.rs`**. Un-transcribed
+  constructs bail with a graceful `Todo` so the crate COMPILES; function shell/params/return lower for
+  real so trivial fixtures produce HIR. HIR stays owned (no lifetime leak past lowering). In-place — NO
+  parallel module; the original react_compiler_ast logic is preserved in git (commit 1a02788) as the
+  transcription reference.
+- **N1.2.2…k** (fill bailouts; GREEN each, testable via --dump-hir): transcribe each `build_hir/` module
+  to oxc_ast + semantic_queries, replacing bailouts with real logic (read original from git). Order:
   statements → expressions → patterns/lvalue → jsx → hoisting/context. ~15 real structural diffs
-  (Declaration vs Statement, JSX/property/optional-chaining shapes, TS nodes).
+  (Declaration vs Statement, JSX/property/optional-chaining shapes, TS nodes). Each stage raises the
+  set of fixtures whose native HIR matches TS HIR.
 - **N1.2.final** (GREEN + parity): resolve remaining errors; `--dump-hir` (native) vs TS HIR; drive
   fixture parity up. Delete `ScopeInfo` (`react_compiler_ast/src/scope.rs`) + `convert_scope.rs`.
 - **Depends on**: N1.1
