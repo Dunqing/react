@@ -1006,8 +1006,33 @@ fn lower_optional_call_expression(
                     });
                 }
             }
+        } else if matches!(callee, oxc::Expression::CallExpression(c) if c.optional || chain_subtree_has_optional(&c.callee))
+        {
+            // Nested optional call in the callee position. In oxc 0.121 a chain
+            // like `a?.()?.()` is a *single* `ChainExpression` whose inner calls
+            // are bare `CallExpression` nodes carrying `optional: true` (not each
+            // wrapped in their own chain). Babel instead nests an
+            // `OptionalCallExpression` per `?.()` and recurses; mirror that by
+            // recursing here, but *only while the callee is still a chain link*
+            // (its subtree contains a `?.`), so every link emits its own
+            // `Optional` terminal. Without this, inner `?.()` operators are
+            // dropped at codegen (`call?.(a)?.(b)?.(c)` -> `call(a)(b)?.(c)`);
+            // recursing into a plain call base (`foo()?.()`) would instead make
+            // the base spuriously short-circuit.
+            let oxc::Expression::CallExpression(inner_call) = callee else {
+                unreachable!("matched CallExpression above")
+            };
+            let value = lower_optional_call_expression(builder, inner_call, Some(alternate))?;
+            let value_place = lower_value_to_temporary(builder, value)?;
+            callee_info = Some(CalleeInfo::CallExpression {
+                callee: value_place,
+            });
         } else if let Some(member) = callee.as_member_expression() {
-            if member.optional() {
+            // A member callee is a chain link when it (or anything in its object
+            // spine) is optional — e.g. `a?.b.c()` reaches here with `.c`
+            // non-optional but `a?.b` optional below. In that case recurse so the
+            // `?.` is preserved; otherwise it's a plain method call.
+            if member.optional() || chain_subtree_has_optional(member.object()) {
                 let (obj, value) =
                     lower_optional_member_expression(builder, member, Some(alternate))?;
                 callee_info = Some(CalleeInfo::MethodCall {
@@ -1141,15 +1166,54 @@ fn lower_optional_object(
             _ => {}
         }
     }
-    // An optional member whose object is itself an (un-chained) optional member
-    // appears directly (oxc wraps the *outermost* link in ChainExpression).
-    if let Some(member) = object.as_member_expression() {
-        if member.optional() {
+    // Every member/call access *within* an optional chain becomes its own
+    // `Optional` terminal — including the non-`?.` links *trailing* the first
+    // `?.`. In oxc 0.121 a chain like `a?.b.c` is a *single* `ChainExpression`
+    // wrapping nested plain member structs (`StaticMemberExpression(.c,
+    // object=StaticMemberExpression(.b, optional=true))`), so the trailing `.c`
+    // arrives here as a bare member with `optional == false`. Babel instead
+    // nests an `OptionalMemberExpression` per chain link and recurses on each;
+    // we mirror that by recursing into a member/call object *only while it is
+    // still a chain link*, i.e. while its subtree still contains an optional
+    // (`?.`) access. The chain's *base* — the longest leading prefix with no
+    // `?.`, such as `JSON.parse(x)` in `JSON.parse(x)?.y` or `a.b` in
+    // `a.b?.c` — is evaluated unconditionally and must NOT become an `Optional`
+    // terminal, matching Babel (which lowers it via plain Member/Call nodes).
+    // Without the trailing-link recursion, inner `?.` operators get dropped at
+    // codegen (`a?.b.c.d?.e` -> `a.b.c.d?.e`); with over-eager recursion the
+    // chain base spuriously short-circuits (changing semantics) and codegen
+    // bails.
+    if chain_subtree_has_optional(object) {
+        if let Some(member) = object.as_member_expression() {
             let (_obj, value) = lower_optional_member_expression(builder, member, Some(alternate))?;
             return Ok(value);
         }
+        if let oxc::Expression::CallExpression(call) = object {
+            let value = lower_optional_call_expression(builder, call, Some(alternate))?;
+            return lower_value_to_temporary(builder, value);
+        }
     }
     lower_expression_to_temporary(builder, object)
+}
+
+/// True if `expr` is a member/call access whose spine (walking down through
+/// `object`/`callee`) contains an optional (`?.`) link. Used to decide whether a
+/// chain object is still a chain link (recurse) or the unconditional chain base
+/// (stop). A `ChainExpression` always wraps an optional link, so it counts.
+fn chain_subtree_has_optional(expr: &oxc::Expression) -> bool {
+    match expr {
+        oxc::Expression::ChainExpression(_) => true,
+        oxc::Expression::CallExpression(call) => {
+            call.optional || chain_subtree_has_optional(&call.callee)
+        }
+        _ => {
+            if let Some(member) = expr.as_member_expression() {
+                member.optional() || chain_subtree_has_optional(member.object())
+            } else {
+                false
+            }
+        }
+    }
 }
 
 /// Build the shared alternate block for an optional chain (sets result to

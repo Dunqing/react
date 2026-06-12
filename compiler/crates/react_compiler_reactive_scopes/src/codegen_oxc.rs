@@ -1438,48 +1438,92 @@ impl<'a, 'e> Cx<'a, 'e> {
     }
 
     /// Promote a member/call expression to its optional variant (`a?.b`,
-    /// `a?.()`), or wrap in a chain expression as needed.
+    /// `a?.()`) and ensure the whole optional chain lives inside exactly one
+    /// `ChainExpression`.
+    ///
+    /// In oxc an optional chain is a *single* `ChainExpression` wrapping a tree
+    /// of plain `Static/ComputedMemberExpression` / `CallExpression` structs
+    /// (nested via their `object`/`callee` fields). Only the genuinely-optional
+    /// links carry `optional: true`. A `ChainExpression` must never be nested
+    /// inside another `ChainExpression` — doing so loses the inner `?.` and
+    /// prints stray parens (e.g. `(a?.b).c`).
+    ///
+    /// The lowering wraps *every* member/call link of an optional chain in an
+    /// `OptionalExpression`, so `to_optional` is invoked for each link — and
+    /// only for links that genuinely belong to the chain. (A non-chain access
+    /// onto a parenthesized chain, like `(a?.b).c`, is a plain `PropertyLoad`,
+    /// never routed here, so its inner chain stays parenthesized.) We therefore:
+    ///   1. strip a head-level chain wrapper to get the bare member/call node,
+    ///   2. flatten any `ChainExpression` sitting in its `object`/`callee` (that
+    ///      inner chain is part of *this* chain),
+    ///   3. set this link's `optional` flag,
+    ///   4. re-wrap the whole thing in exactly one `ChainExpression`.
     fn to_optional(&self, expr: oxc::Expression<'a>, optional: bool) -> Bail<oxc::Expression<'a>> {
-        match expr {
+        // Unwrap a head-level chain so we operate on the bare member/call node.
+        let head = self.unchain(expr);
+        match head {
             oxc::Expression::StaticMemberExpression(m) => {
                 let mut m = m.unbox();
                 m.optional = optional;
-                let mem = oxc::MemberExpression::StaticMemberExpression(self.b.alloc(m));
-                Ok(self.wrap_chain(mem))
+                m.object = self.unchain(m.object);
+                Ok(self.chain(oxc::Expression::StaticMemberExpression(self.b.alloc(m))))
             }
             oxc::Expression::ComputedMemberExpression(m) => {
                 let mut m = m.unbox();
                 m.optional = optional;
-                let mem = oxc::MemberExpression::ComputedMemberExpression(self.b.alloc(m));
-                Ok(self.wrap_chain(mem))
+                m.object = self.unchain(m.object);
+                Ok(self.chain(oxc::Expression::ComputedMemberExpression(self.b.alloc(m))))
             }
             oxc::Expression::CallExpression(c) => {
                 let mut c = c.unbox();
                 c.optional = optional;
-                let chain = oxc::ChainElement::CallExpression(self.b.alloc(c));
-                Ok(oxc::Expression::ChainExpression(
-                    self.b.alloc(self.b.chain_expression(SPAN, chain)),
-                ))
-            }
-            oxc::Expression::ChainExpression(c) => {
-                // Already a chain (nested optional) — pass through.
-                Ok(oxc::Expression::ChainExpression(c))
+                c.callee = self.unchain(c.callee);
+                Ok(self.chain(oxc::Expression::CallExpression(self.b.alloc(c))))
             }
             _ => bail!("optional expression on non-member/call"),
         }
     }
 
-    fn wrap_chain(&self, mem: oxc::MemberExpression<'a>) -> oxc::Expression<'a> {
-        let elem = match mem {
-            oxc::MemberExpression::StaticMemberExpression(m) => {
+    /// If `expr` is a `ChainExpression`, return the plain member/call expression
+    /// it wraps; otherwise return `expr` unchanged. Used to flatten a nested
+    /// optional chain (in an `object`/`callee` position) into the single
+    /// surrounding chain, preserving the inner links' `optional` flags.
+    fn unchain(&self, expr: oxc::Expression<'a>) -> oxc::Expression<'a> {
+        match expr {
+            oxc::Expression::ChainExpression(c) => match c.unbox().expression {
+                oxc::ChainElement::CallExpression(c) => oxc::Expression::CallExpression(c),
+                oxc::ChainElement::StaticMemberExpression(m) => {
+                    oxc::Expression::StaticMemberExpression(m)
+                }
+                oxc::ChainElement::ComputedMemberExpression(m) => {
+                    oxc::Expression::ComputedMemberExpression(m)
+                }
+                oxc::ChainElement::PrivateFieldExpression(m) => {
+                    oxc::Expression::PrivateFieldExpression(m)
+                }
+                oxc::ChainElement::TSNonNullExpression(e) => {
+                    oxc::Expression::TSNonNullExpression(e)
+                }
+            },
+            other => other,
+        }
+    }
+
+    /// Wrap a bare member/call expression in a single `ChainExpression`.
+    fn chain(&self, expr: oxc::Expression<'a>) -> oxc::Expression<'a> {
+        let elem = match expr {
+            oxc::Expression::CallExpression(c) => oxc::ChainElement::CallExpression(c),
+            oxc::Expression::StaticMemberExpression(m) => {
                 oxc::ChainElement::StaticMemberExpression(m)
             }
-            oxc::MemberExpression::ComputedMemberExpression(m) => {
+            oxc::Expression::ComputedMemberExpression(m) => {
                 oxc::ChainElement::ComputedMemberExpression(m)
             }
-            oxc::MemberExpression::PrivateFieldExpression(m) => {
+            oxc::Expression::PrivateFieldExpression(m) => {
                 oxc::ChainElement::PrivateFieldExpression(m)
             }
+            // Already a chain or non-chainable — return as-is.
+            other => return other,
         };
         oxc::Expression::ChainExpression(self.b.alloc(self.b.chain_expression(SPAN, elem)))
     }
