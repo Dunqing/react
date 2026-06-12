@@ -180,10 +180,13 @@ pub(crate) fn lower_jsx_child(
             // FBT whitespace normalization differs from standard JSX.
             // Since the fbt transform runs after, preserve all whitespace
             // in FBT subtrees as is.
+            // Babel's parser decodes entities before `trimJsxText` runs, so we
+            // decode here first to match (the oxc parser leaves them raw).
+            let decoded = decode_jsx_entities(text.value.as_str());
             let value = if builder.fbt_depth > 0 {
-                Some(text.value.to_string())
+                Some(decoded)
             } else {
-                trim_jsx_text(text.value.as_str())
+                trim_jsx_text(&decoded)
             };
             match value {
                 None => Ok(None),
@@ -485,6 +488,84 @@ pub(crate) fn split_line_endings(s: &str) -> Vec<&str> {
     }
     lines.push(&s[start..]);
     lines
+}
+
+/// Decode HTML/XML character entity references in JSX text.
+///
+/// Babel's parser decodes entities while parsing, so `JSXText.node.value` is
+/// already decoded by the time `trimJsxText` runs. The oxc parser leaves
+/// `JSXText.value` as the raw source text, so we decode here (before trimming)
+/// to match babel. Supports numeric (`&#123;`), hex (`&#x7b;`), and the named
+/// entities that occur in the corpus (the standard XHTML basics). Unknown
+/// entities are left verbatim, matching the reference decoder's fallback.
+///
+/// Ported from `oxc_transformer`'s `decode_entities`.
+pub(crate) fn decode_jsx_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.char_indices();
+    let mut prev = 0;
+    while let Some((i, c)) = chars.next() {
+        if c != '&' {
+            continue;
+        }
+        // Scan forward to the terminating `;` (resetting `start` on a fresh `&`,
+        // so `&&amp;` decodes the trailing entity). Mirrors the reference.
+        let mut start = i;
+        let mut end = None;
+        for (j, c2) in chars.by_ref() {
+            if c2 == ';' {
+                end = Some(j);
+                break;
+            } else if c2 == '&' {
+                start = j;
+            }
+        }
+        let Some(end) = end else {
+            // No terminating `;`: nothing further can decode.
+            break;
+        };
+        out.push_str(&s[prev..start]);
+        prev = end + 1;
+        let word = &s[start + 1..end];
+        if let Some(rest) = word.strip_prefix('#') {
+            let decoded = if let Some(hex) = rest.strip_prefix(['x', 'X']) {
+                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+            } else {
+                rest.parse::<u32>().ok().and_then(char::from_u32)
+            };
+            if let Some(ch) = decoded {
+                out.push(ch);
+                continue;
+            }
+        } else if let Some(ch) = named_xml_entity(word) {
+            out.push(ch);
+            continue;
+        }
+        // Fallback: re-emit the entity verbatim.
+        out.push('&');
+        out.push_str(word);
+        out.push(';');
+    }
+    out.push_str(&s[prev..]);
+    out
+}
+
+/// Named XHTML entity lookup (the subset that appears in JSX text across the
+/// corpus, plus the universal XML basics). Returns `None` for unknown names so
+/// the caller can re-emit them verbatim.
+fn named_xml_entity(name: &str) -> Option<char> {
+    Some(match name {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{00A0}',
+        _ => return None,
+    })
 }
 
 /// Trims whitespace according to the JSX spec.

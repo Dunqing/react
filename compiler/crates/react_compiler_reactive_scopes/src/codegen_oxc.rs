@@ -2419,6 +2419,22 @@ impl<'a, 'e> Cx<'a, 'e> {
             ..
         }))) = self.temp.get(&decl_id).cloned()
         {
+            // A string attribute value that contains characters which cannot
+            // be faithfully reproduced inside a bare `"…"` JSX attribute (control
+            // codes, the `"` and `\` characters, or any non-basic-Latin /
+            // astral-plane character) must instead be emitted as an expression
+            // container holding a JS string literal, so the generator escapes
+            // it. Mirrors the reference `STRING_REQUIRES_EXPR_CONTAINER_PATTERN`.
+            // (The reference's fbtOperands exclusion is for deferred fbt.)
+            if string_requires_expr_container(&s) {
+                let lit = self.b.expression_string_literal(SPAN, self.atom(&s), None);
+                let container = self
+                    .b
+                    .jsx_expression_container(SPAN, oxc::JSXExpression::from(lit));
+                return Ok(oxc::JSXAttributeValue::ExpressionContainer(
+                    self.b.alloc(container),
+                ));
+            }
             return Ok(self
                 .b
                 .jsx_attribute_value_string_literal(SPAN, self.atom(&s), None));
@@ -2438,6 +2454,18 @@ impl<'a, 'e> Cx<'a, 'e> {
         if let Some(Some(ReactiveValue::Instruction(InstructionValue::JSXText { value, .. }))) =
             self.temp.get(&decl_id).cloned()
         {
+            // A JSXText child whose (already entity-decoded) value contains a
+            // character that cannot survive being re-emitted as raw JSX text
+            // (`< > & { }`) must instead be emitted as an expression container
+            // holding a JS string literal, so the generator re-escapes it.
+            // Mirrors the reference `JSX_TEXT_CHILD_REQUIRES_EXPR_CONTAINER_PATTERN`.
+            if jsx_text_requires_expr_container(&value) {
+                let lit = self.b.expression_string_literal(SPAN, self.atom(&value), None);
+                let container = self
+                    .b
+                    .jsx_expression_container(SPAN, oxc::JSXExpression::from(lit));
+                return Ok(oxc::JSXChild::ExpressionContainer(self.b.alloc(container)));
+            }
             return Ok(self.b.jsx_child_text(SPAN, self.atom(&value), None));
         }
         // A nested JSX element temporary -> embed directly as a child element.
@@ -2517,6 +2545,32 @@ impl<'a, 'e> Cx<'a, 'e> {
 // =============================================================================
 // Free helpers
 // =============================================================================
+
+/// True if a JSX **attribute** string value cannot be faithfully reproduced
+/// inside a bare `"…"` attribute and must instead be emitted as an expression
+/// container (`attr={"…"}`). Mirrors the reference
+/// `STRING_REQUIRES_EXPR_CONTAINER_PATTERN`:
+/// `/[\u{0000}-\u{001F}\u{007F}\u{0080}-\u{FFFF}\u{010000}-\u{10FFFF}]|"|\\/u`.
+/// In other words: any control code, the `"` or `\` characters, or any
+/// non-basic-Latin character (everything at or above U+0080, which subsumes the
+/// astral plane).
+fn string_requires_expr_container(s: &str) -> bool {
+    s.chars().any(|c| {
+        c == '"'
+            || c == '\\'
+            || (c as u32) <= 0x001F
+            || (c as u32) == 0x007F
+            || (c as u32) >= 0x0080
+    })
+}
+
+/// True if a JSX **text child** must be emitted as an expression container
+/// (`{"…"}`) rather than raw `JSXText`. Mirrors the reference
+/// `JSX_TEXT_CHILD_REQUIRES_EXPR_CONTAINER_PATTERN = /[<>&{}]/`.
+fn jsx_text_requires_expr_container(s: &str) -> bool {
+    s.chars()
+        .any(|c| matches!(c, '<' | '>' | '&' | '{' | '}'))
+}
 
 /// Generate a collision-safe name (mirrors `Context::synthesize_name`).
 fn synthesize_name(base: &str, taken: &HashSet<String>) -> String {
