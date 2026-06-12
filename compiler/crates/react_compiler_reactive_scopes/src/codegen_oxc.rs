@@ -21,7 +21,7 @@
 //!
 //! oxc `Expression<'a>` is arena-allocated and NOT `Clone`, so the inline
 //! "temporaries" table from the reference (which stored built expressions) is
-//! replaced here by a table of the HIR `InstructionValue` (which IS `Clone`):
+//! replaced here by a table of the HIR `ReactiveValue` (which IS `Clone`):
 //! a `Place` that references an inlined temporary re-builds its expression.
 
 use std::collections::HashMap;
@@ -142,7 +142,14 @@ struct Cx<'a, 'e> {
     cache_name: String,
     memo_local_name: String,
     /// declaration_id -> HIR value to inline at use sites (None = bare ident).
-    temp: HashMap<DeclarationId, Option<InstructionValue>>,
+    ///
+    /// Stores the full `ReactiveValue` (which IS `Clone`), so that compound
+    /// reactive values (sequence/conditional/logical/optional expressions) bound
+    /// to unnamed temporaries can be inlined too, not just bare
+    /// `InstructionValue`s. Mirrors the reference codegen's `temporaries` table,
+    /// which stashes the already-built expression. (oxc `Expression<'a>` isn't
+    /// `Clone`, so we stash the HIR and re-build at each use site.)
+    temp: HashMap<DeclarationId, Option<ReactiveValue>>,
     /// declaration_ids that have been `let`/`const`/param declared.
     declared: HashSet<DeclarationId>,
 }
@@ -447,14 +454,11 @@ impl<'a, 'e> Cx<'a, 'e> {
         let ident = &self.env.identifiers[lvalue.identifier.0 as usize];
         let decl_id = ident.declaration_id;
         if ident.name.is_none() {
-            // Unnamed temporary -> inline at use sites.
-            if let ReactiveValue::Instruction(iv) = &instr.value {
-                self.temp.insert(decl_id, Some(iv.clone()));
-                return Ok(());
-            }
-            // Compound reactive values can't be stashed as InstructionValue;
-            // bail to keep correctness.
-            bail!("unnamed temporary holds a compound reactive value");
+            // Unnamed temporary -> inline at use sites. Stash the full
+            // `ReactiveValue` (simple or compound) and re-build at each use.
+            // Mirrors the reference codegen's `cx.temp.insert(decl, value)`.
+            self.temp.insert(decl_id, Some(instr.value.clone()));
+            return Ok(());
         }
 
         // Named lvalue.
@@ -1752,9 +1756,10 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn method_callee(&mut self, receiver: &Place, property: &Place) -> Bail<oxc::Expression<'a>> {
         // Resolve the property temporary back to its PropertyLoad.
         let prop_decl = self.decl_id(property);
-        if let Some(Some(InstructionValue::PropertyLoad {
-            property: prop_lit, ..
-        })) = self.temp.get(&prop_decl).cloned()
+        if let Some(Some(ReactiveValue::Instruction(InstructionValue::PropertyLoad {
+            property: prop_lit,
+            ..
+        }))) = self.temp.get(&prop_decl).cloned()
         {
             let obj = self.place_expr(receiver)?;
             return Ok(self.member(obj, &prop_lit));
@@ -2064,10 +2069,10 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn jsx_attribute_value(&mut self, place: &Place) -> Bail<oxc::JSXAttributeValue<'a>> {
         // String-literal shortcut for a primitive string temporary.
         let decl_id = self.decl_id(place);
-        if let Some(Some(InstructionValue::Primitive {
+        if let Some(Some(ReactiveValue::Instruction(InstructionValue::Primitive {
             value: PrimitiveValue::String(s),
             ..
-        })) = self.temp.get(&decl_id).cloned()
+        }))) = self.temp.get(&decl_id).cloned()
         {
             return Ok(self
                 .b
@@ -2085,13 +2090,13 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn jsx_child(&mut self, place: &Place) -> Bail<oxc::JSXChild<'a>> {
         // JSXText children come through as a temporary JSXText instruction.
         let decl_id = self.decl_id(place);
-        if let Some(Some(InstructionValue::JSXText { value, .. })) =
+        if let Some(Some(ReactiveValue::Instruction(InstructionValue::JSXText { value, .. }))) =
             self.temp.get(&decl_id).cloned()
         {
             return Ok(self.b.jsx_child_text(SPAN, self.atom(&value), None));
         }
         // A nested JSX element temporary -> embed directly as a child element.
-        if let Some(Some(iv)) = self.temp.get(&decl_id).cloned() {
+        if let Some(Some(ReactiveValue::Instruction(iv))) = self.temp.get(&decl_id).cloned() {
             if let InstructionValue::JsxExpression { .. } | InstructionValue::JsxFragment { .. } =
                 &iv
             {
@@ -2122,8 +2127,8 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn place_expr(&mut self, place: &Place) -> Bail<oxc::Expression<'a>> {
         let decl_id = self.decl_id(place);
         if let Some(entry) = self.temp.get(&decl_id) {
-            if let Some(iv) = entry.clone() {
-                return self.codegen_instruction_value(&iv);
+            if let Some(rv) = entry.clone() {
+                return self.codegen_value(&rv);
             }
             // declared but no inline value -> bare identifier below.
         }
