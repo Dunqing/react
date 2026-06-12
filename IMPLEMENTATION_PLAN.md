@@ -80,6 +80,12 @@ oxc↔babel-AST conversion).
   - **N2.5**: fix the 2 `?.`-dropping bugs (optional-call-chained.js, optional-member-expression-chain.js) + promote the
     N2.4 structural-equivalence normalizer to a committed reusable oracle (semantic-pass = byte-pass + cosmetic, ~1298+).
   - **N2.6**: clear BAIL 201 (remaining un-codegen'd constructs).
+
+  **N2.5 ✅ (49bff15d02)** Fixed both `?.` bugs — root cause in LOWERING (oxc 0.121 chains = one ChainExpression over
+  plain members vs Babel per-link nesting; lowering collapsed chains, lost inner `?.`). Deep fix in expressions.rs
+  (`chain_subtree_has_optional` recursion) + codegen_oxc (`to_optional`/`unchain`/`chain` flatten). Semantic oracle
+  `compiler/scripts/compare-code.ts` committed (PRIMARY metric). **SEMANTIC-pass 1326→1337/1803 (74.2%)** = byte 801 +
+  structural 536. Buckets: N-VAL 15, BAIL 202, OTHER 249. test-babel-ast.sh still 1787/1787.
   - **N2.7**: achievable OTHER gaps (memo opt-out ~43, DCE/SSA, smaller ones); DEFER JSX-outlining (~111) + full SSR/gating.
   - **N-VAL**: port the 16 missing validation passes (+ any others surfaced) so Rust rejects what TS rejects.
   - Then **N2.final** (delete convert_ast_reverse + dead react_compiler_ast codegen) + **N3** (delete react_compiler_ast +
