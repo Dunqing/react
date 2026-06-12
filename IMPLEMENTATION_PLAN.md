@@ -74,7 +74,21 @@ Sub-stages:
 - **Depends on**: N1.1
 - **Success criteria**: `cargo build` green; native-lowering HIR matches TS HIR across fixtures
   (target ≈ the 95% baseline minus codegen-only failures); no `react_compiler_ast`/`ScopeInfo` on input path.
-- **Status**: N1.2.0 in progress
+- **Status**: N1.2.0 ✅ (1a02788) · N1.2.1 ✅ (9bae312eb0 — input path native, green, trivial fixtures
+  lower; codegen returns ast:None; old build_hir submodules removed, logic ref'd from git 1a02788;
+  `HIRBuilder<'a>{semantic,source_text}`, `FunctionForm{Function|Arrow}`). Next: **N1.2.2 oracle**, then
+  fill bailouts. ⚠ Oracle gap: TS-side HIR tooling (`yarn snap -d`/`test-rust-port.ts`) didn't build in
+  the agent session — must be made reliably runnable before the transcription stages.
+
+### Stage N1.2.2: Reliable per-pass HIR-diff oracle (oxc CLI ↔ TS)
+- **Goal**: Make `scripts/test-rust-port.ts` (or a sibling) source the Rust-side HIR from the oxc CLI
+  `--dump-hir` (not NAPI) and diff per-pass against the in-process TS compiler's HIR (`printDebugHIR` +
+  `normalizeIds`) for any fixture, plus a corpus run reporting per-fixture frontier. Ensure deps install
+  (corepack yarn shim worked in Stage 3) and the TS plugin builds.
+- **Depends on**: N1.2.1
+- **Success criteria**: one command diffs native-HIR vs TS-HIR for a fixture and across the corpus;
+  report current baseline (expected LOW now — most constructs bail) + that the tool works + the frontier.
+- **Status**: Not Started
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
