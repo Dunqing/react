@@ -32,8 +32,19 @@ import {parseConfigPragmaForTests} from '../packages/babel-plugin-react-compiler
 import {printDebugHIR} from '../packages/babel-plugin-react-compiler/src/HIR/DebugPrintHIR';
 import {printDebugReactiveFunction} from '../packages/babel-plugin-react-compiler/src/HIR/DebugPrintReactiveFunction';
 import type {CompilerPipelineValue} from '../packages/babel-plugin-react-compiler/src/Entrypoint/Pipeline';
-
-const REPO_ROOT = path.resolve(__dirname, '../..');
+// Shared HIR-oracle helpers — single source of truth for normalization,
+// fixture discovery, pass-order derivation, and log formatting. Also reused by
+// the OXC-CLI oracle (compare-hir.ts).
+import {
+  REPO_ROOT,
+  derivePassOrder as deriveSharedPassOrder,
+  discoverFixtures as discoverSharedFixtures,
+  normalizeIds as sharedNormalizeIds,
+  formatLog as sharedFormatLog,
+  formatLogItem as sharedFormatLogItem,
+  findDivergencePass as sharedFindDivergencePass,
+  type LogItem as SharedLogItem,
+} from './hir-oracle-lib';
 
 // --- Parse flags ---
 const rawArgs = process.argv.slice(2);
@@ -64,17 +75,7 @@ const DIM = useColor ? '\x1b[2m' : '';
 const RESET = useColor ? '\x1b[0m' : '';
 
 // --- Ordered pass list (derived from pipeline.rs DebugLogEntry calls) ---
-function derivePassOrder(): string[] {
-  const pipelinePath = path.join(
-    REPO_ROOT,
-    'compiler/crates/react_compiler/src/entrypoint/pipeline.rs',
-  );
-  const content = fs.readFileSync(pipelinePath, 'utf8');
-  const matches = [...content.matchAll(/DebugLogEntry::new\("([^"]+)"/g)];
-  return matches.map(m => m[1]);
-}
-
-const PASS_ORDER = derivePassOrder();
+const PASS_ORDER = deriveSharedPassOrder();
 
 // --- Detect last ported pass from pipeline.rs ---
 function detectLastPortedPass(): string {
@@ -150,21 +151,8 @@ const tsPlugin = require('../packages/babel-plugin-react-compiler/src').default;
 const rustPlugin =
   require('../packages/babel-plugin-react-compiler-rust/src').default;
 
-// --- Types ---
-interface LogEntry {
-  kind: 'entry';
-  name: string;
-  value: string;
-}
-
-interface LogEvent {
-  kind: 'event';
-  eventKind: string;
-  fnName: string | null;
-  detail: string;
-}
-
-type LogItem = LogEntry | LogEvent;
+// --- Types (re-exported from the shared oracle lib) ---
+type LogItem = SharedLogItem;
 
 interface CompileOutput {
   log: LogItem[];
@@ -174,31 +162,8 @@ interface CompileOutput {
 
 type CompileMode = 'ts' | 'rust';
 
-// --- Discover fixtures ---
-function discoverFixtures(rootPath: string): string[] {
-  const stat = fs.statSync(rootPath);
-  if (stat.isFile()) {
-    return [rootPath];
-  }
-
-  const results: string[] = [];
-  function walk(dir: string): void {
-    for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(fullPath);
-      } else if (
-        /\.(js|jsx|ts|tsx)$/.test(entry.name) &&
-        !entry.name.endsWith('.expect.md')
-      ) {
-        results.push(fullPath);
-      }
-    }
-  }
-  walk(rootPath);
-  results.sort();
-  return results;
-}
+// --- Discover fixtures (shared) ---
+const discoverFixtures = discoverSharedFixtures;
 
 // --- Format a source location for comparison ---
 function formatLoc(loc: unknown): string {
@@ -365,130 +330,10 @@ function compileFixture(mode: CompileMode, fixturePath: string): CompileOutput {
   return {log, code, error};
 }
 
-// --- Format a single log item as comparable string ---
-function formatLogItem(item: LogItem): string {
-  if (item.kind === 'entry') {
-    return `## ${item.name}\n${item.value}`;
-  } else {
-    return `[${item.eventKind}]${item.fnName ? ' ' + item.fnName : ''}: ${item.detail}`;
-  }
-}
-
-// --- Format log items as comparable string ---
-function formatLog(log: LogItem[]): string {
-  return log.map(formatLogItem).join('\n');
-}
-
-// --- Normalize opaque IDs ---
-// Type IDs and Identifier IDs are opaque identifiers whose absolute values
-// differ between TS and Rust due to differences in allocation order.
-// We normalize by remapping each unique ID to a sequential index.
-function normalizeIds(text: string): string {
-  // ID maps are reset at function boundaries (## HIR) because TS uses a global
-  // type counter while Rust creates a fresh Environment per function, so raw IDs
-  // from different functions may collide in Rust but never in TS.
-  let typeMap = new Map<string, number>();
-  let nextTypeId = 0;
-  let idMap = new Map<string, number>();
-  let nextIdId = 0;
-  let declMap = new Map<string, number>();
-  let nextDeclId = 0;
-  let generatedMap = new Map<string, number>();
-  let nextGeneratedId = 0;
-  let blockMap = new Map<string, number>();
-  let nextBlockId = 0;
-  let isFirstHIR = true;
-
-  // Process line-by-line so we can reset maps at function boundaries
-  const lines = text.split('\n');
-  const result = lines.map(line => {
-    // Reset all maps when a new function's compilation starts (## HIR header).
-    // The first HIR entry doesn't need a reset since maps are already empty.
-    if (line === '## HIR') {
-      if (!isFirstHIR) {
-        typeMap = new Map();
-        nextTypeId = 0;
-        idMap = new Map();
-        nextIdId = 0;
-        declMap = new Map();
-        nextDeclId = 0;
-        generatedMap = new Map();
-        nextGeneratedId = 0;
-        blockMap = new Map();
-        nextBlockId = 0;
-      }
-      isFirstHIR = false;
-    }
-
-    return (
-      line
-        // Normalize block IDs (bb0, bb1, ...) — these are auto-incrementing counters
-        // that may differ between TS and Rust due to different block allocation counts
-        // in earlier passes (lowering, IIFE inlining, etc.).
-        .replace(/\bbb(\d+)\b/g, (_match, num) => {
-          const key = `bb:${num}`;
-          if (!blockMap.has(key)) {
-            blockMap.set(key, nextBlockId++);
-          }
-          return `bb${blockMap.get(key)}`;
-        })
-        // Normalize <generated_N> shape IDs — these are auto-incrementing counters
-        // that may differ between TS and Rust due to allocation ordering.
-        .replace(/<generated_(\d+)>/g, (_match, num) => {
-          const key = `generated:${num}`;
-          if (!generatedMap.has(key)) {
-            generatedMap.set(key, nextGeneratedId++);
-          }
-          return `<generated_${generatedMap.get(key)}>`;
-        })
-        .replace(/Type\(\d+\)/g, match => {
-          if (!typeMap.has(match)) {
-            typeMap.set(match, nextTypeId++);
-          }
-          return `Type(${typeMap.get(match)})`;
-        })
-        .replace(/((?:id|declarationId): )(\d+)/g, (_match, prefix, num) => {
-          if (prefix === 'id: ') {
-            const key = `id:${num}`;
-            if (!idMap.has(key)) {
-              idMap.set(key, nextIdId++);
-            }
-            return `${prefix}${idMap.get(key)}`;
-          } else {
-            const key = `decl:${num}`;
-            if (!declMap.has(key)) {
-              declMap.set(key, nextDeclId++);
-            }
-            return `${prefix}${declMap.get(key)}`;
-          }
-        })
-        .replace(/Identifier\((\d+)\)/g, (_match, num) => {
-          const key = `id:${num}`;
-          if (!idMap.has(key)) {
-            idMap.set(key, nextIdId++);
-          }
-          return `Identifier(${idMap.get(key)})`;
-        })
-        // Normalize printed identifiers like "x$5" in error descriptions.
-        // The $N suffix is an opaque IdentifierId that may differ between TS and Rust.
-        .replace(/(\w+)\$(\d+)/g, (_match, name, num) => {
-          const key = `id:${num}`;
-          if (!idMap.has(key)) {
-            idMap.set(key, nextIdId++);
-          }
-          return `${name}\$${idMap.get(key)}`;
-        })
-        // Normalize mutableRange: [N:M] values by stripping them entirely.
-        // In TS, identifier.mutableRange shares a reference with scope.range,
-        // so modifications to scope.range automatically propagate. In Rust,
-        // mutableRange is a copy and diverges from scope.range after certain
-        // passes. Since scope.range is separately displayed and validated,
-        // mutableRange comparison adds noise without catching real bugs.
-        .replace(/mutableRange: \[\d+:\d+\]/g, 'mutableRange: [_:_]')
-    );
-  });
-  return result.join('\n');
-}
+// --- Log formatting + opaque-ID normalization (shared) ---
+const formatLogItem = sharedFormatLogItem;
+const formatLog = sharedFormatLog;
+const normalizeIds = sharedNormalizeIds;
 
 // --- Simple unified diff ---
 function unifiedDiff(expected: string, actual: string): string {
@@ -570,46 +415,9 @@ for (const pass of PASS_ORDER) {
   perPassResults.set(pass, {passed: 0, failed: 0});
 }
 
-// --- Find the earliest diverging pass for a fixture ---
+// --- Find the earliest diverging pass for a fixture (shared) ---
 function findDivergencePass(tsLog: LogItem[], rustLog: LogItem[]): string {
-  const maxLen = Math.max(tsLog.length, rustLog.length);
-  for (let i = 0; i < maxLen; i++) {
-    const tsItem = i < tsLog.length ? tsLog[i] : undefined;
-    const rustItem = i < rustLog.length ? rustLog[i] : undefined;
-
-    if (tsItem === undefined || rustItem === undefined) {
-      // One log is shorter — attribute to the pass of the last available entry
-      const item = tsItem ?? rustItem;
-      if (item && item.kind === 'entry') {
-        return item.name;
-      }
-      // For events, attribute to the preceding entry's pass
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = tsLog[j] ?? rustLog[j];
-        if (prev && prev.kind === 'entry') return prev.name;
-      }
-      // No preceding entry — attribute to first pass
-      return PASS_ORDER[0];
-    }
-
-    const tsFormatted = normalizeIds(formatLogItem(tsItem));
-    const rustFormatted = normalizeIds(formatLogItem(rustItem));
-    if (tsFormatted !== rustFormatted) {
-      if (tsItem.kind === 'entry') {
-        return tsItem.name;
-      }
-      // For events, find the most recent entry pass
-      for (let j = i - 1; j >= 0; j--) {
-        if (tsLog[j] && tsLog[j].kind === 'entry') {
-          return (tsLog[j] as LogEntry).name;
-        }
-      }
-      // No preceding entry — attribute to first pass
-      return PASS_ORDER[0];
-    }
-  }
-  // No divergence found (shouldn't happen since caller verified logs differ)
-  return PASS_ORDER[0];
+  return sharedFindDivergencePass(tsLog, rustLog, PASS_ORDER);
 }
 
 (async () => {
