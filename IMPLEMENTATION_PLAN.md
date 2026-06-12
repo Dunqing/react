@@ -47,6 +47,19 @@ oxc↔babel-AST conversion).
   stores, loops/switch/try/break/continue/label terminals, sequence/optional values, object methods, template, fn-expr.
   ~918 fns bail (dominant lever). Cosmetic: `x=x+b` vs `+=`, `let v;` vs `let v=0;`, JSX `/>`, `x["a"]` vs `x.a`, comments.
   Next: N2.2 broaden codegen (terminals + early-return), N2.3 (remaining values/stores), N2.4 cosmetic/codegen-choice polish.
+
+  **N2.2 ✅ (13d738e6d8)** codegen_oxc.rs 2382L. **Code-pass 584→756.** Added all control-flow terminals, Destructure
+  stores, PropertyStore/ComputedStore/StoreGlobal, TemplateLiteral/TaggedTemplate, NewExpression, Await, Sequence,
+  OptionalChaining, FunctionExpression/arrow (recursive). 219 newly pass; 47 "regressions" are NOT codegen bugs —
+  they're @validate*/@outputMode:lint/error.todo-* fixtures where TS errors with no output but the Rust pipeline LACKS
+  those validation passes (→ separate workstream: **port missing validation passes** [tracked as N-VAL]). One real bug
+  fixed (overlapping-scopes trailing `return undefined`).
+  - **N2.3 (next)**: temporary promotion/naming — port/wire `promote_used_temporaries` so the ~423 unnamed-identifier
+    (264) + compound-temporary (159) bails resolve. Biggest remaining codegen lever.
+  - Then tail: early-return scopes (36), object methods (21), PostfixUpdate (22), NextPropertyOf, spread params, etc.
+
+  **N-VAL (parallelizable later)**: port missing TS validation passes (validateNoSetStateInEffects,
+  validateNoJSXInTryStatements, rules-of-hooks, etc.) so the Rust pipeline rejects what TS rejects. Orthogonal to codegen.
 - **N3 — Finalize.** Delete `react_compiler_ast` + Babel NAPI/JSON bridge; add the
   `oxc_linter::Rule` + build-time `transform` API.
 
