@@ -65,6 +65,16 @@ oxc↔babel-AST conversion).
   - **N2.4 (next)**: categorize the ~1015 code-failures → 3 buckets [codegen-bail / cosmetic-printer / N-VAL], size them,
     then attack the biggest actionable (codegen) bucket. Endgame target = the 95% bridge baseline (~1713/1803) on the CODE oracle.
 
+  **N2.4 ✅ (18c223e0b9)** Code 788→797. Implemented PostfixUpdate/PrefixUpdate/PropertyDelete/ComputedDelete/RegExp/
+  MetaProperty. **KEY: categorized the 1015 code-failures via a structural-equivalence normalizer:**
+  - **COSMETIC 510** — structurally equivalent, only printing differs (JSX self-close, comments, temp-naming, slot-order,
+    decl-kind). FUNCTIONALLY CORRECT. → byte-match-vs-Babel oracle UNDERSTATES correctness (two printers can't match).
+  - **OTHER 263** — real gaps: JSX-outlining ~111, codegen feature-gaps (gating/instrument/DCE/SSA) ~87, memo-mismatch ~43,
+    arrow-vs-fn ~20, **+2 real `?.`-dropping correctness BUGS** (optional-call-chained.js, optional-member-expression-chain.js).
+  - **BAIL 201** — un-codegen'd construct. **N-VAL 16** — needs validation passes.
+  - **Functionally-correct ≈ 797 + 510 = ~1298/1803 (72%).** True remaining work = BAIL 201 + OTHER 263 + N-VAL 16.
+  → Strategic fork (semantic vs byte parity; feature-gap scope) raised with user before the endgame grind. Fix the 2 bugs regardless.
+
   **N-VAL (parallelizable later)**: port missing TS validation passes (validateNoSetStateInEffects,
   validateNoJSXInTryStatements, rules-of-hooks, etc.) so the Rust pipeline rejects what TS rejects. Orthogonal to codegen.
 - **N3 — Finalize.** Delete `react_compiler_ast` + Babel NAPI/JSON bridge; add the
