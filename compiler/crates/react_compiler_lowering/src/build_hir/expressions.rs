@@ -160,9 +160,7 @@ pub(crate) fn lower_expression(
         oxc::Expression::LogicalExpression(logical) => {
             lower_logical_expression(builder, logical, loc)
         }
-        oxc::Expression::UpdateExpression(update) => {
-            lower_update_expression(builder, update, loc)
-        }
+        oxc::Expression::UpdateExpression(update) => lower_update_expression(builder, update, loc),
 
         // ---- member access ----
         oxc::Expression::StaticMemberExpression(_)
@@ -171,9 +169,11 @@ pub(crate) fn lower_expression(
             let lowered = lower_member_expression(builder, member, None)?;
             Ok(lowered.value)
         }
-        oxc::Expression::PrivateFieldExpression(_) => {
-            Ok(todo_value(builder, "expression: PrivateFieldExpression", loc))
-        }
+        oxc::Expression::PrivateFieldExpression(_) => Ok(todo_value(
+            builder,
+            "expression: PrivateFieldExpression",
+            loc,
+        )),
 
         // ---- calls ----
         oxc::Expression::CallExpression(call) => lower_call_expression(builder, call, loc),
@@ -190,9 +190,7 @@ pub(crate) fn lower_expression(
         oxc::Expression::ConditionalExpression(cond) => {
             lower_conditional_expression(builder, cond, loc)
         }
-        oxc::Expression::SequenceExpression(seq) => {
-            lower_sequence_expression(builder, seq, loc)
-        }
+        oxc::Expression::SequenceExpression(seq) => lower_sequence_expression(builder, seq, loc),
         oxc::Expression::AssignmentExpression(assign) => {
             lower_assignment_expression(builder, assign, loc)
         }
@@ -256,23 +254,21 @@ pub(crate) fn lower_expression(
 
         // ---- TS wrappers ----
         oxc::Expression::TSNonNullExpression(ts) => lower_expression(builder, &ts.expression),
-        oxc::Expression::TSInstantiationExpression(ts) => {
-            lower_expression(builder, &ts.expression)
-        }
+        oxc::Expression::TSInstantiationExpression(ts) => lower_expression(builder, &ts.expression),
         oxc::Expression::TSAsExpression(ts) => lower_type_cast(builder, &ts.expression, "as", loc),
         oxc::Expression::TSSatisfiesExpression(ts) => {
             lower_type_cast(builder, &ts.expression, "satisfies", loc)
         }
-        oxc::Expression::TSTypeAssertion(ts) => {
-            lower_type_cast(builder, &ts.expression, "as", loc)
-        }
+        oxc::Expression::TSTypeAssertion(ts) => lower_type_cast(builder, &ts.expression, "as", loc),
 
         // ---- nested function / arrow expressions ----
-        oxc::Expression::ArrowFunctionExpression(arrow) => super::functions::lower_function_to_value(
-            builder,
-            &crate::FunctionForm::Arrow(arrow),
-            FunctionExpressionType::ArrowFunctionExpression,
-        ),
+        oxc::Expression::ArrowFunctionExpression(arrow) => {
+            super::functions::lower_function_to_value(
+                builder,
+                &crate::FunctionForm::Arrow(arrow),
+                FunctionExpressionType::ArrowFunctionExpression,
+            )
+        }
         oxc::Expression::FunctionExpression(func) => super::functions::lower_function_to_value(
             builder,
             &crate::FunctionForm::Function(func),
@@ -640,7 +636,11 @@ fn lower_sequence_expression(
     loc: Option<SourceLocation>,
 ) -> Result<InstructionValue, CompilerError> {
     if seq.expressions.is_empty() {
-        return Ok(todo_value(builder, "expression: empty SequenceExpression", loc));
+        return Ok(todo_value(
+            builder,
+            "expression: empty SequenceExpression",
+            loc,
+        ));
     }
 
     let continuation_block = builder.reserve(builder.current_block_kind());
@@ -854,11 +854,13 @@ fn lower_chain_expression(
         }
         oxc::ChainElement::PrivateFieldExpression(pf) => {
             let loc = Some(builder.loc_of_span(pf.span()));
-            Ok(todo_value(builder, "expression: optional private field", loc))
+            Ok(todo_value(
+                builder,
+                "expression: optional private field",
+                loc,
+            ))
         }
-        oxc::ChainElement::TSNonNullExpression(ts) => {
-            lower_expression(builder, &ts.expression)
-        }
+        oxc::ChainElement::TSNonNullExpression(ts) => lower_expression(builder, &ts.expression),
     }
 }
 
@@ -1135,8 +1137,7 @@ fn lower_optional_object(
     // appears directly (oxc wraps the *outermost* link in ChainExpression).
     if let Some(member) = object.as_member_expression() {
         if member.optional() {
-            let (_obj, value) =
-                lower_optional_member_expression(builder, member, Some(alternate))?;
+            let (_obj, value) = lower_optional_member_expression(builder, member, Some(alternate))?;
             return Ok(value);
         }
     }
@@ -1417,8 +1418,7 @@ fn lower_update_identifier(
     }
 
     let ident_loc = Some(builder.loc_of_span(ident.span));
-    let binding =
-        builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc.clone())?;
+    let binding = builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc.clone())?;
     let identifier = match binding {
         VariableBinding::Identifier { identifier, .. } => identifier,
         _ => {
@@ -1635,11 +1635,28 @@ fn lower_simple_assignment(
                 .expect("static/computed assignment target is a member expression");
             lower_member_assignment(builder, member, &expr.right)
         }
+        Target::ArrayAssignmentTarget(_) | Target::ObjectAssignmentTarget(_) => {
+            // Destructuring assignment expression: `({a} = obj)` / `[x] = arr`.
+            // Evaluate the RHS, destructure into the target, and yield the
+            // destructure result (falling back to the RHS) as the expr value.
+            let right = lower_expression_to_temporary(builder, &expr.right)?;
+            let left_loc = Some(builder.loc_of_span(expr.left.span()));
+            match super::lower_assignment_target(builder, left_loc, &expr.left, right.clone())? {
+                Some(temp) => Ok(InstructionValue::LoadLocal {
+                    place: temp.clone(),
+                    loc: temp.loc.clone(),
+                }),
+                None => Ok(InstructionValue::LoadLocal {
+                    place: right.clone(),
+                    loc,
+                }),
+            }
+        }
         _ => {
-            // Destructuring assignment needs pattern lowering (later stage).
+            // TS type-cast wrappers and other unsupported targets.
             Ok(todo_value(
                 builder,
-                "expression: destructuring assignment",
+                "expression: unsupported assignment target",
                 loc,
             ))
         }

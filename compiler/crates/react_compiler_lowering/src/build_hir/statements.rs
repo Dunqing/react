@@ -268,10 +268,7 @@ fn lower_throw_statement(
 
 /// Lower a block statement. Block-scoped hoisting (`DeclareContext`) is a later
 /// stage; for now lower the body statements directly.
-fn lower_block(
-    builder: &mut HirBuilder,
-    block: &oxc::BlockStatement,
-) -> Result<(), CompilerError> {
+fn lower_block(builder: &mut HirBuilder, block: &oxc::BlockStatement) -> Result<(), CompilerError> {
     for body_stmt in &block.body {
         lower_statement(builder, body_stmt)?;
     }
@@ -290,7 +287,8 @@ fn lower_variable_declaration(
 
     if matches!(var_decl.kind, VK::Var | VK::AwaitUsing) {
         builder.record_error(CompilerErrorDetail {
-            reason: "(BuildHIR::lowerStatement) Handle var kinds in VariableDeclaration".to_string(),
+            reason: "(BuildHIR::lowerStatement) Handle var kinds in VariableDeclaration"
+                .to_string(),
             category: ErrorCategory::Todo,
             loc: Some(builder.loc_of_span(var_decl.span)),
             description: None,
@@ -334,12 +332,15 @@ fn lower_declarator_assignment(
             Ok(())
         }
         other => {
-            // Destructuring declaration targets need the patterns stage.
-            let pat_loc = Some(builder.loc_of_span(other.span()));
-            builder.record_diagnostic(todo_diagnostic(
-                "statement: destructuring variable declaration",
-                pat_loc,
-            ));
+            // Destructuring declaration targets (object / array / default).
+            super::lower_assignment(
+                builder,
+                loc,
+                kind,
+                other,
+                value,
+                super::AssignmentStyle::Assignment,
+            )?;
             Ok(())
         }
     }
@@ -434,7 +435,9 @@ fn store_to_identifier(
     value: Place,
 ) -> Result<Option<Place>, CompilerError> {
     if is_always_reserved_word(&id.name) {
-        return Err(CompilerError::from(reserved_identifier_diagnostic(&id.name)));
+        return Err(CompilerError::from(reserved_identifier_diagnostic(
+            &id.name,
+        )));
     }
     let id_loc = Some(builder.loc_of_span(id.span));
     let symbol_id = id.symbol_id.get();
@@ -1056,25 +1059,31 @@ fn lower_for_head_target(
                 oxc::BindingPattern::BindingIdentifier(id) => {
                     store_to_identifier(builder, left_loc, InstructionKind::Let, id, value)
                 }
-                other => {
-                    builder.record_diagnostic(todo_diagnostic(
-                        "statement: destructuring for-in/of head",
-                        Some(builder.loc_of_span(other.span())),
-                    ));
-                    Ok(None)
-                }
+                other => super::lower_assignment(
+                    builder,
+                    left_loc,
+                    InstructionKind::Let,
+                    other,
+                    value,
+                    super::AssignmentStyle::Assignment,
+                ),
             }
         }
         oxc::ForStatementLeft::AssignmentTargetIdentifier(ident) => {
             lower_for_head_reassign_identifier(builder, ident, left_loc, value)
         }
         other => {
-            builder.record_diagnostic(todo_diagnostic(
-                "statement: non-identifier for-in/of head (destructuring / member)",
-                left_loc,
-            ));
-            let _ = other;
-            Ok(None)
+            // Destructuring / member-expression assignment-target heads
+            // (`for ([a, b] of …)`, `for ({a} of …)`, `for (a.b of …)`).
+            if let Some(target) = other.as_assignment_target() {
+                super::lower_assignment_target(builder, left_loc, target, value)
+            } else {
+                builder.record_diagnostic(todo_diagnostic(
+                    "statement: non-identifier for-in/of head",
+                    left_loc,
+                ));
+                Ok(None)
+            }
         }
     }
 }
@@ -1254,7 +1263,9 @@ fn lower_try_statement(
     if try_stmt.finalizer.is_some() {
         builder.record_error(CompilerErrorDetail {
             category: ErrorCategory::Todo,
-            reason: "(BuildHIR::lowerStatement) Handle TryStatement with a finalizer ('finally') clause".to_string(),
+            reason:
+                "(BuildHIR::lowerStatement) Handle TryStatement with a finalizer ('finally') clause"
+                    .to_string(),
             description: None,
             loc: loc.clone(),
             suggestions: None,
@@ -1290,6 +1301,13 @@ fn lower_try_statement(
                     Some((place, id))
                 }
                 other => {
+                    // Destructuring catch params (`catch ({message})`). Babel
+                    // does not register destructured catch bindings in scope, so
+                    // the TS reference records a per-identifier invariant — but
+                    // that aborts HIR emission. To stay fault-tolerant (and keep
+                    // parity with the rest of the lowering, which still emits HIR
+                    // here), record a graceful Todo and produce no binding. The
+                    // catch body is still lowered below.
                     builder.record_diagnostic(todo_diagnostic(
                         "statement: destructuring catch clause parameter",
                         Some(builder.loc_of_span(other.span())),

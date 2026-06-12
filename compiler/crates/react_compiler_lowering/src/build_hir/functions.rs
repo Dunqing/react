@@ -68,7 +68,8 @@ pub(crate) fn lower_function(
 ) -> Result<LoweredFunction, CompilerError> {
     // The function's own scope. oxc records it on the node; fall back to the
     // program scope for degraded scope info.
-    let function_scope = function_scope_of(form).unwrap_or_else(|| sq::program_scope(builder.semantic()));
+    let function_scope =
+        function_scope_of(form).unwrap_or_else(|| sq::program_scope(builder.semantic()));
 
     // Extract params, body, id, generator/async, and loc from the form.
     let loc = Some(builder.loc_of_span(form.span()));
@@ -88,6 +89,7 @@ pub(crate) fn lower_function(
             lower_function_parts(
                 builder,
                 &f.params.items,
+                f.params.rest.as_deref(),
                 body,
                 id,
                 id,
@@ -113,6 +115,7 @@ pub(crate) fn lower_function(
             lower_function_parts(
                 builder,
                 &a.params.items,
+                a.params.rest.as_deref(),
                 body,
                 None,
                 None,
@@ -134,8 +137,10 @@ pub(crate) fn lower_function_declaration(
     let loc = Some(builder.loc_of_span(func.span()));
     let func_name = func.id.as_ref().map(|id| id.name.to_string());
 
-    let function_scope =
-        func.scope_id.get().unwrap_or_else(|| sq::program_scope(builder.semantic()));
+    let function_scope = func
+        .scope_id
+        .get()
+        .unwrap_or_else(|| sq::program_scope(builder.semantic()));
 
     let body = match &func.body {
         Some(b) => FunctionBody::Block(b),
@@ -152,6 +157,7 @@ pub(crate) fn lower_function_declaration(
     let lowered_func = lower_function_parts(
         builder,
         &func.params.items,
+        func.params.rest.as_deref(),
         body,
         id,
         id,
@@ -218,10 +224,7 @@ pub(crate) fn lower_function_declaration(
             _ => {
                 builder.record_error(CompilerErrorDetail {
                     category: ErrorCategory::Invariant,
-                    reason: format!(
-                        "Could not find binding for function declaration `{}`",
-                        name
-                    ),
+                    reason: format!("Could not find binding for function declaration `{}`", name),
                     description: None,
                     loc,
                     suggestions: None,
@@ -313,6 +316,7 @@ fn function_scope_of(form: &FunctionForm<'_>) -> Option<ScopeId> {
 fn lower_function_parts<'a>(
     builder: &mut HirBuilder,
     params: &'a [oxc::FormalParameter<'a>],
+    rest_param: Option<&'a oxc::FormalParameterRest<'a>>,
     body: FunctionBody<'a>,
     id: Option<&str>,
     ast_id: Option<&str>,
@@ -342,6 +346,7 @@ fn lower_function_parts<'a>(
     let env = builder.environment_mut();
     let (hir_func, child_used_names, child_bindings) = lower_inner(
         params,
+        rest_param,
         body,
         id,
         ast_id,

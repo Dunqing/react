@@ -14,11 +14,11 @@ use std::collections::HashSet;
 
 use indexmap::IndexMap;
 use oxc_ast::ast as oxc;
+use oxc_semantic::Semantic;
 use oxc_span::GetSpan;
 use oxc_span::Span;
 use oxc_syntax::scope::ScopeId;
 use oxc_syntax::symbol::SymbolId;
-use oxc_semantic::Semantic;
 use react_compiler_diagnostics::CompilerError;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::*;
@@ -33,6 +33,7 @@ use crate::semantic_queries as sq;
 
 mod expressions;
 mod functions;
+mod patterns;
 mod statements;
 
 #[allow(unused_imports)]
@@ -41,6 +42,10 @@ pub(crate) use expressions::lower_expression_to_temporary;
 #[allow(unused_imports)]
 pub(crate) use functions::{
     lower_function, lower_function_declaration, lower_function_to_value, lower_object_method,
+};
+#[allow(unused_imports)]
+pub(crate) use patterns::{
+    AssignmentStyle, lower_assignment, lower_assignment_target, lower_identifier_for_assignment,
 };
 pub(crate) use statements::lower_statement;
 
@@ -170,7 +175,11 @@ pub fn lower(
 
     let context_map: IndexMap<SymbolId, Option<SourceLocation>> = IndexMap::new();
 
-    let (params, body): (&[oxc::FormalParameter], FunctionBody) = match func {
+    let (params, rest_param, body): (
+        &[oxc::FormalParameter],
+        Option<&oxc::FormalParameterRest>,
+        FunctionBody,
+    ) = match func {
         FunctionForm::Function(f) => {
             let body = match &f.body {
                 Some(b) => FunctionBody::Block(b),
@@ -182,7 +191,7 @@ pub fn lower(
                     )));
                 }
             };
-            (&f.params.items, body)
+            (&f.params.items, f.params.rest.as_deref(), body)
         }
         FunctionForm::Arrow(a) => {
             // oxc represents `() => expr` as a FunctionBody with a single
@@ -197,7 +206,7 @@ pub fn lower(
             } else {
                 FunctionBody::Block(&a.body)
             };
-            (&a.params.items, body)
+            (&a.params.items, a.params.rest.as_deref(), body)
         }
     };
 
@@ -207,6 +216,7 @@ pub fn lower(
 
     let (f, _, _) = lower_inner(
         params,
+        rest_param,
         body,
         id,
         ast_id,
@@ -242,6 +252,7 @@ fn function_scope_of(func: &FunctionForm<'_>) -> Option<ScopeId> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_inner(
     params: &[oxc::FormalParameter],
+    rest_param: Option<&oxc::FormalParameterRest>,
     body: FunctionBody<'_>,
     id: Option<&str>,
     ast_id: Option<&str>,
@@ -294,11 +305,14 @@ pub(crate) fn lower_inner(
         });
     }
 
-    // Lower parameters. Simple identifier params lower for real; everything
-    // else (destructuring, rest, member, TS wrappers) bails with a Todo.
+    // Lower parameters. Identifier and destructuring params (incl. defaults)
+    // lower for real; the rest param is threaded separately below.
     let mut hir_params: Vec<ParamPattern> = Vec::new();
     for param in params {
-        lower_param(&mut builder, &param.pattern, &mut hir_params)?;
+        lower_param(&mut builder, param, &mut hir_params)?;
+    }
+    if let Some(rest) = rest_param {
+        lower_rest_param(&mut builder, rest, &mut hir_params)?;
     }
 
     // Lower the body.
@@ -383,9 +397,32 @@ pub(crate) fn lower_inner(
 
 fn lower_param(
     builder: &mut HirBuilder,
-    pattern: &oxc::BindingPattern,
+    param: &oxc::FormalParameter,
     hir_params: &mut Vec<ParamPattern>,
 ) -> Result<(), CompilerError> {
+    let pattern = &param.pattern;
+
+    // Defaulted params (`function f(a = 1)`) carry the default in `initializer`,
+    // separate from the binding pattern. Lower as a promoted temporary param,
+    // resolve `value === undefined ? default : value`, then assign into the
+    // pattern — mirroring how the reference treats an AssignmentPattern param.
+    if let Some(initializer) = &param.initializer {
+        let param_loc = Some(builder.loc_of_span(pattern.span()));
+        let place = build_temporary_place(builder, param_loc.clone());
+        promote_temporary(builder, place.identifier);
+        hir_params.push(ParamPattern::Place(place.clone()));
+        let resolved = patterns::lower_default(builder, param_loc.clone(), initializer, place)?;
+        patterns::lower_assignment(
+            builder,
+            param_loc,
+            InstructionKind::Let,
+            pattern,
+            resolved,
+            patterns::AssignmentStyle::Assignment,
+        )?;
+        return Ok(());
+    }
+
     match pattern {
         oxc::BindingPattern::BindingIdentifier(ident) => {
             if is_always_reserved_word(&ident.name) {
@@ -417,14 +454,61 @@ fn lower_param(
                 }
             }
         }
-        other => {
-            let loc = Some(builder.loc_of_span(other.span()));
-            builder.record_diagnostic(todo_diagnostic(
-                "destructuring / rest / typed function parameters",
-                loc,
-            ));
+        // Destructuring params (`function f({a}, [b]) {}`): create a promoted
+        // temporary param and destructure it into the pattern.
+        oxc::BindingPattern::ObjectPattern(_) | oxc::BindingPattern::ArrayPattern(_) => {
+            let param_loc = Some(builder.loc_of_span(pattern.span()));
+            let place = build_temporary_place(builder, param_loc.clone());
+            promote_temporary(builder, place.identifier);
+            hir_params.push(ParamPattern::Place(place.clone()));
+            patterns::lower_assignment(
+                builder,
+                param_loc,
+                InstructionKind::Let,
+                pattern,
+                place,
+                patterns::AssignmentStyle::Assignment,
+            )?;
+        }
+        oxc::BindingPattern::AssignmentPattern(_) => {
+            // An AssignmentPattern at the top of a FormalParameter is unusual
+            // (defaults come via `initializer`); lower it via lower_assignment.
+            let param_loc = Some(builder.loc_of_span(pattern.span()));
+            let place = build_temporary_place(builder, param_loc.clone());
+            promote_temporary(builder, place.identifier);
+            hir_params.push(ParamPattern::Place(place.clone()));
+            patterns::lower_assignment(
+                builder,
+                param_loc,
+                InstructionKind::Let,
+                pattern,
+                place,
+                patterns::AssignmentStyle::Assignment,
+            )?;
         }
     }
     Ok(())
 }
 
+/// Lower a rest parameter (`function f(...rest) {}`). The rest binding is a
+/// spread param; its argument pattern is then assigned from a temporary.
+fn lower_rest_param(
+    builder: &mut HirBuilder,
+    rest: &oxc::FormalParameterRest,
+    hir_params: &mut Vec<ParamPattern>,
+) -> Result<(), CompilerError> {
+    let rest_loc = Some(builder.loc_of_span(rest.span));
+    let place = build_temporary_place(builder, rest_loc.clone());
+    hir_params.push(ParamPattern::Spread(SpreadPattern {
+        place: place.clone(),
+    }));
+    patterns::lower_assignment(
+        builder,
+        rest_loc,
+        InstructionKind::Let,
+        &rest.rest.argument,
+        place,
+        patterns::AssignmentStyle::Assignment,
+    )?;
+    Ok(())
+}
