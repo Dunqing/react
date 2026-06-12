@@ -266,11 +266,38 @@ fn lower_throw_statement(
 // block
 // =============================================================================
 
-/// Lower a block statement. Block-scoped hoisting (`DeclareContext`) is a later
-/// stage; for now lower the body statements directly.
+/// Lower a block statement, performing block-scoped hoisting (`DeclareContext`)
+/// for declarations referenced before their lexical position (matches the
+/// `case 'BlockStatement'` arm of `BuildHIR.ts`).
 fn lower_block(builder: &mut HirBuilder, block: &oxc::BlockStatement) -> Result<(), CompilerError> {
-    for body_stmt in &block.body {
-        lower_statement(builder, body_stmt)?;
+    let block_scope = block.scope_id.get();
+    lower_block_statements(builder, block_scope, &block.body)
+}
+
+/// Lower an ordered list of statements that share `block_scope`, hoisting any
+/// declarations that are referenced before they are declared. Used for both
+/// `BlockStatement` bodies and function bodies (which share the function
+/// scope in the Babel-shaped view the compiler expects).
+pub(crate) fn lower_block_statements(
+    builder: &mut HirBuilder,
+    block_scope: Option<oxc_syntax::scope::ScopeId>,
+    statements: &[oxc::Statement],
+) -> Result<(), CompilerError> {
+    use oxc_span::GetSpan;
+
+    if let Some(scope) = block_scope {
+        let spans: Vec<oxc_span::Span> = statements.iter().map(|s| s.span()).collect();
+        let hoists = super::hoisting::compute_block_hoists(builder, scope, &spans);
+        for (index, stmt) in statements.iter().enumerate() {
+            if let Some(pending) = hoists.get(&index) {
+                super::hoisting::emit_hoists(builder, pending)?;
+            }
+            lower_statement(builder, stmt)?;
+        }
+    } else {
+        for stmt in statements {
+            lower_statement(builder, stmt)?;
+        }
     }
     Ok(())
 }

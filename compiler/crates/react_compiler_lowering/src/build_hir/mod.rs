@@ -33,6 +33,7 @@ use crate::semantic_queries as sq;
 
 mod expressions;
 mod functions;
+mod hoisting;
 mod jsx;
 mod patterns;
 mod statements;
@@ -48,8 +49,6 @@ pub(crate) use functions::{
 pub(crate) use patterns::{
     AssignmentStyle, lower_assignment, lower_assignment_target, lower_identifier_for_assignment,
 };
-pub(crate) use statements::lower_statement;
-
 // The per-construct lowering (statements / jsx / patterns) is transcribed
 // incrementally in later N1.2.x / N1.3 stages. Expression lowering (N1.2.3)
 // lives in `expressions.rs`. The dispatch in this module handles the function
@@ -339,9 +338,10 @@ pub(crate) fn lower_inner(
                 .iter()
                 .map(|d| d.directive.to_string())
                 .collect();
-            for stmt in &block.statements {
-                lower_statement(&mut builder, stmt)?;
-            }
+            // A function body shares the function scope (Babel-shaped view), so
+            // hoist declarations referenced before their lexical position.
+            let fn_scope = builder.function_scope();
+            statements::lower_block_statements(&mut builder, Some(fn_scope), &block.statements)?;
         }
     }
 

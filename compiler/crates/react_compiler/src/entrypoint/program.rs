@@ -295,7 +295,19 @@ pub fn compile_program(
             Err(err) => {
                 let fn_loc =
                     span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
-                if let Some(result) = handle_error(&err, fn_loc, &mut context) {
+                // A function carrying an opt-out directive (`'use no forget'` /
+                // `'use no memo'`) is allowed to fail: the compiler still ran it
+                // through validation, but the error is *logged*, not surfaced as
+                // fatal, and the function is left uncompiled while the rest of
+                // the file continues. Mirrors `processFn` in
+                // `Entrypoint/Program.ts` (the `directives.optOut != null` arm).
+                let opt_out = react_compiler_lowering::find_directive_disabling_memoization(
+                    source.func.body_directives(),
+                    context.opts.custom_opt_out_directives.as_deref(),
+                );
+                if opt_out.is_some() {
+                    log_error(&err, fn_loc, &mut context);
+                } else if let Some(result) = handle_error(&err, fn_loc, &mut context) {
                     return CompileProgramResult {
                         result,
                         native_artifacts: Vec::new(),

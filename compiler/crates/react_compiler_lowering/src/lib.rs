@@ -68,6 +68,41 @@ impl<'a> FunctionForm<'a> {
             FunctionForm::Arrow(_) => None,
         }
     }
+
+    /// The body directives (`'use strict'`, `'use no memo'`, …) of this
+    /// function. Empty for arrows with an expression body (`() => expr`) and
+    /// for bodyless function declarations (TS overloads / `declare`).
+    pub fn body_directives(&self) -> &'a [oxc_ast::ast::Directive<'a>] {
+        match self {
+            FunctionForm::Function(f) => f.body.as_ref().map_or(&[], |b| b.directives.as_slice()),
+            FunctionForm::Arrow(a) => a.body.directives.as_slice(),
+        }
+    }
+}
+
+/// Opt-out directives that disable memoization for a function
+/// (`'use no forget'` / `'use no memo'`). Mirrors `OPT_OUT_DIRECTIVES` in
+/// `Entrypoint/Program.ts`.
+pub const OPT_OUT_DIRECTIVES: [&str; 2] = ["use no forget", "use no memo"];
+
+/// Find the opt-out directive (if any) disabling memoization for the given
+/// body directives. `custom_opt_out_directives` extends the built-in set.
+/// Mirrors `findDirectiveDisablingMemoization` in `Entrypoint/Program.ts`.
+pub fn find_directive_disabling_memoization<'a>(
+    directives: &'a [oxc_ast::ast::Directive<'a>],
+    custom_opt_out_directives: Option<&[String]>,
+) -> Option<&'a oxc_ast::ast::Directive<'a>> {
+    if let Some(custom) = custom_opt_out_directives {
+        if let Some(found) = directives
+            .iter()
+            .find(|d| custom.iter().any(|c| c == d.expression.value.as_str()))
+        {
+            return Some(found);
+        }
+    }
+    directives
+        .iter()
+        .find(|d| OPT_OUT_DIRECTIVES.contains(&d.expression.value.as_str()))
 }
 
 // The main lower() function - delegates to build_hir
