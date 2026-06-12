@@ -102,6 +102,9 @@ MATCH once ALL its constructs are done) — also track "fixtures with zero Todo 
 - **Status**: N1.2.3 ✅ (384d59d568) expressions.rs 1889L, MATCH 70→90, 0 regressions. Remaining expr
   bails (arrow/func-expr, JSX, class, this/super, yield, destructuring-assign, logical-assign) need later infra.
   Next: N1.2.4 statements/control-flow.
+- **Status**: N1.2.4 ✅ (5b852e0bf3) statements.rs 1413L, MATCH 90→241, 0 regressions. Frontier: nested
+  functions/arrows 99%, JSX ~42%, destructuring ~14%, + orthogonal fn_type(Component vs Other) discovery gap.
+  Next: N1.2.5 nested functions/arrows + context-capture (coupled: functions.rs + hoisting.rs + find_context_identifiers.rs).
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
