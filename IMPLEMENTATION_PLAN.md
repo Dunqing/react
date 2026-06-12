@@ -99,7 +99,9 @@ wire into mod.rs dispatch, keep GREEN, measure with compare-hir.ts (MATCH count 
 Order by leverage: **expressions** (N1.2.3) → statements/control-flow → patterns/destructuring → JSX →
 function-expressions/hoisting/context-capture. MATCH count is a LAGGING indicator (a fixture only flips to
 MATCH once ALL its constructs are done) — also track "fixtures with zero Todo bailouts" as the leading signal.
-- **Status**: N1.2.3 (expressions) starting.
+- **Status**: N1.2.3 ✅ (384d59d568) expressions.rs 1889L, MATCH 70→90, 0 regressions. Remaining expr
+  bails (arrow/func-expr, JSX, class, this/super, yield, destructuring-assign, logical-assign) need later infra.
+  Next: N1.2.4 statements/control-flow.
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
