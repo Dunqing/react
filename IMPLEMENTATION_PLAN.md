@@ -88,7 +88,18 @@ Sub-stages:
 - **Depends on**: N1.2.1
 - **Success criteria**: one command diffs native-HIR vs TS-HIR for a fixture and across the corpus;
   report current baseline (expected LOW now — most constructs bail) + that the tool works + the frontier.
-- **Status**: Not Started
+- **Status**: Complete (commit 060d035454). `compiler/scripts/compare-hir.ts` (+ `hir-oracle-lib.ts`):
+  single-fixture diff + corpus run. **Baseline: 70 MATCH / 1662 frontier@HIR / 51 TS-error+oxc-bail / 0 crashes**
+  (1783 fixtures). TS side: `yarn install` (corepack shim) once; runs `printDebugHIR` in-process via tsx (no dist build).
+  Single: `tsx compiler/scripts/compare-hir.ts <fixture> --no-build`; corpus: `tsx compiler/scripts/compare-hir.ts --out … --limit 0`.
+
+### Stages N1.2.3+: fill lowering bailouts (transcribe from git 1a02788)
+Re-create each `build_hir/*` concern reading oxc_ast (port logic from git 1a02788's react_compiler_ast version),
+wire into mod.rs dispatch, keep GREEN, measure with compare-hir.ts (MATCH count ↑ / fewer Todo bails).
+Order by leverage: **expressions** (N1.2.3) → statements/control-flow → patterns/destructuring → JSX →
+function-expressions/hoisting/context-capture. MATCH count is a LAGGING indicator (a fixture only flips to
+MATCH once ALL its constructs are done) — also track "fixtures with zero Todo bailouts" as the leading signal.
+- **Status**: N1.2.3 (expressions) starting.
 
 ### Stage N1.3: Discovery + context-identifiers native
 - **Goal**: `program.rs` `AstWalker` discovery, `find_context_identifiers.rs`,
