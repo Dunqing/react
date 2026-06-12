@@ -31,10 +31,16 @@ use crate::hir_builder::reserved_identifier_diagnostic;
 use crate::hir_builder::todo_diagnostic;
 use crate::semantic_queries as sq;
 
-// The per-construct lowering (statements / expressions / jsx / patterns) is
-// transcribed incrementally in later N1.2.x / N1.3 stages. For N1.2.1 the
-// dispatch in this module handles the function shell + trivial constructs and
-// bails (graceful Todo) on everything else.
+mod expressions;
+
+#[allow(unused_imports)]
+pub(crate) use expressions::lower_expression;
+pub(crate) use expressions::lower_expression_to_temporary;
+
+// The per-construct lowering (statements / jsx / patterns) is transcribed
+// incrementally in later N1.2.x / N1.3 stages. Expression lowering (N1.2.3)
+// lives in `expressions.rs`. The dispatch in this module handles the function
+// shell + statement constructs and bails (graceful Todo) on the rest.
 
 // =============================================================================
 // Source location conversion (oxc Span -> HIR SourceLocation)
@@ -469,156 +475,3 @@ fn statement_kind_name(stmt: &oxc::Statement) -> &'static str {
     }
 }
 
-// =============================================================================
-// Expression dispatch (shell: literals + identifier loads real, rest bail)
-// =============================================================================
-
-pub(crate) fn lower_expression_to_temporary(
-    builder: &mut HirBuilder,
-    expr: &oxc::Expression,
-) -> Result<Place, CompilerError> {
-    let value = lower_expression(builder, expr)?;
-    lower_value_to_temporary(builder, value)
-}
-
-pub(crate) fn lower_expression(
-    builder: &mut HirBuilder,
-    expr: &oxc::Expression,
-) -> Result<InstructionValue, CompilerError> {
-    let loc = Some(builder.loc_of_span(expr.span()));
-    match expr {
-        oxc::Expression::NumericLiteral(lit) => Ok(InstructionValue::Primitive {
-            value: PrimitiveValue::Number(lit.value.into()),
-            loc,
-        }),
-        oxc::Expression::BooleanLiteral(lit) => Ok(InstructionValue::Primitive {
-            value: PrimitiveValue::Boolean(lit.value),
-            loc,
-        }),
-        oxc::Expression::StringLiteral(lit) => Ok(InstructionValue::Primitive {
-            value: PrimitiveValue::String(lit.value.to_string()),
-            loc,
-        }),
-        oxc::Expression::NullLiteral(_) => Ok(InstructionValue::Primitive {
-            value: PrimitiveValue::Null,
-            loc,
-        }),
-        oxc::Expression::Identifier(ident) => lower_identifier(builder, ident),
-        other => {
-            let v = todo_value(builder, "expression", expression_kind_name(other), loc.clone());
-            Ok(v)
-        }
-    }
-}
-
-/// Lower an identifier reference: resolve its binding to a LoadLocal /
-/// LoadContext / LoadGlobal. For globals/module-locals/imports we emit a
-/// LoadGlobal so trivial fixtures referencing parameters still produce HIR.
-fn lower_identifier(
-    builder: &mut HirBuilder,
-    ident: &oxc::IdentifierReference,
-) -> Result<InstructionValue, CompilerError> {
-    let loc = Some(builder.loc_of_span(ident.span));
-    let symbol_id = sq::resolve_identifier_reference(builder.semantic(), ident);
-    let binding = builder.resolve_identifier_symbol(&ident.name, symbol_id, loc.clone())?;
-    match binding {
-        VariableBinding::Identifier { identifier, .. } => {
-            let is_context = builder.is_context_symbol(symbol_id);
-            let place = Place {
-                identifier,
-                effect: Effect::Unknown,
-                reactive: false,
-                loc: loc.clone(),
-            };
-            if is_context {
-                Ok(InstructionValue::LoadContext { place, loc })
-            } else {
-                Ok(InstructionValue::LoadLocal { place, loc })
-            }
-        }
-        VariableBinding::Global { name } => Ok(InstructionValue::LoadGlobal {
-            binding: NonLocalBinding::Global { name },
-            loc,
-        }),
-        VariableBinding::ModuleLocal { name } => Ok(InstructionValue::LoadGlobal {
-            binding: NonLocalBinding::ModuleLocal { name },
-            loc,
-        }),
-        VariableBinding::ImportDefault { name, module } => Ok(InstructionValue::LoadGlobal {
-            binding: NonLocalBinding::ImportDefault { name, module },
-            loc,
-        }),
-        VariableBinding::ImportSpecifier {
-            name,
-            module,
-            imported,
-        } => Ok(InstructionValue::LoadGlobal {
-            binding: NonLocalBinding::ImportSpecifier {
-                name,
-                module,
-                imported,
-            },
-            loc,
-        }),
-        VariableBinding::ImportNamespace { name, module } => Ok(InstructionValue::LoadGlobal {
-            binding: NonLocalBinding::ImportNamespace { name, module },
-            loc,
-        }),
-    }
-}
-
-/// Record a graceful Todo and synthesize an `undefined` primitive so the value
-/// can be used as a placeholder operand without aborting lowering.
-fn todo_value(
-    builder: &mut HirBuilder,
-    category: &str,
-    what: &str,
-    loc: Option<SourceLocation>,
-) -> InstructionValue {
-    builder.record_diagnostic(todo_diagnostic(&format!("{category}: {what}"), loc.clone()));
-    InstructionValue::Primitive {
-        value: PrimitiveValue::Undefined,
-        loc,
-    }
-}
-
-fn expression_kind_name(expr: &oxc::Expression) -> &'static str {
-    use oxc::Expression::*;
-    match expr {
-        BooleanLiteral(_) => "BooleanLiteral",
-        NullLiteral(_) => "NullLiteral",
-        NumericLiteral(_) => "NumericLiteral",
-        BigIntLiteral(_) => "BigIntLiteral",
-        RegExpLiteral(_) => "RegExpLiteral",
-        StringLiteral(_) => "StringLiteral",
-        TemplateLiteral(_) => "TemplateLiteral",
-        Identifier(_) => "Identifier",
-        MetaProperty(_) => "MetaProperty",
-        Super(_) => "Super",
-        ArrayExpression(_) => "ArrayExpression",
-        ArrowFunctionExpression(_) => "ArrowFunctionExpression",
-        AssignmentExpression(_) => "AssignmentExpression",
-        AwaitExpression(_) => "AwaitExpression",
-        BinaryExpression(_) => "BinaryExpression",
-        CallExpression(_) => "CallExpression",
-        ChainExpression(_) => "ChainExpression",
-        ClassExpression(_) => "ClassExpression",
-        ConditionalExpression(_) => "ConditionalExpression",
-        FunctionExpression(_) => "FunctionExpression",
-        ImportExpression(_) => "ImportExpression",
-        LogicalExpression(_) => "LogicalExpression",
-        NewExpression(_) => "NewExpression",
-        ObjectExpression(_) => "ObjectExpression",
-        ParenthesizedExpression(_) => "ParenthesizedExpression",
-        SequenceExpression(_) => "SequenceExpression",
-        TaggedTemplateExpression(_) => "TaggedTemplateExpression",
-        ThisExpression(_) => "ThisExpression",
-        UnaryExpression(_) => "UnaryExpression",
-        UpdateExpression(_) => "UpdateExpression",
-        YieldExpression(_) => "YieldExpression",
-        PrivateInExpression(_) => "PrivateInExpression",
-        JSXElement(_) => "JSXElement",
-        JSXFragment(_) => "JSXFragment",
-        _ => "TSExpression/MemberExpression",
-    }
-}
