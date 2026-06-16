@@ -18,6 +18,7 @@
 
 use std::io::Read;
 use std::process;
+use std::time::Instant;
 
 use clap::Parser;
 use react_compiler::entrypoint::compile_result::LoggerEvent;
@@ -28,11 +29,11 @@ use react_compiler::entrypoint::plugin_options::PluginOptions;
 #[command(name = "react-compiler-e2e")]
 struct Cli {
     /// Frontend to use: only "oxc" is supported (swc was removed)
-    #[arg(long)]
+    #[arg(long, default_value = "oxc")]
     frontend: String,
 
     /// Filename (used to determine source type from extension)
-    #[arg(long)]
+    #[arg(long, default_value = "")]
     filename: String,
 
     /// JSON-serialized PluginOptions
@@ -49,6 +50,30 @@ struct Cli {
     /// to use as a printer-independent oracle. Implies `compilationMode: all`.
     #[arg(long)]
     dump_hir: bool,
+
+    /// Benchmark mode: compile every `.js` fixture under <DIR> (recursively,
+    /// excluding `*.flow.js`) in a single process. All sources are read up
+    /// front (IO is excluded from timing); only the compile loop
+    /// (parse + semantic + native transform + codegen) is timed. The whole
+    /// corpus is compiled `--iterations` times; the first (warmup) iteration
+    /// is discarded and per-iteration / per-fixture statistics are reported.
+    /// Uses `compilationMode: all` so every function in every file is compiled
+    /// (matching the TS baseline harness and bypassing the React prefilter).
+    #[arg(long)]
+    bench: Option<String>,
+
+    /// Number of timed iterations over the corpus in `--bench` mode. The first
+    /// iteration is always run as warmup and discarded, so the reported stats
+    /// come from `iterations` measurements. Default: 6 (1 warmup + 5 reported,
+    /// effectively — actually iterations measurements after a separate warmup).
+    #[arg(long, default_value_t = 6)]
+    iterations: usize,
+
+    /// In `--bench` mode, only run parse + semantic (skip the React compiler
+    /// transform + codegen) to measure the front-end cost in isolation. Used
+    /// for the parse-vs-full-pipeline breakdown.
+    #[arg(long)]
+    bench_parse_only: bool,
 }
 
 /// Result of compiling via a frontend, carrying both code/error and logger events.
@@ -63,6 +88,12 @@ struct CompileOutput {
 
 fn main() {
     let cli = Cli::parse();
+
+    // Benchmark mode: compile a whole corpus in one process and report timing.
+    if let Some(ref dir) = cli.bench {
+        run_bench(dir, cli.iterations, cli.bench_parse_only);
+        return;
+    }
 
     // Read source from stdin
     let mut source = String::new();
@@ -177,6 +208,152 @@ fn print_hir_dump(ordered_log: &[OrderedLogItem]) {
     // Join with a single newline so the output matches `formatLog` (which joins
     // formatted items with "\n").
     println!("{}", blocks.join("\n"));
+}
+
+/// A single fixture loaded for benchmarking: its source text and filename.
+struct BenchFixture {
+    filename: String,
+    source: String,
+}
+
+/// Recursively collect `.js` fixtures under `dir`, excluding `*.flow.js`
+/// (oxc has no Flow parser). Returns sorted paths for determinism.
+fn collect_fixture_paths(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_fixture_paths(&path, out);
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.ends_with(".js") && !name.ends_with(".flow.js") {
+                out.push(path);
+            }
+        }
+    }
+}
+
+/// Compile one already-loaded fixture through the full native path, mirroring
+/// `compile_oxc`: parse -> semantic -> transform (which internally runs the
+/// React compiler passes + native oxc codegen). When `parse_only` is true, only
+/// parse + semantic run (the front-end cost in isolation). Returns whether the
+/// fixture produced compiled code, so the timed loop can't be optimized away.
+#[inline]
+fn bench_compile_one(fixture: &BenchFixture, parse_only: bool) -> bool {
+    let first_line = fixture.source.lines().next().unwrap_or("");
+    let is_script = first_line.contains("@script");
+    let source_type = oxc_span::SourceType::from_path(&fixture.filename)
+        .unwrap_or_default()
+        .with_module(!is_script)
+        .with_script(is_script)
+        .with_jsx(true)
+        .with_typescript(true);
+
+    let allocator = oxc_allocator::Allocator::default();
+    let parsed = oxc_parser::Parser::new(&allocator, &fixture.source, source_type).parse();
+    if parsed.panicked {
+        return false;
+    }
+
+    let semantic = oxc_semantic::SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic;
+
+    if parse_only {
+        // Touch the semantic result so the build can't be optimized away.
+        std::hint::black_box(&semantic);
+        return !parsed.program.body.is_empty();
+    }
+
+    // compilationMode "all" so every function is compiled (bypass prefilter),
+    // matching the TS baseline harness which uses compilationMode: 'all'.
+    let options: PluginOptions = serde_json::from_str(
+        r#"{"shouldCompile":true,"enableReanimated":false,"isDev":false,"compilationMode":"all","panicThreshold":"all_errors"}"#,
+    )
+    .unwrap();
+
+    let mut result =
+        react_compiler_oxc::transform(&parsed.program, &semantic, &fixture.source, options);
+    let code = result.code.take();
+    code.is_some()
+}
+
+/// Run the corpus benchmark: read all fixtures up front (IO excluded from the
+/// timed region), then compile the whole corpus `iterations` times. The first
+/// iteration is a separate warmup pass (discarded); statistics are reported
+/// over the `iterations` timed passes.
+fn run_bench(dir: &str, iterations: usize, parse_only: bool) {
+    let root = std::path::Path::new(dir);
+    let mut paths = Vec::new();
+    if root.is_file() {
+        paths.push(root.to_path_buf());
+    } else {
+        collect_fixture_paths(root, &mut paths);
+    }
+
+    // Load all sources up front — IO is OUTSIDE the timed region.
+    let mut fixtures: Vec<BenchFixture> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        match std::fs::read_to_string(path) {
+            Ok(source) => fixtures.push(BenchFixture {
+                filename: path.to_string_lossy().into_owned(),
+                source,
+            }),
+            Err(e) => eprintln!("skip {}: {e}", path.display()),
+        }
+    }
+
+    let n = fixtures.len();
+    if n == 0 {
+        eprintln!("No fixtures found under {dir}");
+        process::exit(1);
+    }
+
+    let mode = if parse_only {
+        "parse+semantic only"
+    } else {
+        "full pipeline (parse+semantic+compile+codegen)"
+    };
+    eprintln!("Benchmarking {n} fixtures, {iterations} timed iterations, mode: {mode}");
+
+    // Warmup pass (discarded): also counts how many fixtures compile to code.
+    let mut compiled_count = 0usize;
+    for fixture in &fixtures {
+        if bench_compile_one(fixture, parse_only) {
+            compiled_count += 1;
+        }
+    }
+
+    // Timed iterations.
+    let mut iter_secs: Vec<f64> = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let mut sink = 0usize;
+        for fixture in &fixtures {
+            if bench_compile_one(fixture, parse_only) {
+                sink += 1;
+            }
+        }
+        std::hint::black_box(sink);
+        iter_secs.push(start.elapsed().as_secs_f64());
+    }
+
+    iter_secs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = iter_secs[iter_secs.len() / 2];
+    let min = iter_secs[0];
+    let max = iter_secs[iter_secs.len() - 1];
+    let fixtures_per_sec = n as f64 / median;
+    let per_fixture_ms = (median / n as f64) * 1000.0;
+
+    println!("=== Rust native-oxc bench ({mode}) ===");
+    println!("fixtures:            {n}");
+    println!("compiled to code:    {compiled_count}");
+    println!("iterations (timed):  {iterations}");
+    println!("per-iteration total: median {median:.4}s  min {min:.4}s  max {max:.4}s");
+    println!("fixtures/sec:        {fixtures_per_sec:.1}");
+    println!("per-fixture median:  {per_fixture_ms:.4} ms");
 }
 
 fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> CompileOutput {
