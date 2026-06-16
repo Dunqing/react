@@ -783,8 +783,13 @@ fn function_expression<'a>(
     if node.is_arrow {
         // Render the compiled function as a true arrow to preserve the original
         // form (`X = () => {...}`). Arrows are anonymous, so drop any name.
-        // Also apply the single-return optimization (`() => { return X; }`
-        // becomes `() => X`).
+        //
+        // The compiled body is always a block statement. TS's top-level arrow
+        // splice (`applyCompiledFunction` in Entrypoint/Program.ts) uses
+        // `body: compiledFn.body` directly — it does NOT collapse a single
+        // `return` into a concise expression body. (That concise collapse only
+        // happens for *nested* FunctionExpressions in CodegenReactiveFunction.)
+        // So a top-level `const f = x => x` round-trips as `x => { return x; }`.
         let params = function.params.unbox();
         let is_async = function.r#async;
         let body = function
@@ -793,32 +798,6 @@ fn function_expression<'a>(
             .unbox();
         let directives = body.directives;
         let statements = body.statements;
-
-        // Single-return optimization: only when there are no directives and the
-        // sole statement is a return with an argument.
-        let single_return_arg = statements.len() == 1
-            && directives.is_empty()
-            && matches!(statements.first(), Some(oxc::Statement::ReturnStatement(r)) if r.argument.is_some());
-
-        if single_return_arg {
-            let mut statements = statements;
-            if let oxc::Statement::ReturnStatement(ret) = statements.pop().unwrap() {
-                let arg = ret.unbox().argument.unwrap();
-                let mut v = builder.vec();
-                v.push(builder.statement_expression(SPAN, arg));
-                let fn_body = builder.function_body(SPAN, builder.vec(), v);
-                return builder.expression_arrow_function(
-                    SPAN,
-                    true,
-                    is_async,
-                    None::<ArenaBox<'a, oxc::TSTypeParameterDeclaration<'a>>>,
-                    params,
-                    None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
-                    fn_body,
-                );
-            }
-            unreachable!();
-        }
 
         let fn_body = builder.function_body(SPAN, directives, statements);
         builder.expression_arrow_function(
