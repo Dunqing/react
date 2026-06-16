@@ -4,14 +4,52 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-use react_compiler_ast::common::{Comment, CommentData, Position, SourceLocation};
 use react_compiler_diagnostics::{
     CompilerDiagnostic, CompilerDiagnosticDetail, CompilerError, CompilerSuggestion,
     CompilerSuggestionOperation, ErrorCategory,
 };
 
-/// Convert oxc program comments into the `react_compiler_ast` comment shape used
-/// by [`find_program_suppressions`]. Mirrors Babel's `t.Comment`:
+/// A 1-based line / 0-based column source position, with an optional byte
+/// `index`. Local to suppression parsing (mirrors Babel's `t.SourceLocation`
+/// position shape).
+#[derive(Debug, Clone)]
+pub struct Position {
+    pub line: u32,
+    pub column: u32,
+    pub index: Option<u32>,
+}
+
+/// A source-location span (start/end positions). `filename`/`identifier_name`
+/// are kept for shape-parity with the diagnostic location but are unused here.
+#[derive(Debug, Clone)]
+pub struct SourceLocation {
+    pub start: Position,
+    pub end: Position,
+    #[allow(dead_code)]
+    pub filename: Option<String>,
+    #[allow(dead_code)]
+    pub identifier_name: Option<String>,
+}
+
+/// The inner data of a comment: its (delimiter-stripped) text, full span
+/// offsets, and source location. Mirrors Babel's `t.Comment`.
+#[derive(Debug, Clone)]
+pub struct CommentData {
+    pub value: String,
+    pub start: Option<u32>,
+    pub end: Option<u32>,
+    pub loc: Option<SourceLocation>,
+}
+
+/// A program comment — line (`//`) or block (`/* */`).
+#[derive(Debug, Clone)]
+pub enum Comment {
+    CommentLine(CommentData),
+    CommentBlock(CommentData),
+}
+
+/// Convert oxc program comments into the local [`Comment`] shape used by
+/// [`find_program_suppressions`]. Mirrors Babel's `t.Comment`:
 /// - `value` is the comment's inner text (delimiters stripped), matching
 ///   Babel's `comment.value`.
 /// - `start`/`end` are the *full* comment span (including `/* */` or `//`),

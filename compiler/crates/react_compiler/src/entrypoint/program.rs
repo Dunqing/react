@@ -739,7 +739,6 @@ pub fn compile_program(
     };
     CompileProgramResult {
         result: CompileResult::Success {
-            ast: None,
             events: context.events,
             ordered_log: context.ordered_log,
             renames,
@@ -755,7 +754,6 @@ fn success(
     events: Vec<LoggerEvent>,
 ) -> CompileResult {
     CompileResult::Success {
-        ast: None,
         events,
         ordered_log,
         renames: renames.unwrap_or_default(),

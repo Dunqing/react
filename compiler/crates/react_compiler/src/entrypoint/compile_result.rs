@@ -1,9 +1,4 @@
-use react_compiler_ast::File;
-use react_compiler_ast::expressions::Identifier as AstIdentifier;
-use react_compiler_ast::patterns::PatternLike;
-use react_compiler_ast::statements::BlockStatement;
 use react_compiler_diagnostics::SourceLocation;
-use react_compiler_hir::ReactFunctionType;
 use serde::Serialize;
 
 use crate::timing::TimingEntry;
@@ -86,13 +81,11 @@ pub struct BindingRenameInfo {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum CompileResult {
     /// Compilation succeeded (or no functions needed compilation).
-    /// `ast` is None if no changes were made to the program.
-    /// The compiled Babel AST is returned by value so in-process Rust consumers
-    /// (the oxc/swc frontends) use it directly instead of round-tripping through
-    /// JSON. CompileResult still derives Serialize, so the napi consumer
-    /// serializes the whole result (inlining the File) as before.
+    ///
+    /// The native oxc codegen path emits compiled code separately (via the
+    /// `NativeArtifact`s returned alongside this result); this success variant
+    /// carries only the diagnostic/log/rename side-channels.
     Success {
-        ast: Option<File>,
         events: Vec<LoggerEvent>,
         /// Unified ordered log interleaving events and debug entries.
         /// Items appear in the order they were emitted during compilation.
@@ -217,30 +210,18 @@ impl DebugLogEntry {
     }
 }
 
-/// Codegen output for a single compiled function.
-/// Carries the generated AST fields needed to replace the original function.
-#[derive(Debug, Clone)]
-pub struct CodegenFunction {
-    pub loc: Option<SourceLocation>,
-    pub id: Option<AstIdentifier>,
-    pub name_hint: Option<String>,
-    pub params: Vec<PatternLike>,
-    pub body: BlockStatement,
-    pub generator: bool,
-    pub is_async: bool,
+/// Memoization statistics for a single successfully-compiled function.
+///
+/// These counts feed the `CompileSuccess` logger event. The native oxc codegen
+/// path produces the actual compiled code (the `NativeArtifact`s); this struct
+/// is the only other output the pipeline returns per function.
+#[derive(Debug, Clone, Default)]
+pub struct CompileFnStats {
     pub memo_slots_used: u32,
     pub memo_blocks: u32,
     pub memo_values: u32,
     pub pruned_memo_blocks: u32,
     pub pruned_memo_values: u32,
-    pub outlined: Vec<OutlinedFunction>,
-}
-
-/// An outlined function extracted during compilation.
-#[derive(Debug, Clone)]
-pub struct OutlinedFunction {
-    pub func: CodegenFunction,
-    pub fn_type: Option<ReactFunctionType>,
 }
 
 /// Logger events emitted during compilation.

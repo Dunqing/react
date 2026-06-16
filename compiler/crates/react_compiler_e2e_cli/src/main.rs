@@ -43,10 +43,6 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
-    /// Dump ScopeInfo as JSON to stderr (for debugging scope analysis differences)
-    #[arg(long)]
-    dump_scope: bool,
-
     /// Dump the per-pass HIR debug log to stdout instead of compiled code.
     /// Enables debug logging, runs the oxc compile, and prints each pass's
     /// state as `## <PassName>` blocks (matching test-rust-port.ts format),
@@ -108,7 +104,7 @@ fn main() {
     };
 
     let output = match cli.frontend.as_str() {
-        "oxc" => compile_oxc(&source, &cli.filename, options, cli.dump_scope),
+        "oxc" => compile_oxc(&source, &cli.filename, options),
         "swc" => {
             eprintln!("The 'swc' frontend has been removed. Use '--frontend oxc'.");
             process::exit(1);
@@ -183,12 +179,7 @@ fn print_hir_dump(ordered_log: &[OrderedLogItem]) {
     println!("{}", blocks.join("\n"));
 }
 
-fn compile_oxc(
-    source: &str,
-    filename: &str,
-    mut options: PluginOptions,
-    dump_scope: bool,
-) -> CompileOutput {
+fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> CompileOutput {
     options.filename = Some(filename.to_string());
     // Always enable TypeScript parsing (like the TS/Babel baseline uses
     // ['typescript', 'jsx'] plugins). Some .js fixtures contain TS syntax.
@@ -219,16 +210,10 @@ fn compile_oxc(
         .build(&parsed.program)
         .semantic;
 
-    if dump_scope {
-        let scope_info =
-            react_compiler_oxc::convert_scope::convert_scope_info(&semantic, &parsed.program);
-        eprintln!("{}", serde_json::to_string_pretty(&scope_info).unwrap());
-    }
-
     let mut result = react_compiler_oxc::transform(&parsed.program, &semantic, source, options);
     let events = std::mem::take(&mut result.events);
     let ordered_log = std::mem::take(&mut result.ordered_log);
-    let rename_plan = std::mem::take(&mut result.rename_plan);
+    let _ = std::mem::take(&mut result.rename_plan);
 
     // Check for error-level diagnostics, similar to SWC path.
     // OxcDiagnostic uses miette's Severity.
@@ -248,44 +233,27 @@ fn compile_oxc(
         };
     }
 
-    match result.file {
-        Some(ref file) => {
-            let emit_allocator = oxc_allocator::Allocator::default();
-            CompileOutput {
-                code: Some(react_compiler_oxc::emit(
-                    file,
-                    &emit_allocator,
-                    Some(source),
-                    &rename_plan,
-                )),
-                error: None,
-                events,
-                ordered_log,
-            }
+    // No function compiled natively (`result.code` was `None`).
+    if has_errors {
+        // Compilation had errors — mimic TS plugin throwing.
+        let messages: Vec<String> = result
+            .diagnostics
+            .iter()
+            .map(|d| d.message.to_string())
+            .collect();
+        CompileOutput {
+            code: None,
+            error: Some(messages.join("\n")),
+            events,
+            ordered_log,
         }
-        None => {
-            if has_errors {
-                // Compilation had errors — mimic TS plugin throwing
-                let messages: Vec<String> = result
-                    .diagnostics
-                    .iter()
-                    .map(|d| d.message.to_string())
-                    .collect();
-                CompileOutput {
-                    code: None,
-                    error: Some(messages.join("\n")),
-                    events,
-                    ordered_log,
-                }
-            } else {
-                // No changes — emit the original parsed program (already has comments)
-                CompileOutput {
-                    code: Some(oxc_codegen::Codegen::new().build(&parsed.program).code),
-                    error: None,
-                    events,
-                    ordered_log,
-                }
-            }
+    } else {
+        // No changes — emit the original parsed program (already has comments).
+        CompileOutput {
+            code: Some(oxc_codegen::Codegen::new().build(&parsed.program).code),
+            error: None,
+            events,
+            ordered_log,
         }
     }
 }

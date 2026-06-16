@@ -10,10 +10,8 @@
 //!
 //! - `codegen_reactive_function.rs` — the LOGIC (memo cache `_c(n)` emission,
 //!   reactive-scope `if ($[i] !== dep) {…} else {…}` wrapping, return handling).
-//! - `convert_ast_reverse.rs` — the oxc 0.121 `AstBuilder` CONSTRUCTION patterns.
 //!
-//! Instead of building `react_compiler_ast` then converting, this builds oxc
-//! nodes in one pass.
+//! This builds oxc AST nodes directly in a single pass.
 //!
 //! Scope: this is a vertical slice. The CORE constructs needed by simple
 //! memoizing components are implemented; anything else returns [`CodegenBail`]

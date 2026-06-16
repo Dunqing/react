@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-react_compiler_ast = { path = "../react_compiler_ast" }
 react_compiler_diagnostics = { path = "../react_compiler_diagnostics" }
 react_compiler_hir = { path = "../react_compiler_hir" }
 react_compiler_inference = { path = "../react_compiler_inference" }
@@ -14,6 +13,7 @@ react_compiler_reactive_scopes = { path = "../react_compiler_reactive_scopes" }
 react_compiler_ssa = { path = "../react_compiler_ssa" }
 react_compiler_typeinference = { path = "../react_compiler_typeinference" }
 react_compiler_validation = { path = "../react_compiler_validation" }
+oxc_allocator = "0.121"
 oxc_ast = "0.121"
 oxc_ast_visit = "0.121"
 oxc_semantic = "0.121"

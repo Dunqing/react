@@ -16,13 +16,12 @@ use react_compiler_hir::environment::OutputMode;
 use react_compiler_hir::environment_config::EnvironmentConfig;
 use react_compiler_lowering::FunctionForm;
 
-use super::compile_result::CodegenFunction;
+use super::compile_result::CompileFnStats;
 use super::compile_result::CompilerErrorDetailInfo;
 use super::compile_result::CompilerErrorItemInfo;
 use super::compile_result::DebugLogEntry;
 use super::compile_result::LoggerPosition;
 use super::compile_result::LoggerSourceLocation;
-use super::compile_result::OutlinedFunction;
 use super::imports::ProgramContext;
 use super::native_codegen as native;
 use super::plugin_options::CompilerOutputMode;
@@ -30,9 +29,11 @@ use crate::debug_print;
 
 /// Run the compilation pipeline on a single function.
 ///
-/// Currently: creates an Environment, runs BuildHIR (lowering), and produces
-/// debug output via the context. Returns a CodegenFunction with zeroed memo
-/// stats on success (codegen is not yet implemented).
+/// Creates an Environment, runs the full lowering → reactive-scope pipeline,
+/// and pushes [`native::NativeArtifact`]s onto the context for native oxc
+/// codegen. Returns the per-function memoization stats (for the
+/// `CompileSuccess` logger event); the actual compiled code is emitted by the
+/// native codegen path from the artifacts.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_fn(
     func: &FunctionForm<'_>,
@@ -43,7 +44,7 @@ pub fn compile_fn(
     mode: CompilerOutputMode,
     env_config: &EnvironmentConfig,
     context: &mut ProgramContext,
-) -> Result<CodegenFunction, CompilerError> {
+) -> Result<CompileFnStats, CompilerError> {
     // N2.1: capture the source form (span + arrow-ness) for native oxc codegen
     // assembly before lowering moves on.
     let native_fn_span = {
@@ -1059,34 +1060,55 @@ pub fn compile_fn(
         context.timing.stop();
     }
 
-    // N2.1: snapshot the reactive function + unique identifiers for native oxc
-    // codegen, which runs after the input semantic borrow ends (see
-    // native_codegen.rs). We clone these here, before the (currently dead)
-    // react_compiler_ast codegen below consumes `unique_identifiers` by value
-    // and borrows `env`. `env` itself is moved into the artifact at the push
-    // site below (its scope/identifier arenas are read-only during codegen).
-    let native_reactive_fn = reactive_fn.clone();
-    let native_unique_identifiers = unique_identifiers.clone();
+    // Native oxc codegen runs after the input semantic borrow ends (see
+    // native_codegen.rs / codegen_assembly.rs), so we move the reactive function
+    // + unique identifiers into a `NativeArtifact` below. They are the only
+    // codegen inputs; `fbt_operands` is unused by the native path.
+    let _ = fbt_operands;
+    let native_reactive_fn = reactive_fn;
+    let native_unique_identifiers = unique_identifiers;
 
+    // Memoization stats for the `CompileSuccess` logger event. The four
+    // block/value counts come from a structural walk of the reactive function
+    // (`count_memo_blocks`); `memo_slots_used` is the cache-slot count produced
+    // by the native oxc codegen — we run it here (against a throwaway allocator,
+    // discarding the generated function) so the count matches the emitted code
+    // exactly. `env` is read-only during codegen.
     context.timing.start("codegen");
-    let codegen_result = react_compiler_reactive_scopes::codegen_function(
-        &reactive_fn,
-        &mut env,
-        unique_identifiers,
-        fbt_operands,
-    )?;
+    let (memo_blocks, memo_values, pruned_memo_blocks, pruned_memo_values) =
+        react_compiler_reactive_scopes::count_memo_blocks::count_memo_blocks(
+            &native_reactive_fn,
+            &env,
+        );
+    let memo_slots_used = {
+        let allocator = oxc_allocator::Allocator::default();
+        let builder = oxc_ast::AstBuilder::new(&allocator);
+        react_compiler_reactive_scopes::codegen_oxc::codegen_oxc_function(
+            &native_reactive_fn,
+            &env,
+            native_unique_identifiers.clone(),
+            &builder,
+            "_c",
+        )
+        .map(|out| out.memo_slots_used)
+        .unwrap_or(0)
+    };
+    let stats = CompileFnStats {
+        memo_slots_used,
+        memo_blocks,
+        memo_values,
+        pruned_memo_blocks,
+        pruned_memo_values,
+    };
     context.timing.stop();
 
     // NOTE: we intentionally do NOT register the memo cache import here.
-    // The import is registered in apply_compiled_functions() only for functions
+    // The import is registered during native codegen assembly only for functions
     // that are actually applied to the output. Registering it here would cause
     // a spurious `import { c as _c }` when a function compiles with memo slots
     // but is later discarded (e.g., due to "use no memo" opt-out or errors),
     // while other functions in the same file compile to 0 memo slots.
 
-    // TODO(N2): validate_source_locations reads the original react_compiler_ast
-    // function node, which the oxc input path no longer provides. Skipped during
-    // the N1.2 input flip; revisited with native codegen in N2.
     let _ = func;
 
     // Simulate unexpected exception for testing (matches TS Pipeline.ts)
@@ -1114,54 +1136,6 @@ pub fn compile_fn(
             context.merge_uid_known_names(&uid_names);
         }
         return Err(env.take_errors());
-    }
-
-    // Re-compile outlined functions through the full pipeline.
-    // This mirrors TS behavior where outlined functions from JSX outlining
-    // are pushed back onto the compilation queue and compiled as components.
-    let mut compiled_outlined: Vec<OutlinedFunction> = Vec::new();
-    for o in codegen_result.outlined {
-        let outlined_codegen = CodegenFunction {
-            loc: o.func.loc,
-            id: o.func.id,
-            name_hint: o.func.name_hint,
-            params: o.func.params,
-            body: o.func.body,
-            generator: o.func.generator,
-            is_async: o.func.is_async,
-            memo_slots_used: o.func.memo_slots_used,
-            memo_blocks: o.func.memo_blocks,
-            memo_values: o.func.memo_values,
-            pruned_memo_blocks: o.func.pruned_memo_blocks,
-            pruned_memo_values: o.func.pruned_memo_values,
-            outlined: Vec::new(),
-        };
-        if let Some(fn_type) = o.fn_type {
-            let fn_name = outlined_codegen.id.as_ref().map(|id| id.name.clone());
-            match compile_outlined_fn(
-                outlined_codegen,
-                fn_name.as_deref(),
-                fn_type,
-                mode,
-                env_config,
-                context,
-            ) {
-                Ok(compiled) => {
-                    compiled_outlined.push(OutlinedFunction {
-                        func: compiled,
-                        fn_type: Some(fn_type),
-                    });
-                }
-                Err(_err) => {
-                    // If re-compilation fails, skip the outlined function
-                }
-            }
-        } else {
-            compiled_outlined.push(OutlinedFunction {
-                func: outlined_codegen,
-                fn_type: o.fn_type,
-            });
-        }
     }
 
     if let Some(uid_names) = env.take_uid_known_names() {
@@ -1226,9 +1200,9 @@ pub fn compile_fn(
     }
 
     // N2.1: record the native codegen artifact only on full success, after all
-    // error checks above. We move `env` in here (the dead codegen above only
-    // read its scope/identifier arenas); native codegen re-runs cache-slot
-    // allocation independently against the snapshotted reactive function.
+    // error checks above. We move `env` in here; native codegen re-runs
+    // cache-slot allocation independently against the snapshotted reactive
+    // function.
     context.native_artifacts.push(native::NativeArtifact {
         reactive_fn: native_reactive_fn,
         env,
@@ -1239,42 +1213,7 @@ pub fn compile_fn(
         fn_name: fn_name.map(|s| s.to_string()),
     });
 
-    Ok(CodegenFunction {
-        loc: codegen_result.loc,
-        id: codegen_result.id,
-        name_hint: codegen_result.name_hint,
-        params: codegen_result.params,
-        body: codegen_result.body,
-        generator: codegen_result.generator,
-        is_async: codegen_result.is_async,
-        memo_slots_used: codegen_result.memo_slots_used,
-        memo_blocks: codegen_result.memo_blocks,
-        memo_values: codegen_result.memo_values,
-        pruned_memo_blocks: codegen_result.pruned_memo_blocks,
-        pruned_memo_values: codegen_result.pruned_memo_values,
-        outlined: compiled_outlined,
-    })
-}
-
-/// Re-compile an outlined function's codegen AST through the full pipeline.
-///
-/// In the bridge version this rebuilt a synthetic `ScopeInfo` from the codegen
-/// `react_compiler_ast` output and re-lowered it. The oxc input path lowers from
-/// `oxc_ast`/`oxc_semantic` only, and there is no oxc AST for these synthesized
-/// (outlined) functions. Re-compiling them is therefore deferred to N2 (native
-/// codegen); for now the already-codegen'd function is returned unchanged so the
-/// HIR-oracle path stays green.
-pub fn compile_outlined_fn(
-    codegen_fn: CodegenFunction,
-    fn_name: Option<&str>,
-    fn_type: ReactFunctionType,
-    mode: CompilerOutputMode,
-    env_config: &EnvironmentConfig,
-    context: &mut ProgramContext,
-) -> Result<CodegenFunction, CompilerError> {
-    // TODO(N2): re-lower outlined functions from a native representation.
-    let _ = (fn_name, fn_type, mode, env_config, context);
-    Ok(codegen_fn)
+    Ok(stats)
 }
 
 /// Build the `ReactiveFunction` + reserved unique identifiers for an outlined

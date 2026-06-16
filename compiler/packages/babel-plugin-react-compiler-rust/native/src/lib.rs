@@ -3,8 +3,6 @@ use std::time::Instant;
 use napi_derive::napi;
 use react_compiler::entrypoint::PluginOptions;
 use react_compiler::timing::TimingEntry;
-use react_compiler_ast::File;
-use react_compiler_ast::scope::ScopeInfo;
 use serde::Deserialize;
 
 /// Deserialize JSON with no recursion limit (for deeply nested ASTs).
@@ -54,16 +52,16 @@ fn compile_inner(
 
     let deser_start = Instant::now();
 
-    // The legacy JS bridge passes a serialized react_compiler_ast `File` +
-    // `ScopeInfo`. Stage N1.2 retargeted `compile_program` to read oxc AST +
-    // semantic DIRECTLY, which this napi shim does not have. Parsing is kept for
-    // forward-compatible error reporting, but compilation here is a no-op stub:
-    // the native oxc path (react_compiler_oxc) is the supported entrypoint, and
-    // this JS-bridge codegen path is revived/replaced in N2 (native codegen).
-    let _ast: File = from_json_str(&ast_json)
+    // The legacy JS bridge passes a serialized AST `File` + scope info. Stage
+    // N1.2 retargeted `compile_program` to read oxc AST + semantic DIRECTLY,
+    // which this napi shim does not have, so compilation here is a no-op stub:
+    // the native oxc path (react_compiler_oxc) is the supported entrypoint. We
+    // still parse the JSON inputs as generic values for forward-compatible error
+    // reporting (validates well-formed JSON), then discard them.
+    let _ast: serde_json::Value = from_json_str(&ast_json)
         .map_err(|e| napi::Error::from_reason(format!("Failed to parse AST JSON: {}", e)))?;
 
-    let _scope: ScopeInfo = from_json_str(&scope_json)
+    let _scope: serde_json::Value = from_json_str(&scope_json)
         .map_err(|e| napi::Error::from_reason(format!("Failed to parse scope JSON: {}", e)))?;
 
     let _opts: PluginOptions = from_json_str(&options_json)
@@ -75,7 +73,6 @@ fn compile_inner(
     // TODO(N2): drive the native oxc `compile_program` (parse source -> semantic)
     // from this entrypoint. For now return "no changes".
     let mut result = react_compiler::entrypoint::compile_result::CompileResult::Success {
-        ast: None,
         events: Vec::new(),
         ordered_log: Vec::new(),
         renames: Vec::new(),

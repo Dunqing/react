@@ -800,12 +800,12 @@ name = "react_compiler"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
  "oxc_semantic",
  "oxc_span",
  "oxc_syntax",
- "react_compiler_ast",
  "react_compiler_diagnostics",
  "react_compiler_hir",
  "react_compiler_inference",
@@ -817,18 +817,6 @@ dependencies = [
  "react_compiler_validation",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "react_compiler_ast"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "serde",
- "serde-transcode",
- "serde_json",
- "similar",
- "walkdir",
 ]
 
 [[package]]
@@ -850,7 +838,6 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
  "react_compiler",
- "react_compiler_ast",
  "react_compiler_oxc",
  "serde_json",
 ]
@@ -902,7 +889,6 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "react_compiler",
- "react_compiler_ast",
  "serde",
  "serde_json",
 ]
@@ -933,7 +919,6 @@ dependencies = [
  "oxc_span",
  "oxc_syntax",
  "react_compiler",
- "react_compiler_ast",
  "react_compiler_diagnostics",
  "react_compiler_hir",
  "react_compiler_reactive_scopes",
@@ -951,7 +936,6 @@ dependencies = [
  "oxc_ast",
  "oxc_span",
  "oxc_syntax",
- "react_compiler_ast",
  "react_compiler_diagnostics",
  "react_compiler_hir",
  "serde_json",
@@ -1041,15 +1025,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "same-file"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
-dependencies = [
- "winapi-util",
-]
-
-[[package]]
 name = "self_cell"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1075,15 +1050,6 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
-]
-
-[[package]]
-name = "serde-transcode"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "590c0e25c2a5bb6e85bf5c1bce768ceb86b316e7a01bdf07d2cb4ec2271990e2"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -1129,12 +1095,6 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
-
-[[package]]
-name = "similar"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"
@@ -1261,25 +1221,6 @@ name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
-
-[[package]]
-name = "walkdir"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
-dependencies = [
- "same-file",
- "winapi-util",
-]
-
-[[package]]
-name = "winapi-util"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
-dependencies = [
- "windows-sys",
-]
 
 [[package]]
 name = "windows-link"
