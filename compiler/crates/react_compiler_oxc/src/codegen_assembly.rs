@@ -116,7 +116,7 @@ pub fn assemble_and_print(
 
     // Inject the runtime cache import if any compiled function used memo slots.
     if any_memo {
-        inject_memo_import(&builder, &mut program, runtime_module);
+        inject_memo_import(&builder, &mut program, runtime_module, source_type);
     }
 
     // Inject the gating import(s) after the `_c` import (TS emits the gating
@@ -836,12 +836,22 @@ fn function_expression<'a>(
     }
 }
 
-/// Prepend `import { c as _c } from "<runtime_module>";` to the program body.
+/// Prepend the runtime cache import to the program body. In `module` source
+/// type, emits `import { c as _c } from "<runtime_module>";`. In `script`
+/// source type, emits `const { c: _c } = require("<runtime_module>");`
+/// (CommonJS), matching the TS plugin's `addImportDeclaration` in
+/// `Entrypoint/Imports.ts` which keys off `program.node.sourceType`.
 fn inject_memo_import<'a>(
     builder: &AstBuilder<'a>,
     program: &mut oxc::Program<'a>,
     runtime_module: &str,
+    source_type: SourceType,
 ) {
+    if source_type.is_script() {
+        let stmt = build_require_destructure(builder, runtime_module, "c", MEMO_LOCAL_NAME);
+        program.body.insert(0, stmt);
+        return;
+    }
     let imported =
         oxc::ModuleExportName::IdentifierName(builder.identifier_name(SPAN, builder.atom("c")));
     let local = builder.binding_identifier(SPAN, builder.atom(MEMO_LOCAL_NAME));
@@ -861,6 +871,61 @@ fn inject_memo_import<'a>(
     );
     let import_stmt = oxc::Statement::ImportDeclaration(builder.alloc(import_decl));
     program.body.insert(0, import_stmt);
+}
+
+/// Build `const { <imported>: <local> } = require("<module>");` — the CommonJS
+/// destructuring form used in `script` source type.
+fn build_require_destructure<'a>(
+    builder: &AstBuilder<'a>,
+    module: &str,
+    imported: &str,
+    local: &str,
+) -> oxc::Statement<'a> {
+    // Object pattern `{ <imported>: <local> }`.
+    let key = oxc::PropertyKey::StaticIdentifier(
+        builder.alloc(builder.identifier_name(SPAN, builder.atom(imported))),
+    );
+    let value = builder.binding_pattern_binding_identifier(SPAN, builder.atom(local));
+    let shorthand = imported == local;
+    let prop = builder.binding_property(SPAN, key, value, shorthand, false);
+    let mut properties = builder.vec();
+    properties.push(prop);
+    let binding = builder.binding_pattern_object_pattern(
+        SPAN,
+        properties,
+        None::<oxc::BindingRestElement<'a>>,
+    );
+
+    // `require("<module>")`.
+    let callee = oxc::Expression::Identifier(
+        builder.alloc(builder.identifier_reference(SPAN, builder.atom("require"))),
+    );
+    let module_arg = oxc::Argument::StringLiteral(
+        builder.alloc(builder.string_literal(SPAN, builder.atom(module), None)),
+    );
+    let mut args = builder.vec();
+    args.push(module_arg);
+    let require_call = oxc::Expression::CallExpression(builder.alloc(builder.call_expression(
+        SPAN,
+        callee,
+        None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+        args,
+        false,
+    )));
+
+    let declarator = builder.variable_declarator(
+        SPAN,
+        oxc::VariableDeclarationKind::Const,
+        binding,
+        None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+        Some(require_call),
+        false,
+    );
+    let mut decls = builder.vec();
+    decls.push(declarator);
+    let decl =
+        builder.variable_declaration(SPAN, oxc::VariableDeclarationKind::Const, decls, false);
+    oxc::Statement::VariableDeclaration(builder.alloc(decl))
 }
 
 /// Inject the gating import(s) — `import { <imported> [as <local>] } from
