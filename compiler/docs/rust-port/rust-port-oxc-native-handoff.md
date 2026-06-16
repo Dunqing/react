@@ -29,7 +29,8 @@ Two oracles, both comparing the native Oxc compiler against the in-process TS co
   renames temporaries, masks `$[N]`/`_c(N)` slot indices, normalizes JSX self-close / decl-kind /
   comments / numeric-literal form). This is the PRIMARY metric. `tsx compiler/scripts/compare-code.ts --limit 0` (corpus),
   `tsx compiler/scripts/compare-code.ts <fixture>` (single, prints diff), `--list BAIL|OTHER|N-VAL`.
-  **SEMANTIC-pass ≈ 1719/1803 (95.3%)** (after @gating + scattered-tail fixes; was 1673 at migration-complete).
+  **SEMANTIC-pass ≈ 1738/1803 (96.4%)** (after @gating + scattered-tail + jsx-outlining + React.memo/forwardRef
+  discovery; was 1673 at migration-complete). Remaining 65: N-VAL 9, BAIL 36 (~23 fbt), OTHER 20.
 - **`compiler/scripts/compare-hir.ts`** — per-pass HIR diff (printer-independent). **HIR-MATCH ≈ 1447/1803**
   byte-identical to the TS compiler. (Many semantically-correct fixtures differ only in HIR temp/block
   ID *numbering*, which compiles identically — so HIR-MATCH < SEMANTIC-pass by design.)
