@@ -2223,6 +2223,11 @@ impl<'a, 'e> Cx<'a, 'e> {
                             .expression_numeric_literal(SPAN, -v, None, oxc::NumberBase::Decimal);
                     self.b.expression_unary(SPAN, OxcUnOp::UnaryNegation, lit)
                 } else {
+                    // Normalize negative zero to positive zero. The TS plugin's
+                    // codegenValue does `value < 0 ? -value : numericLiteral(value)`,
+                    // and `t.numericLiteral(-0)` prints as `0` (since `-0 < 0` is
+                    // false). Match that so `-0` constant-folds to `0`.
+                    let v = if v == 0.0 { 0.0 } else { v };
                     self.b
                         .expression_numeric_literal(SPAN, v, None, oxc::NumberBase::Decimal)
                 }
