@@ -1188,7 +1188,18 @@ pub fn compile_fn(
         let react_compiler_hir::environment::OutlinedFunctionEntry { func, fn_type } = entry;
         let resolved_type = fn_type.unwrap_or(ReactFunctionType::Other);
         let mut child_env = env.for_outlined_fn(resolved_type);
-        match build_outlined_reactive_fn(&func, &mut child_env, context) {
+        // JSX-outlined functions (registered by `outline_jsx` with a non-null
+        // type, i.e. `Some(Component)`) are brand-new raw HIR that must be run
+        // through the FULL pipeline to gain reactive scopes + memoization,
+        // mirroring TS's re-queue when `outlined.type !== null`. Function-outlined
+        // closures (registered by `outline_functions` with `None`) are already
+        // analyzed and only need the short codegen sequence.
+        let build_result = if fn_type.is_some() {
+            compile_outlined_jsx_fn(&func, &mut child_env, context)
+        } else {
+            build_outlined_reactive_fn(&func, &mut child_env, context)
+        };
+        match build_result {
             Ok((reactive_fn, unique_identifiers)) => {
                 // Drain any further outlined functions surfaced on the child env.
                 outlined_queue.extend(child_env.take_outlined_functions());
@@ -1278,6 +1289,238 @@ fn build_outlined_reactive_fn(
         react_compiler_reactive_scopes::rename_variables(&mut reactive_fn, env);
     for name in &unique_identifiers {
         context.add_new_reference(name.clone());
+    }
+
+    Ok((reactive_fn, unique_identifiers))
+}
+
+/// Build the `ReactiveFunction` + reserved unique identifiers for a JSX-outlined
+/// function (created by the `outline_jsx` pass).
+///
+/// Unlike the closures produced by `outline_functions` (which were already
+/// SSA'd / effect-analyzed / scope-inferred in the parent's pass run and only
+/// need the SHORT codegen sequence — see `build_outlined_reactive_fn`), the
+/// JSX-outlined functions are BRAND-NEW raw HIR built from scratch by
+/// `OutlineJsx::emit_outlined_fn`. They have never been through SSA, effect
+/// inference, or reactive-scope inference, so the short sequence would emit them
+/// WITHOUT any memoization (`function _temp(t0) { let {i,x}=t0; return <Bar.../> }`).
+///
+/// TS handles this by re-queuing the outlined fn through the FULL pipeline
+/// (`Program.ts` pushes `{kind:'outlined', fn, fnType:'Component'}` onto the
+/// compilation queue when `outlined.type !== null`, then re-runs `compileFn`).
+/// `outline_functions` registers with `type === null`, so it is NOT re-queued.
+///
+/// We mirror that here: run the full post-lowering pipeline (the same pass
+/// sequence as `compile_fn` from PruneMaybeThrows through PruneHoistedContexts,
+/// minus the debug-logging/timing instrumentation, which is irrelevant for the
+/// synthetic outlined fn) so the outlined component gets real reactive scopes
+/// and `_c()` memoization matching TS.
+fn compile_outlined_jsx_fn(
+    hir: &react_compiler_hir::HirFunction,
+    env: &mut Environment,
+    context: &mut ProgramContext,
+) -> Result<
+    (
+        react_compiler_hir::reactive::ReactiveFunction,
+        std::collections::HashSet<String>,
+    ),
+    CompilerError,
+> {
+    let mut hir = hir.clone();
+    // The outlined HIR was built with fnType `Other`; TS re-queues it as a
+    // Component. Align the HIR fn_type with the child env's fn_type so the
+    // reactive-scope passes treat the outlined function as a component.
+    hir.fn_type = env.fn_type;
+
+    // TS re-lowers the outlined function from a freshly-inserted AST node, so its
+    // identifiers start with NO reactive scope and an empty mutable range. The
+    // native `outline_jsx` pass instead reuses identifiers copied from the parent
+    // (the JSX lvalues, children, etc.), which still carry the parent's reactive
+    // scopes and mutable ranges. Those reference the PARENT's block ids/ranges,
+    // which do not exist in the outlined function — re-running scope inference on
+    // top of them produces inconsistent scope→block alignment (e.g. a scope range
+    // pointing at a parent block id that the outlined CFG never created). Reset the
+    // child env arena's identifier scope/range state so the re-run pipeline infers
+    // everything from scratch, exactly like a fresh lowering. The child env arena
+    // is a throwaway clone used only to compile this one outlined function.
+    let empty_range = env.new_mutable_range(
+        react_compiler_hir::EvaluationOrder(0),
+        react_compiler_hir::EvaluationOrder(0),
+    );
+    for ident in env.identifiers.iter_mut() {
+        ident.scope = None;
+        ident.mutable_range = empty_range.clone();
+    }
+
+    // `OutlineJsx::emit_outlined_fn` assembles the outlined body from a mix of
+    // freshly-created instructions and instructions copied from the parent, so
+    // their `id` (evaluation order) values are inconsistent / non-monotonic
+    // (e.g. [0, 4, 1, 6, 7]). A fresh lowering would have sequential evaluation
+    // orders; the reactive-scope passes (which compute scope ranges as evaluation
+    // -order intervals and split blocks on them) rely on that. Renumber the
+    // outlined function's instruction ids into sequential order before running
+    // the pipeline, matching the state produced by `mark_instruction_ids` during
+    // a normal lowering.
+    react_compiler_lowering::mark_instruction_ids(&mut hir.body, &mut hir.instructions);
+
+    // === HIR phase (mirrors compile_fn lines 99-783) ===
+    react_compiler_optimization::prune_maybe_throws(&mut hir, &mut env.functions)?;
+    react_compiler_validation::validate_context_variable_lvalues(&hir, env)?;
+    let _ = react_compiler_validation::validate_use_memo(&hir, env);
+    react_compiler_optimization::drop_manual_memoization(&mut hir, env)?;
+    react_compiler_optimization::inline_immediately_invoked_function_expressions(&mut hir, env);
+    react_compiler_optimization::merge_consecutive_blocks::merge_consecutive_blocks(
+        &mut hir,
+        &mut env.functions,
+    );
+
+    react_compiler_ssa::enter_ssa(&mut hir, env).map_err(|diag| {
+        let loc = diag.primary_location().cloned();
+        let mut err = CompilerError::new();
+        err.push_error_detail(react_compiler_diagnostics::CompilerErrorDetail {
+            category: diag.category,
+            reason: diag.reason,
+            description: diag.description,
+            loc,
+            suggestions: diag.suggestions,
+        });
+        err
+    })?;
+    react_compiler_ssa::eliminate_redundant_phi(&mut hir, env);
+    react_compiler_optimization::constant_propagation(&mut hir, env);
+    react_compiler_typeinference::infer_types(&mut hir, env)?;
+
+    if env.enable_validations() {
+        if env.config.validate_hooks_usage {
+            react_compiler_validation::validate_hooks_usage(&hir, env)?;
+        }
+        if env.config.validate_no_capitalized_calls.is_some() {
+            react_compiler_validation::validate_no_capitalized_calls(&hir, env)?;
+        }
+    }
+
+    react_compiler_optimization::optimize_props_method_calls(&mut hir, env);
+    react_compiler_inference::analyse_functions(&mut hir, env, &mut |_inner, _env| {})?;
+    if env.has_invariant_errors() {
+        return Err(env.take_invariant_errors());
+    }
+    react_compiler_inference::infer_mutation_aliasing_effects(&mut hir, env, false)?;
+
+    if env.output_mode == OutputMode::Ssr {
+        react_compiler_optimization::optimize_for_ssr(&mut hir, env);
+    }
+
+    react_compiler_optimization::dead_code_elimination(&mut hir, env);
+    react_compiler_optimization::prune_maybe_throws(&mut hir, &mut env.functions)?;
+    react_compiler_inference::infer_mutation_aliasing_ranges(&mut hir, env, false)?;
+
+    if env.enable_validations() {
+        react_compiler_validation::validate_locals_not_reassigned_after_render(&hir, env);
+        if env.config.validate_ref_access_during_render {
+            react_compiler_validation::validate_no_ref_access_in_render(&hir, env);
+        }
+        if env.config.validate_no_set_state_in_render {
+            react_compiler_validation::validate_no_set_state_in_render(&hir, env)?;
+        }
+        if env.config.validate_no_derived_computations_in_effects_exp
+            && env.output_mode == OutputMode::Lint
+        {
+            let errors =
+                react_compiler_validation::validate_no_derived_computations_in_effects_exp(
+                    &hir, env,
+                )?;
+            log_errors_as_events(&errors, context);
+        } else if env.config.validate_no_derived_computations_in_effects {
+            react_compiler_validation::validate_no_derived_computations_in_effects(&hir, env)?;
+        }
+        if env.config.validate_no_set_state_in_effects && env.output_mode == OutputMode::Lint {
+            let errors = react_compiler_validation::validate_no_set_state_in_effects(&hir, env)?;
+            log_errors_as_events(&errors, context);
+        }
+        if env.config.validate_no_jsx_in_try_statements && env.output_mode == OutputMode::Lint {
+            let errors = react_compiler_validation::validate_no_jsx_in_try_statement(&hir);
+            log_errors_as_events(&errors, context);
+        }
+        react_compiler_validation::validate_no_freezing_known_mutable_functions(&hir, env);
+    }
+
+    react_compiler_inference::infer_reactive_places(&mut hir, env)?;
+
+    if env.enable_validations() {
+        react_compiler_validation::validate_exhaustive_dependencies(&mut hir, env)?;
+    }
+
+    react_compiler_ssa::rewrite_instruction_kinds_based_on_reassignment(&mut hir, env)?;
+
+    if env.enable_validations()
+        && env.config.validate_static_components
+        && env.output_mode == OutputMode::Lint
+    {
+        let errors = react_compiler_validation::validate_static_components(&hir);
+        log_errors_as_events(&errors, context);
+    }
+
+    if env.enable_memoization() {
+        react_compiler_inference::infer_reactive_scope_variables(&mut hir, env)?;
+    }
+
+    let fbt_operands =
+        react_compiler_inference::memoize_fbt_and_macro_operands_in_same_scope(&hir, env);
+
+    if env.config.enable_jsx_outlining {
+        react_compiler_optimization::outline_jsx(&mut hir, env);
+    }
+    if env.config.enable_name_anonymous_functions {
+        react_compiler_optimization::name_anonymous_functions(&mut hir, env);
+    }
+    if env.config.enable_function_outlining {
+        react_compiler_optimization::outline_functions(&mut hir, env, &fbt_operands);
+    }
+
+    react_compiler_inference::align_method_call_scopes(&mut hir, env);
+    react_compiler_inference::align_object_method_scopes(&mut hir, env);
+    react_compiler_optimization::prune_unused_labels_hir(&mut hir);
+    react_compiler_inference::align_reactive_scopes_to_block_scopes_hir(&mut hir, env);
+    react_compiler_inference::merge_overlapping_reactive_scopes_hir(&mut hir, env);
+    react_compiler_inference::build_reactive_scope_terminals_hir(&mut hir, env);
+    react_compiler_inference::flatten_reactive_loops_hir(&mut hir);
+    react_compiler_inference::flatten_scopes_with_hooks_or_use_hir(&mut hir, &*env)?;
+    react_compiler_inference::propagate_scope_dependencies_hir(&mut hir, env);
+
+    // === Reactive phase (mirrors compile_fn lines 799-1037) ===
+    let mut reactive_fn = react_compiler_reactive_scopes::build_reactive_function(&hir, env)?;
+    react_compiler_reactive_scopes::assert_well_formed_break_targets(&reactive_fn, env);
+    react_compiler_reactive_scopes::prune_unused_labels(&mut reactive_fn, env)?;
+    react_compiler_reactive_scopes::assert_scope_instructions_within_scopes(&reactive_fn, env)?;
+    react_compiler_reactive_scopes::prune_non_escaping_scopes(&mut reactive_fn, env)?;
+    react_compiler_reactive_scopes::prune_non_reactive_dependencies(&mut reactive_fn, env);
+    react_compiler_reactive_scopes::prune_unused_scopes(&mut reactive_fn, env)?;
+    react_compiler_reactive_scopes::merge_reactive_scopes_that_invalidate_together(
+        &mut reactive_fn,
+        env,
+    )?;
+    react_compiler_reactive_scopes::prune_always_invalidating_scopes(&mut reactive_fn, env)?;
+    react_compiler_reactive_scopes::propagate_early_returns(&mut reactive_fn, env);
+    react_compiler_reactive_scopes::prune_unused_lvalues(&mut reactive_fn, env);
+    react_compiler_reactive_scopes::promote_used_temporaries(&mut reactive_fn, env);
+    react_compiler_reactive_scopes::extract_scope_declarations_from_destructuring(
+        &mut reactive_fn,
+        env,
+    )?;
+    react_compiler_reactive_scopes::stabilize_block_ids(&mut reactive_fn, env);
+
+    let unique_identifiers =
+        react_compiler_reactive_scopes::rename_variables(&mut reactive_fn, env);
+    for name in &unique_identifiers {
+        context.add_new_reference(name.clone());
+    }
+
+    react_compiler_reactive_scopes::prune_hoisted_contexts(&mut reactive_fn, env)?;
+
+    if env.config.enable_preserve_existing_memoization_guarantees
+        || env.config.validate_preserve_existing_memoization_guarantees
+    {
+        react_compiler_validation::validate_preserved_manual_memoization(&reactive_fn, env);
     }
 
     Ok((reactive_fn, unique_identifiers))
