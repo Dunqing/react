@@ -8,7 +8,7 @@
 import watcher from '@parcel/watcher';
 import path from 'path';
 import ts from 'typescript';
-import {FIXTURES_PATH, BABEL_PLUGIN_ROOT, CRATES_PATH} from './constants';
+import {FIXTURES_PATH, BABEL_PLUGIN_ROOT} from './constants';
 import {TestFilter, getFixtures} from './fixture-utils';
 import {execSync} from 'child_process';
 
@@ -155,7 +155,6 @@ function subscribeFixtures(
 function subscribeTsc(
   state: RunnerState,
   onChange: (state: RunnerState) => void,
-  enableRust: boolean = false,
 ) {
   // Run TS in incremental watch mode
   watchSrc(
@@ -174,10 +173,6 @@ function subscribeTsc(
           console.warn('Failed to build compiler with tsup:', e);
         }
       }
-      // When using Rust, also build the Rust compiler after TS build succeeds
-      if (isCompilerBuildValid && enableRust) {
-        isCompilerBuildValid = buildRust();
-      }
       // Bump the compiler version after a build finishes
       // and re-run tests
       if (isCompilerBuildValid) {
@@ -188,47 +183,6 @@ function subscribeTsc(
       onChange(state);
     },
   );
-}
-
-export function buildRust(): boolean {
-  // The legacy Rust-via-Babel/NAPI integration (the
-  // `babel-plugin-react-compiler-rust` package + `react_compiler_napi` crate)
-  // has been removed. The Rust compiler now runs natively on OXC; use the OXC
-  // oracles instead (compiler/scripts/compare-code.ts, compare-hir.ts,
-  // test-e2e.ts --variant oxc).
-  console.error(
-    'snap --rust is no longer supported: the legacy Rust Babel/NAPI bridge ' +
-      'has been removed. Use the OXC oracle scripts in compiler/scripts/ ' +
-      '(compare-code.ts, compare-hir.ts, test-e2e.ts --variant oxc).',
-  );
-  return false;
-}
-
-function subscribeRustCrates(
-  state: RunnerState,
-  onChange: (state: RunnerState) => void,
-) {
-  watcher.subscribe(CRATES_PATH, async (err, events) => {
-    if (err) {
-      console.error(err);
-      process.exit(1);
-    }
-    // Only rebuild on .rs file changes
-    const hasRustChanges = events.some(e => e.path.endsWith('.rs'));
-    if (!hasRustChanges) {
-      return;
-    }
-    console.log('\nRust source changed, rebuilding...');
-    if (buildRust()) {
-      state.compilerVersion++;
-      state.isCompilerBuildValid = true;
-      state.mode.action = RunnerAction.Test;
-      onChange(state);
-    } else {
-      state.isCompilerBuildValid = false;
-      console.error('Rust build failed, waiting for changes...');
-    }
-  });
 }
 
 /**
@@ -463,7 +417,6 @@ export async function makeWatchRunner(
   onChange: (state: RunnerState) => void,
   debugMode: boolean,
   initialPattern?: string,
-  enableRust: boolean = false,
 ): Promise<void> {
   // Determine initial filter state
   let filter: TestFilter | null = null;
@@ -492,10 +445,7 @@ export async function makeWatchRunner(
     fixtureLastRunStatus: new Map(),
   };
 
-  subscribeTsc(state, onChange, enableRust);
+  subscribeTsc(state, onChange);
   subscribeFixtures(state, onChange);
   subscribeKeyEvents(state, onChange);
-  if (enableRust) {
-    subscribeRustCrates(state, onChange);
-  }
 }

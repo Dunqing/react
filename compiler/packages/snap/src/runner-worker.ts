@@ -15,7 +15,6 @@ import {
   PRINT_HIR_IMPORT,
   PRINT_REACTIVE_IR_IMPORT,
   BABEL_PLUGIN_SRC,
-  BABEL_PLUGIN_RUST_SRC,
 } from './constants';
 import {TestFixture, getBasename, isExpectError} from './fixture-utils';
 import {TestResult, writeOutputToString} from './reporter';
@@ -34,15 +33,10 @@ const originalConsoleError = console.error;
 // contains ~1250 files. This assumes that no dependencies have global caches
 // that may need to be invalidated across Forget reloads.
 const invalidationSubpath = 'packages/babel-plugin-react-compiler/dist';
-const rustInvalidationSubpath =
-  'packages/babel-plugin-react-compiler-rust/dist';
 let version: number | null = null;
 export function clearRequireCache() {
   Object.keys(require.cache).forEach(function (path) {
-    if (
-      path.includes(invalidationSubpath) ||
-      path.includes(rustInvalidationSubpath)
-    ) {
+    if (path.includes(invalidationSubpath)) {
       delete require.cache[path];
     }
   });
@@ -54,7 +48,6 @@ async function compile(
   compilerVersion: number,
   shouldLog: boolean,
   includeEvaluator: boolean,
-  enableRust: boolean = false,
 ): Promise<{
   error: string | null;
   compileResult: TransformResult | null;
@@ -71,21 +64,15 @@ async function compile(
   let compileResult: TransformResult | null = null;
   let error: string | null = null;
   try {
-    // Always load TS compiler for utilities (parseConfigPragmaForTests, print functions)
+    // NOTE: we intentionally require lazily here so that we can clear the require cache
+    // and load fresh versions of the compiler when `compilerVersion` changes.
     const importedCompilerPlugin = require(BABEL_PLUGIN_SRC) as Record<
       string,
       unknown
     >;
-
-    // Load the appropriate babel plugin
-    const pluginSrc = enableRust ? BABEL_PLUGIN_RUST_SRC : BABEL_PLUGIN_SRC;
-    const importedPlugin = enableRust
-      ? (require(pluginSrc) as Record<string, unknown>)
-      : importedCompilerPlugin;
-
-    // NOTE: we intentionally require lazily here so that we can clear the require cache
-    // and load fresh versions of the compiler when `compilerVersion` changes.
-    const BabelPluginReactCompiler = importedPlugin['default'] as PluginObj;
+    const BabelPluginReactCompiler = importedCompilerPlugin[
+      'default'
+    ] as PluginObj;
     const EffectEnum = importedCompilerPlugin['Effect'] as typeof Effect;
     const ValueKindEnum = importedCompilerPlugin[
       'ValueKind'
@@ -179,7 +166,6 @@ export async function transformFixture(
   compilerVersion: number,
   shouldLog: boolean,
   includeEvaluator: boolean,
-  enableRust: boolean = false,
 ): Promise<TestResult> {
   const {input, snapshot: expected, snapshotPath: outputPath} = fixture;
   const basename = getBasename(fixture);
@@ -201,7 +187,6 @@ export async function transformFixture(
     compilerVersion,
     shouldLog,
     includeEvaluator,
-    enableRust,
   );
 
   let unexpectedError: string | null = null;
