@@ -492,9 +492,16 @@ fn consider_function<'a>(
     compile_all: bool,
     queue: &mut Vec<CompileSource<'a>>,
 ) {
-    let name = inferred_name
-        .map(|s| s.to_string())
-        .or_else(|| func.id.as_ref().map(|id| id.name.to_string()));
+    // A named function expression keeps its OWN name: `const X = function f(){}`
+    // lowers to a function whose id is `f`, not `X`. This matches TS BuildHIR,
+    // which derives the HIR function id solely from `func.id`. The inferred
+    // binding name is only used for anonymous functions (where component-name
+    // inference applies).
+    let name = func
+        .id
+        .as_ref()
+        .map(|id| id.name.to_string())
+        .or_else(|| inferred_name.map(|s| s.to_string()));
     let fn_type =
         match classify_function(name.as_deref(), &func.params, &FunctionBodyRef(func), compile_all)
         {
