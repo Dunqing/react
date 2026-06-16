@@ -534,6 +534,19 @@ impl<'a, 'e> Cx<'a, 'e> {
                     self.temp.insert(decl_id, Some(instr.value.clone()));
                     return Ok(());
                 }
+                // A `Const`/`Let` destructure that is *also* referenced as an
+                // expression (the enclosing instruction has an outer lvalue) is
+                // an invalid IR state the TS compiler rejects with a fatal error
+                // (the third member of the same `Const`/`Let` invariant group as
+                // the StoreLocal/StoreContext arm above). This arises from nested
+                // destructuring-assignment-as-expression, e.g. `f(([[x]] = obj()))`,
+                // where the inner level lowers to a Const destructure temp.
+                InstructionValue::Destructure { lvalue, .. }
+                    if matches!(lvalue.kind, InstructionKind::Const | InstructionKind::Let)
+                        && instr.lvalue.is_some() =>
+                {
+                    invariant_bail!("Const declaration cannot be referenced as an expression");
+                }
                 InstructionValue::Destructure { lvalue, value, .. } => {
                     return self.codegen_destructure(lvalue, value, out);
                 }
