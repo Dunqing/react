@@ -151,6 +151,15 @@ oxc↔babel-AST conversion).
   - **N2.final-c**: delete `convert_ast_reverse.rs` + `convert_scope.rs` (+ apply_renames if unused) from react_compiler_oxc.
   - **N3**: delete the `react_compiler_ast` crate; delete Babel NAPI bridge (`packages/babel-plugin-react-compiler-rust/native`
     JSON `compile`) + bridge.ts + babel-ast-to-json.mjs; retire test-babel-ast.sh; add `oxc_linter::Rule` (ReactCompilerRule).
+  **N2.final ✅ (bc9d4ea244, 356e538f6d, 8223cae9bb) — `react_compiler_ast` CRATE DELETED.** Workspace green, all tests
+  pass, **SEMANTIC-pass 1673 / HIR-MATCH 1445 (exact parity, 0 regression)**. The old codegen at pipeline.rs:1072 fed
+  memo stats (→ new `count_memo_blocks` module + native slot count) + 3 codegen-time validations (→ ported into native
+  codegen_oxc as invariants). Scope enums: lowering/hir had already migrated (recon was stale). Deleted: react_compiler_ast
+  crate, codegen_reactive_function.rs (~4300L), convert_ast_reverse/convert_scope/apply_renames, gating.rs, dead
+  emit()/imports/CodegenFunction/--dump-scope. grep react_compiler_ast = clean (only 13 doc-comments).
+  → **Pass 2 (N3-rest)**: delete Babel NAPI bridge (`packages/babel-plugin-react-compiler-rust`) + bridge.ts +
+  babel-ast-to-json.mjs; retire test-babel-ast.sh (react_compiler_ast gone); add `oxc_linter::Rule`. Then handoff note.
+
   Validate each step: `cargo build` green + compare-code.ts SEMANTIC-pass ≥ 1673 (cleanup must not regress).
   Handoff note for deferred: pragma features (gating/jsx-outlining/instrument/fbt/SSR ~31), fbt BAIL (~22), 8 N-VAL,
   ~26 scattered single-cause OTHER (-0 const-prop, arrow concise-body, enableNameAnonymousFunctions, lone-surrogate, etc.).
