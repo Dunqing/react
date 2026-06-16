@@ -157,8 +157,17 @@ oxc↔babel-AST conversion).
   codegen_oxc as invariants). Scope enums: lowering/hir had already migrated (recon was stale). Deleted: react_compiler_ast
   crate, codegen_reactive_function.rs (~4300L), convert_ast_reverse/convert_scope/apply_renames, gating.rs, dead
   emit()/imports/CodegenFunction/--dump-scope. grep react_compiler_ast = clean (only 13 doc-comments).
-  → **Pass 2 (N3-rest)**: delete Babel NAPI bridge (`packages/babel-plugin-react-compiler-rust`) + bridge.ts +
-  babel-ast-to-json.mjs; retire test-babel-ast.sh (react_compiler_ast gone); add `oxc_linter::Rule`. Then handoff note.
+  **N3 ✅ (935895654d, 55e0704fa4, 0ada912004) — LEGACY BABEL FULLY DELETED.** Removed: the `babel-plugin-react-compiler-rust`
+  package (NAPI `react_compiler_napi` + bridge.ts), babel-ast-to-json.mjs, test-babel-ast.sh, snap `--rust` mode,
+  eslint-plugin Rust backend, dead test scripts; docs/config repointed to the OXC oracles. SEMANTIC-pass steady 1673.
+  `oxc_linter::Rule` DEFERRED (oxc_linter unpublished on crates.io — Rule trait internal to oxc monorepo; oxc recommends
+  JS plugins for external rules; native `lint`/`lint_source` already exist). Handoff: `docs/rust-port/rust-port-oxc-native-handoff.md`.
+
+  **=== MIGRATION COMPLETE (core deliverable) ===** Fully native Oxc compiler; `react_compiler_ast` + Babel both deleted;
+  workspace green, tests pass. **Final: SEMANTIC-pass 1673/1803 (92.8%)** (921 byte-identical + 752 structural-equiv),
+  HIR-MATCH 1445. Remaining 130 (N-VAL 8 / BAIL 65 / OTHER 57) are deferred opt-in features (gating, jsx-outlining, fbt,
+  SSR, instrument), lowering-Todos/inference-invariants, TypeCast codegen, and scattered single-cause diffs — all
+  documented in the handoff note for future work.
 
   Validate each step: `cargo build` green + compare-code.ts SEMANTIC-pass ≥ 1673 (cleanup must not regress).
   Handoff note for deferred: pragma features (gating/jsx-outlining/instrument/fbt/SSR ~31), fbt BAIL (~22), 8 N-VAL,
