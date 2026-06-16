@@ -37,6 +37,24 @@ Two oracles, both comparing the native Oxc compiler against the in-process TS co
 Toolchain: requires **rustc 1.92.0** (oxc 0.121); `rustup run 1.92.0 cargo …` from `compiler/`. Node
 scripts run via `tsx`. The CLI is `react_compiler_e2e_cli` (`--frontend oxc`, `--dump-hir`, `--json`).
 
+## Performance (Apple M4 Max, release, single-threaded, warm, median-of-8, 1505-fixture corpus)
+
+End-to-end compile (full source → compiled output), per-fixture median:
+
+| | per-fixture | fixtures/sec | vs native |
+|---|---|---|---|
+| **Native-Oxc** (oxc parse→semantic→passes→native codegen) | **0.225 ms** | ~4,450 | 1× |
+| **Pre-Oxc Rust port** (Babel parse→scope→JSON→NAPI Rust→Babel codegen) | 1.38 ms | ~720 | **6.1× slower** |
+| **TS/Babel reference** (in-process) | 1.895 ms | ~528 | **~8.1× slower** |
+| Native parse+semantic only | 0.0029 ms | ~350k | — |
+
+**Where the migration's win comes from** (pre-Oxc sub-phase breakdown): JS frontend (Babel parse+scope) ~24%,
+JSON/NAPI boundary (serialize+deserialize round-trip) ~36%, **shared Rust compiler core ~36%**, output codegen ~4%.
+The Rust `compile_program` core is *shared* between the two states (pre-Oxc core alone = 0.335 ms/fix, slightly MORE
+than the native full pipeline) — so the ~6.1× is overwhelmingly from **eliminating the JS frontend + the JSON/NAPI
+boundary**, exactly the "pure-Rust pipeline / no JSON boundary" motivation. oxc parse+semantic is ~80× cheaper than
+Babel parse+scope and ~1.2% of the native pipeline. Bench harness: `react_compiler_e2e_cli --bench <dir> [--iterations N] [--bench-parse-only]`.
+
 ## Architecture map (key files)
 
 | Concern | File |
