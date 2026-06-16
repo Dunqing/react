@@ -1848,10 +1848,11 @@ impl<'a, 'e> Cx<'a, 'e> {
             }
             InstructionValue::FunctionExpression {
                 name,
+                name_hint,
                 lowered_func,
                 expr_type,
                 ..
-            } => self.function_expression(name, lowered_func, *expr_type),
+            } => self.function_expression(name, name_hint, lowered_func, *expr_type),
             InstructionValue::PostfixUpdate {
                 operation, lvalue, ..
             } => self.update_expression(*operation, lvalue, false),
@@ -1994,6 +1995,7 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn function_expression(
         &mut self,
         name: &Option<String>,
+        name_hint: &Option<String>,
         lowered_func: &react_compiler_hir::LoweredFunction,
         expr_type: FunctionExpressionType,
     ) -> Bail<oxc::Expression<'a>> {
@@ -2011,9 +2013,9 @@ impl<'a, 'e> Cx<'a, 'e> {
         // declared set) and gets its own cache numbering.
         let (function, _nested_cache) = self.codegen_function(&reactive_fn)?;
 
-        match expr_type {
+        let expr = match expr_type {
             FunctionExpressionType::ArrowFunctionExpression => {
-                Ok(self.build_arrow_from_function(function, &reactive_fn))
+                self.build_arrow_from_function(function, &reactive_fn)
             }
             _ => {
                 // Function expression: keep the name (if any) for the binding id.
@@ -2022,9 +2024,50 @@ impl<'a, 'e> Cx<'a, 'e> {
                 function.id = name
                     .as_ref()
                     .map(|n| self.b.binding_identifier(SPAN, self.atom(n)));
-                Ok(oxc::Expression::FunctionExpression(self.b.alloc(function)))
+                oxc::Expression::FunctionExpression(self.b.alloc(function))
             }
+        };
+
+        // enableNameAnonymousFunctions: an anonymous function (no own name) with
+        // a computed name hint is wrapped as `{ "<hint>": <fn> }["<hint>"]` so
+        // the function gets an inferred `.name` at runtime. Mirrors
+        // CodegenReactiveFunction.ts (codegen of FunctionExpression).
+        if self.env.config.enable_name_anonymous_functions
+            && name.is_none()
+            && let Some(hint) = name_hint
+        {
+            return Ok(self.wrap_with_name_hint(expr, hint));
         }
+        Ok(expr)
+    }
+
+    /// Wrap an anonymous function expression as `{ "<hint>": <fn> }["<hint>"]`,
+    /// giving it an inferred runtime name. Used for enableNameAnonymousFunctions.
+    fn wrap_with_name_hint(&self, value: oxc::Expression<'a>, hint: &str) -> oxc::Expression<'a> {
+        // Build the object literal `{ "<hint>": value }`.
+        let key = oxc::PropertyKey::StringLiteral(
+            self.b
+                .alloc(self.b.string_literal(SPAN, self.atom(hint), None)),
+        );
+        let prop = self.b.object_property_kind_object_property(
+            SPAN,
+            oxc::PropertyKind::Init,
+            key,
+            value,
+            false,
+            false,
+            false,
+        );
+        let mut props = self.b.vec();
+        props.push(prop);
+        let object = self.b.expression_object(SPAN, props);
+        // Index it with the same string key: `<object>["<hint>"]`.
+        let index = self
+            .b
+            .expression_string_literal(SPAN, self.atom(hint), None);
+        self.b
+            .member_expression_computed(SPAN, object, index, false)
+            .into()
     }
 
     /// Build the function value for an object-literal method (`{ m() {…} }`).
