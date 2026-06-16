@@ -1083,15 +1083,34 @@ pub fn compile_fn(
     let memo_slots_used = {
         let allocator = oxc_allocator::Allocator::default();
         let builder = oxc_ast::AstBuilder::new(&allocator);
-        react_compiler_reactive_scopes::codegen_oxc::codegen_oxc_function(
+        match react_compiler_reactive_scopes::codegen_oxc::codegen_oxc_function(
             &native_reactive_fn,
             &env,
             native_unique_identifiers.clone(),
             &builder,
             "_c",
-        )
-        .map(|out| out.memo_slots_used)
-        .unwrap_or(0)
+        ) {
+            Ok(out) => out.memo_slots_used,
+            // A hard codegen invariant means the IR is in a state the TS compiler
+            // also rejects with a fatal error. Record it so this function errors
+            // out (matching TS) instead of emitting different output. Graceful
+            // bails (unsupported constructs) leave the function uncompiled via the
+            // native assembly fallback, so we ignore them here (slot count 0).
+            Err(bail) if bail.invariant => {
+                context.timing.stop();
+                env.record_error(react_compiler_diagnostics::CompilerErrorDetail {
+                    category: react_compiler_diagnostics::ErrorCategory::Invariant,
+                    reason: bail.reason,
+                    description: None,
+                    loc: None,
+                    suggestions: None,
+                })?;
+                // `record_error` returns `Err` for invariants, so this is
+                // unreachable; kept for type completeness.
+                0
+            }
+            Err(_) => 0,
+        }
     };
     let stats = CompileFnStats {
         memo_slots_used,

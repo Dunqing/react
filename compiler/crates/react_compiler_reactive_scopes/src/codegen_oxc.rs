@@ -77,16 +77,34 @@ const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 /// the early-return guard appended after a reactive scope.
 const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
 
-/// Signals an unsupported construct. The caller leaves the function uncompiled.
+/// Signals that codegen could not emit a function.
+///
+/// `invariant: false` is the common case — an unsupported construct the native
+/// codegen does not yet handle; the caller leaves the function uncompiled (a
+/// graceful per-function fallback to the original source).
+///
+/// `invariant: true` mirrors the reference codegen's `CompilerError::invariant`
+/// — a genuinely invalid IR state that the TS compiler also rejects with a
+/// fatal error. The pipeline records this as a compiler error so the function
+/// errors out (matching TS) rather than silently emitting different output.
 #[derive(Debug)]
 pub struct CodegenBail {
     pub reason: String,
+    pub invariant: bool,
 }
 
 impl CodegenBail {
     fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            invariant: false,
+        }
+    }
+
+    fn invariant(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            invariant: true,
         }
     }
 }
@@ -96,6 +114,13 @@ type Bail<T> = Result<T, CodegenBail>;
 macro_rules! bail {
     ($($arg:tt)*) => {
         return Err(CodegenBail::new(format!($($arg)*)))
+    };
+}
+
+/// Like [`bail!`] but marks the failure as a hard invariant (see [`CodegenBail`]).
+macro_rules! invariant_bail {
+    ($($arg:tt)*) => {
+        return Err(CodegenBail::invariant(format!($($arg)*)))
     };
 }
 
@@ -476,6 +501,17 @@ impl<'a, 'e> Cx<'a, 'e> {
                     self.declared.insert(decl_id);
                     self.temp.insert(decl_id, Some(instr.value.clone()));
                     return Ok(());
+                }
+                // Invariant (mirrors the reference codegen's `emit_store`): a
+                // `Const`/`Let` declaration that is *also* referenced as an
+                // expression (the enclosing instruction has an outer lvalue) is
+                // an invalid IR state the TS compiler rejects with a fatal error.
+                InstructionValue::StoreLocal { lvalue, .. }
+                | InstructionValue::StoreContext { lvalue, .. }
+                    if matches!(lvalue.kind, InstructionKind::Const | InstructionKind::Let)
+                        && instr.lvalue.is_some() =>
+                {
+                    invariant_bail!("Const declaration cannot be referenced as an expression");
                 }
                 InstructionValue::StoreLocal { lvalue, value, .. }
                 | InstructionValue::StoreContext { lvalue, value, .. } => {
@@ -2020,7 +2056,26 @@ impl<'a, 'e> Cx<'a, 'e> {
     /// `_receiver` is retained for signature parity; the reference only asserts
     /// the member's object equals the receiver, it does not rebuild from it.
     fn method_callee(&mut self, _receiver: &Place, property: &Place) -> Bail<oxc::Expression<'a>> {
-        self.place_expr(property)
+        let expr = self.place_expr(property)?;
+        // Invariant (mirrors the reference codegen): the property must resolve
+        // to a member expression. If it codegens to anything else (e.g. an
+        // Identifier, because the member was promoted/memoized into a temporary),
+        // the IR is in a state the TS compiler also rejects with a fatal error.
+        // An optional member (`a?.b`) is an oxc `ChainExpression`, so accept that
+        // too (it corresponds to the reference's `OptionalMemberExpression`).
+        let is_member = matches!(
+            expr,
+            oxc::Expression::StaticMemberExpression(_)
+                | oxc::Expression::ComputedMemberExpression(_)
+                | oxc::Expression::PrivateFieldExpression(_)
+                | oxc::Expression::ChainExpression(_)
+        );
+        if !is_member {
+            invariant_bail!(
+                "[Codegen] Internal error: MethodCall::property must be an unpromoted + unmemoized MemberExpression"
+            );
+        }
+        Ok(expr)
     }
 
     /// Build an assignment target for `object.property` / `object[number]`.
