@@ -240,6 +240,19 @@ function structuralNormalizeAst(code: string): string {
         delete path.node.extra.rawValue;
       }
     },
+    NumericLiteral(path: any) {
+      // Drop cached raw text so the generator re-encodes from `.value`,
+      // canonicalizing equivalent numeric spellings of the SAME IEEE-754
+      // value (e.g. babel's `1000` vs oxc's minified `1e3`, or `2.18e22` vs
+      // `218e8`). These are the identical value with identical runtime
+      // semantics; the difference is purely the printer's shortest-form
+      // choice, which oxc's codegen applies unconditionally. Mirrors the
+      // StringLiteral canonicalization above.
+      if (path.node.extra != null) {
+        delete path.node.extra.raw;
+        delete path.node.extra.rawValue;
+      }
+    },
   });
 
   // --- Pass 1: mask cache-slot indices in the AST. ---

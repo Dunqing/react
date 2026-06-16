@@ -492,25 +492,31 @@ fn consider_function<'a>(
     compile_all: bool,
     queue: &mut Vec<CompileSource<'a>>,
 ) {
-    // A named function expression keeps its OWN name: `const X = function f(){}`
-    // lowers to a function whose id is `f`, not `X`. This matches TS BuildHIR,
-    // which derives the HIR function id solely from `func.id`. The inferred
-    // binding name is only used for anonymous functions (where component-name
-    // inference applies).
-    let name = func
-        .id
-        .as_ref()
-        .map(|id| id.name.to_string())
-        .or_else(|| inferred_name.map(|s| s.to_string()));
-    let fn_type =
-        match classify_function(name.as_deref(), &func.params, &FunctionBodyRef(func), compile_all)
-        {
-            Some(t) => t,
-            None => return,
-        };
+    // A function expression's emitted id is ALWAYS its own name (`func.id`),
+    // never the binding name. This matches TS BuildHIR, which derives the HIR
+    // function id solely from `func.id`:
+    //   - `const X = function f(){}` -> id `f`
+    //   - `const X = function (){}`  -> id null (stays anonymous)
+    // The inferred binding name is used ONLY for classification (is this a
+    // component/hook?), not for the emitted function id.
+    let emitted_name = func.id.as_ref().map(|id| id.name.to_string());
+    // Classification still considers the binding name (e.g. capitalized => a
+    // component, `use*` => a hook), falling back to the function's own name.
+    let classify_name = inferred_name
+        .map(|s| s.to_string())
+        .or_else(|| emitted_name.clone());
+    let fn_type = match classify_function(
+        classify_name.as_deref(),
+        &func.params,
+        &FunctionBodyRef(func),
+        compile_all,
+    ) {
+        Some(t) => t,
+        None => return,
+    };
     queue.push(CompileSource {
         func: FunctionForm::Function(func),
-        fn_name: name,
+        fn_name: emitted_name,
         fn_type,
         fn_span: func.span(),
         fn_symbol_id: func.id.as_ref().and_then(|id| id.symbol_id.get()),
