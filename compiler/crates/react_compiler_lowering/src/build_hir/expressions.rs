@@ -255,11 +255,19 @@ pub(crate) fn lower_expression(
         // ---- TS wrappers ----
         oxc::Expression::TSNonNullExpression(ts) => lower_expression(builder, &ts.expression),
         oxc::Expression::TSInstantiationExpression(ts) => lower_expression(builder, &ts.expression),
-        oxc::Expression::TSAsExpression(ts) => lower_type_cast(builder, &ts.expression, "as", loc),
-        oxc::Expression::TSSatisfiesExpression(ts) => {
-            lower_type_cast(builder, &ts.expression, "satisfies", loc)
+        oxc::Expression::TSAsExpression(ts) => {
+            lower_type_cast(builder, &ts.expression, "as", ts.type_annotation.span(), loc)
         }
-        oxc::Expression::TSTypeAssertion(ts) => lower_type_cast(builder, &ts.expression, "as", loc),
+        oxc::Expression::TSSatisfiesExpression(ts) => lower_type_cast(
+            builder,
+            &ts.expression,
+            "satisfies",
+            ts.type_annotation.span(),
+            loc,
+        ),
+        oxc::Expression::TSTypeAssertion(ts) => {
+            lower_type_cast(builder, &ts.expression, "as", ts.type_annotation.span(), loc)
+        }
 
         // ---- nested function / arrow expressions ----
         oxc::Expression::ArrowFunctionExpression(arrow) => {
@@ -1426,19 +1434,26 @@ fn lower_tagged_template(
 // =============================================================================
 
 /// Lower a TS type-cast wrapper. Full type-annotation lowering is deferred to a
-/// later stage, so we emit a fresh type var and carry the cast kind.
+/// later stage, so we emit a fresh type var and carry the cast kind. The type
+/// annotation's source text is captured (by span) so codegen can re-emit the
+/// `<expr> as <Type>` / `<expr> satisfies <Type>` form.
 fn lower_type_cast(
     builder: &mut HirBuilder,
     inner: &oxc::Expression,
     kind: &str,
+    type_span: oxc_span::Span,
     loc: Option<SourceLocation>,
 ) -> Result<InstructionValue, CompilerError> {
+    let type_text = builder
+        .source_text()
+        .get(type_span.start as usize..type_span.end as usize)
+        .map(|s| s.to_string());
     let value = lower_expression_to_temporary(builder, inner)?;
     let type_ = builder.make_type();
     Ok(InstructionValue::TypeCastExpression {
         value,
         type_,
-        type_annotation_name: None,
+        type_annotation_name: type_text,
         type_annotation_kind: Some(kind.to_string()),
         type_annotation: None,
         loc,

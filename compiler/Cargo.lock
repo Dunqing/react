@@ -749,6 +749,7 @@ dependencies = [
  "indexmap",
  "oxc_allocator",
  "oxc_ast",
+ "oxc_parser",
  "oxc_span",
  "oxc_syntax",
  "react_compiler_diagnostics",

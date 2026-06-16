@@ -1933,8 +1933,58 @@ impl<'a, 'e> Cx<'a, 'e> {
                     val,
                 ))
             }
+            InstructionValue::TypeCastExpression {
+                value,
+                type_annotation_name,
+                type_annotation_kind,
+                ..
+            } => {
+                let inner = self.place_expr(value)?;
+                let type_text = type_annotation_name.as_deref().ok_or_else(|| {
+                    CodegenBail::new("TypeCastExpression missing type annotation text")
+                })?;
+                let type_annotation = self.parse_ts_type(type_text)?;
+                let is_satisfies = type_annotation_kind.as_deref() == Some("satisfies");
+                Ok(if is_satisfies {
+                    self.b
+                        .expression_ts_satisfies(SPAN, inner, type_annotation)
+                } else {
+                    self.b.expression_ts_as(SPAN, inner, type_annotation)
+                })
+            }
             other => bail!("instruction value not yet supported: {}", iv_kind(other)),
         }
+    }
+
+    /// Re-parse a TS type annotation's source text into a `TSType` node in the
+    /// codegen allocator. Used to reconstruct `<expr> as <Type>` /
+    /// `<expr> satisfies <Type>` expressions whose type was carried as text
+    /// through the HIR (the lowering does not retain the full type node).
+    fn parse_ts_type(&self, type_text: &str) -> Bail<oxc::TSType<'a>> {
+        // Parse a synthetic `null as <Type>` statement and extract the type.
+        // The source string is allocated into the codegen arena so the parsed
+        // atoms (which slice into the source) remain valid for lifetime `'a`.
+        let src = format!("null as {};", type_text);
+        let allocator = self.b.allocator;
+        let source: &'a str = allocator.alloc_str(&src);
+        let source_type = oxc_span::SourceType::default()
+            .with_typescript(true)
+            .with_module(true);
+        let parsed = oxc_parser::Parser::new(allocator, source, source_type).parse();
+        if parsed.panicked {
+            return Err(CodegenBail::new("failed to parse TS type annotation"));
+        }
+        for stmt in parsed.program.body {
+            if let oxc::Statement::ExpressionStatement(expr_stmt) = stmt {
+                let expr_stmt = expr_stmt.unbox();
+                if let oxc::Expression::TSAsExpression(ts) = expr_stmt.expression {
+                    return Ok(ts.unbox().type_annotation);
+                }
+            }
+        }
+        Err(CodegenBail::new(
+            "failed to extract TS type from parsed annotation",
+        ))
     }
 
     /// Codegen a nested function expression / arrow. Builds the lowered HIR
