@@ -445,13 +445,18 @@ impl<'a> Visit<'a> for ReturnsNonNodeVisitor {
 
 /// Discover the top-level functions to compile.
 ///
-/// Considers: top-level `function Foo() {}`, `export default function`, and
-/// `const X = (arrow|function expr)` where `X` is a component/hook name (or any
-/// name when `compilationMode == "all"`).
+/// Considers: top-level `function Foo() {}`, `export [default] function`,
+/// `const X = (arrow|function expr)`, `X = (arrow|function expr)`
+/// reassignments, and `memo(...)`/`React.memo(...)`/`forwardRef(...)`/
+/// `React.forwardRef(...)` render-callback wrappers in declarator-init,
+/// export-default, and bare-statement positions. Each is classified by name (or
+/// any name when `compilationMode == "all"`), with the `forwardRef`/`memo`
+/// callback branch of `getComponentOrHookLike` applied via [`ClassifyContext`].
 ///
-/// TODO(N1.3): nested functions, `forwardRef`/`memo` wrappers, object-method
-/// components, and the full `calls_hooks_or_creates_jsx` body heuristic are not
-/// yet ported — only name-based top-level discovery.
+/// TODO(N1.3): full recursive nested-function discovery (TS `program.traverse`
+/// descends into non-matching functions to find nested components/hooks, with
+/// `skip()` semantics) and object-method components are not yet ported — only
+/// top-level / wrapper-callback discovery.
 fn find_functions_to_compile<'a>(
     program: &'a oxc::Program<'a>,
     compile_all: bool,
