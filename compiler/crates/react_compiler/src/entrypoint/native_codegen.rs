@@ -21,6 +21,36 @@ use react_compiler_hir::ReactFunctionType;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::reactive::ReactiveFunction;
 
+/// Resolved plan for emitting a `@gating`-gated function during assembly.
+///
+/// When a function has gating configured (static `gating` option or a dynamic
+/// `'use memo if(...)'` directive), the compiler emits BOTH the compiled and the
+/// original function and selects between them at runtime via an imported gating
+/// flag. All collision-sensitive names (the gating import local name, and — for
+/// the use-before-declaration dispatcher form — the `_result` / `_optimized` /
+/// `_unoptimized` names) are resolved during the pipeline (where the
+/// `ProgramContext` import/uid state lives) and carried here for assembly.
+///
+/// Mirrors `insertGatedFunctionDeclaration` in `Entrypoint/Gating.ts`.
+#[derive(Debug, Clone)]
+pub struct GatingPlan {
+    /// Resolved local binding name for the gating import (collision-aware).
+    pub gating_local_name: String,
+    /// Module the gating function is imported from.
+    pub gating_source: String,
+    /// The imported specifier name (`importSpecifierName`).
+    pub gating_imported: String,
+    /// Whether the function is referenced before its declaration at top level
+    /// (requires the hoistable dispatcher form rather than a simple `const`).
+    pub referenced_before_declaration: bool,
+    /// `<gating>_result` — the gating-call result binding (dispatcher form only).
+    pub result_name: Option<String>,
+    /// `<origName>_optimized` — the compiled function name (dispatcher form only).
+    pub optimized_name: Option<String>,
+    /// `<origName>_unoptimized` — the original function name (dispatcher form only).
+    pub unoptimized_name: Option<String>,
+}
+
 /// A single compiled function captured for native oxc codegen.
 ///
 /// Holds everything needed to run [`react_compiler_reactive_scopes::codegen_oxc`]
@@ -42,4 +72,8 @@ pub struct NativeArtifact {
     pub is_arrow: bool,
     /// The binding name for `const X = ...` / declaration forms, if any.
     pub fn_name: Option<String>,
+    /// When set, the function is emitted in a `@gating`-gated form selecting
+    /// between the compiled and original function at runtime. `None` for the
+    /// common (non-gated) case and for outlined functions.
+    pub gating: Option<GatingPlan>,
 }

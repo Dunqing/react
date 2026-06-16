@@ -1208,6 +1208,8 @@ pub fn compile_fn(
                     // The generated name (e.g. `_temp`) is carried on the
                     // reactive function's `id`, so codegen names the declaration.
                     fn_name: None,
+                    // Outlined functions are never gated.
+                    gating: None,
                 });
             }
             Err(_err) => {
@@ -1230,6 +1232,9 @@ pub fn compile_fn(
         fn_type,
         is_arrow: native_is_arrow,
         fn_name: fn_name.map(|s| s.to_string()),
+        // Gating is resolved in `compile_program` after this returns, where the
+        // ProgramContext import/uid state and the semantic model are available.
+        gating: None,
     });
 
     Ok(stats)

@@ -70,6 +70,11 @@ struct CompileSource<'a> {
     fn_name: Option<String>,
     fn_type: ReactFunctionType,
     fn_span: Span,
+    /// The symbol id of the function's own name binding, when it is a named
+    /// `function Foo` declaration (used for the gating "referenced before
+    /// declaration" check). `None` for arrows, function expressions assigned to
+    /// variables, and anonymous declarations.
+    fn_symbol_id: Option<oxc_semantic::SymbolId>,
 }
 
 /// Name-based React function classification.
@@ -401,13 +406,33 @@ fn find_functions_to_compile<'a>(
                 consider_function(func, None, compile_all, &mut queue);
             }
             // export default function Foo() {} / export default function () {}
-            oxc::Statement::ExportDefaultDeclaration(export) => {
-                if let oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) =
-                    &export.declaration
-                {
+            // export default () => {} / export default function () {}
+            oxc::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+                oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
                     consider_function(func, None, compile_all, &mut queue);
                 }
-            }
+                oxc::ExportDefaultDeclarationKind::FunctionExpression(func) => {
+                    consider_function(func, None, compile_all, &mut queue);
+                }
+                oxc::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+                    if let Some(fn_type) = classify_function(
+                        None,
+                        &arrow.params,
+                        &ArrowBodyRef(arrow),
+                        compile_all,
+                    ) {
+                        queue.push(CompileSource {
+                            func: FunctionForm::Arrow(arrow),
+                            fn_name: None,
+                            fn_type,
+                            fn_span: arrow.span(),
+                            // Anonymous; never referenced-before-declared.
+                            fn_symbol_id: None,
+                        });
+                    }
+                }
+                _ => {}
+            },
             // export function Foo() {}
             oxc::Statement::ExportNamedDeclaration(export) => {
                 if let Some(oxc::Declaration::FunctionDeclaration(func)) = &export.declaration {
@@ -420,6 +445,39 @@ fn find_functions_to_compile<'a>(
             // const Foo = () => {} / const Foo = function () {}
             oxc::Statement::VariableDeclaration(var) => {
                 consider_variable_declaration(var, compile_all, &mut queue);
+            }
+            // Foo = () => {} / Foo = function () {} (reassignment of a binding).
+            // Unlike a `const Foo = () => {}` *declarator*, an assignment does
+            // not give the arrow an inferred name (matching Babel's name
+            // inference, which only fires on variable declarators), so the
+            // function is classified anonymously (`fn_type: Other` for an arrow
+            // with no name). The binding name is preserved by the original
+            // assignment target during assembly (only the RHS is spliced).
+            oxc::Statement::ExpressionStatement(expr_stmt) => {
+                if let oxc::Expression::AssignmentExpression(assign) = &expr_stmt.expression {
+                    match &assign.right {
+                        oxc::Expression::ArrowFunctionExpression(arrow) => {
+                            if let Some(fn_type) = classify_function(
+                                None,
+                                &arrow.params,
+                                &ArrowBodyRef(arrow),
+                                compile_all,
+                            ) {
+                                queue.push(CompileSource {
+                                    func: FunctionForm::Arrow(arrow),
+                                    fn_name: None,
+                                    fn_type,
+                                    fn_span: arrow.span(),
+                                    fn_symbol_id: None,
+                                });
+                            }
+                        }
+                        oxc::Expression::FunctionExpression(func) => {
+                            consider_function(func, None, compile_all, &mut queue);
+                        }
+                        _ => {}
+                    }
+                }
             }
             _ => {}
         }
@@ -448,6 +506,7 @@ fn consider_function<'a>(
         fn_name: name,
         fn_type,
         fn_span: func.span(),
+        fn_symbol_id: func.id.as_ref().and_then(|id| id.symbol_id.get()),
     });
 }
 
@@ -478,6 +537,8 @@ fn consider_variable_declaration<'a>(
                     fn_name: Some(name),
                     fn_type,
                     fn_span: arrow.span(),
+                    // Arrows have no own-name binding; never referenced-before-declared.
+                    fn_symbol_id: None,
                 });
             }
             oxc::Expression::FunctionExpression(func) => {
@@ -671,6 +732,65 @@ pub fn compile_program(
                     // Drop the artifacts this function just produced so source
                     // assembly falls back to the original (uncompiled) source.
                     context.native_artifacts.truncate(artifacts_before);
+                } else if let Some(gating) =
+                    resolve_function_gating(&context, source.func.body_directives())
+                {
+                    // `@gating` (static or dynamic) is configured for this
+                    // function: emit BOTH the compiled and original function and
+                    // select between them at runtime via the imported gating
+                    // flag. Resolve every collision-sensitive name here (where
+                    // the ProgramContext import/uid state lives), then carry the
+                    // plan on the main artifact for assembly. Mirrors
+                    // `insertGatedFunctionDeclaration` in `Entrypoint/Gating.ts`.
+                    let gating_local_name = context
+                        .add_import_specifier(
+                            &gating.source,
+                            &gating.import_specifier_name,
+                            None,
+                        )
+                        .name;
+
+                    // Only a named `function Foo` declaration can be referenced
+                    // before its declaration at top level (arrows / function
+                    // expressions assigned to variables cannot).
+                    let referenced_before_declaration = source.fn_symbol_id.is_some_and(|sid| {
+                        is_referenced_before_declaration_at_top_level(semantic, sid)
+                    });
+
+                    let (result_name, optimized_name, unoptimized_name) =
+                        if referenced_before_declaration {
+                            // Allocate the dispatcher uids in TS order
+                            // (`gatingCondition`, `unoptimized`, `optimized` —
+                            // see `insertAdditionalFunctionDeclaration`).
+                            let orig_name = source.fn_name.clone().unwrap_or_default();
+                            let result = context.new_uid(&format!("{gating_local_name}_result"));
+                            let unoptimized = context.new_uid(&format!("{orig_name}_unoptimized"));
+                            let optimized = context.new_uid(&format!("{orig_name}_optimized"));
+                            (Some(result), Some(optimized), Some(unoptimized))
+                        } else {
+                            (None, None, None)
+                        };
+
+                    let plan = crate::entrypoint::native_codegen::GatingPlan {
+                        gating_local_name,
+                        gating_source: gating.source,
+                        gating_imported: gating.import_specifier_name,
+                        referenced_before_declaration,
+                        result_name,
+                        optimized_name,
+                        unoptimized_name,
+                    };
+
+                    // Attach the plan to the main artifact for this function (the
+                    // one whose span matches the source function). Outlined
+                    // artifacts keep `gating: None`.
+                    let fn_start = source.fn_span.start;
+                    if let Some(artifact) = context.native_artifacts[artifacts_before..]
+                        .iter_mut()
+                        .find(|a| a.fn_span.0 == fn_start)
+                    {
+                        artifact.gating = Some(plan);
+                    }
                 }
 
                 if body_skip {
@@ -859,6 +979,122 @@ fn validate_dynamic_gating_directives(
         return Some(error);
     }
     None
+}
+
+/// Find the single dynamic-gating directive match (`'use memo if(<ident>)'`) on
+/// a function's body, returning the captured identifier. Returns `None` when
+/// there is no match, more than one match, or the captured group is not a valid
+/// identifier (validation has already reported those cases — this is the
+/// resolution counterpart of [`validate_dynamic_gating_directives`], mirroring
+/// the success branch of `findDirectivesDynamicGating` in `Entrypoint/Program.ts`).
+fn find_dynamic_gating_match(directives: &[oxc::Directive]) -> Option<String> {
+    const PREFIX: &str = "use memo if(";
+    let mut matches: Vec<String> = Vec::new();
+    for directive in directives {
+        let value = directive.expression.value.as_str();
+        let Some(inner) = value
+            .strip_prefix(PREFIX)
+            .and_then(|rest| rest.strip_suffix(')'))
+        else {
+            continue;
+        };
+        if inner.contains(')') {
+            continue;
+        }
+        if is_valid_js_identifier(inner) {
+            matches.push(inner.to_string());
+        }
+    }
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
+}
+
+/// The resolved gating function for a function: a module + imported specifier
+/// name. Mirrors TS `ExternalFunction` (`{source, importSpecifierName}`).
+struct ResolvedGating {
+    source: String,
+    import_specifier_name: String,
+}
+
+/// Resolve the per-function gating function: `dynamicGating(directive) ?? opts.gating`.
+/// Mirrors `applyCompiledFunctions` in `Entrypoint/Program.ts` (`functionGating`).
+fn resolve_function_gating(
+    context: &ProgramContext,
+    directives: &[oxc::Directive],
+) -> Option<ResolvedGating> {
+    if let Some(dynamic) = &context.opts.dynamic_gating {
+        if let Some(import_specifier_name) = find_dynamic_gating_match(directives) {
+            return Some(ResolvedGating {
+                source: dynamic.source.clone(),
+                import_specifier_name,
+            });
+        }
+    }
+    context.opts.gating.as_ref().map(|g| ResolvedGating {
+        source: g.source.clone(),
+        import_specifier_name: g.import_specifier_name.clone(),
+    })
+}
+
+/// Determine whether the top-level function with `symbol_id` is referenced
+/// before its declaration at the top level. Mirrors
+/// `getFunctionReferencedBeforeDeclarationAtTopLevel` in `Entrypoint/Program.ts`:
+/// the function (which must be a named declaration) is referenced-before-declared
+/// when its binding is referenced from the module top-level scope (not from
+/// inside any function) at a position *before* its own declaration. The TS
+/// traversal stops tracking a name once it reaches the declaration id, so only
+/// references that appear earlier in source order count (a reference *after* the
+/// declaration is a normal forward use and does not require the dispatcher form).
+fn is_referenced_before_declaration_at_top_level(
+    semantic: &Semantic,
+    symbol_id: oxc_semantic::SymbolId,
+) -> bool {
+    let scoping = semantic.scoping();
+    let root_scope = scoping.root_scope_id();
+    // The declaration site (the function's binding identifier span). References
+    // before this offset and in the top-level scope are referenced-before-decl.
+    let decl_start = scoping.symbol_span(symbol_id).start;
+    // `get_resolved_reference_ids` yields the references that resolve to this
+    // symbol. A reference located in the module top-level scope (i.e. not nested
+    // inside any function/arrow scope) and occurring before the declaration is a
+    // referenced-before-declaration use.
+    for &reference_id in scoping.get_resolved_reference_ids(symbol_id) {
+        let reference = scoping.get_reference(reference_id);
+        let node_id = reference.node_id();
+        let node = semantic.nodes().get_node(node_id);
+        if node.span().start >= decl_start {
+            continue;
+        }
+        if is_top_level_scope(scoping, node.scope_id(), root_scope) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `scope` resolves to the top-level (module) scope without passing
+/// through any function scope.
+fn is_top_level_scope(
+    scoping: &oxc_semantic::Scoping,
+    scope: oxc_semantic::ScopeId,
+    root_scope: oxc_semantic::ScopeId,
+) -> bool {
+    use oxc_syntax::scope::ScopeFlags;
+    let mut current = Some(scope);
+    while let Some(s) = current {
+        if s == root_scope {
+            return true;
+        }
+        let flags = scoping.scope_flags(s);
+        if flags.contains(ScopeFlags::Function) || flags.contains(ScopeFlags::Arrow) {
+            return false;
+        }
+        current = scoping.scope_parent_id(s);
+    }
+    false
 }
 
 // =============================================================================

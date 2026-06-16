@@ -13,6 +13,14 @@
 //! *fresh owned* program in its own allocator, builds each compiled function's
 //! oxc AST via `codegen_oxc_function`, replaces the original function nodes by
 //! span, injects the `import { c as _c } from "<runtime>"`, and prints.
+//!
+//! `@gating`: when an artifact carries a [`GatingPlan`], the function is emitted
+//! in a gated form — both the compiled and the original function are kept and a
+//! runtime gating flag selects between them. The common case becomes a
+//! conditional (`const F = gating() ? <compiled> : <original>`); a function
+//! referenced before its declaration uses a hoistable dispatcher. The resolved
+//! gating import is injected after the `_c` import. Mirrors
+//! `insertGatedFunctionDeclaration` in `Entrypoint/Gating.ts`.
 
 use oxc_allocator::Allocator;
 use oxc_allocator::Box as ArenaBox;
@@ -21,6 +29,7 @@ use oxc_ast::ast as oxc;
 use oxc_span::GetSpan;
 use oxc_span::SPAN;
 use oxc_span::SourceType;
+use react_compiler::entrypoint::native_codegen::GatingPlan;
 use react_compiler::entrypoint::native_codegen::NativeArtifact;
 use react_compiler_reactive_scopes::codegen_oxc::codegen_oxc_function;
 
@@ -70,6 +79,7 @@ pub fn assemble_and_print(
                     span: artifact.fn_span,
                     is_arrow: artifact.is_arrow,
                     function: output.function,
+                    gating: artifact.gating.clone(),
                 });
             }
             Err(_bail) => {
@@ -93,8 +103,10 @@ pub fn assemble_and_print(
     let (outlined, spanned): (Vec<CompiledNode<'_>>, Vec<CompiledNode<'_>>) =
         compiled.into_iter().partition(|c| c.span == (0, 0));
 
-    // Splice compiled functions into the program body by matching spans.
-    splice_functions(&builder, &mut program, spanned);
+    // Splice compiled functions into the program body by matching spans. Gating
+    // imports needed by gated functions are collected as we go.
+    let mut gating_imports: Vec<GatingImport> = Vec::new();
+    splice_functions(&builder, &mut program, spanned, &mut gating_imports);
 
     // Append outlined functions as top-level function declarations.
     for node in outlined {
@@ -107,6 +119,10 @@ pub fn assemble_and_print(
         inject_memo_import(&builder, &mut program, runtime_module);
     }
 
+    // Inject the gating import(s) after the `_c` import (TS emits the gating
+    // import right after the memo-cache import). Dedupe identical specifiers.
+    inject_gating_imports(&builder, &mut program, &gating_imports);
+
     Some(oxc_codegen::Codegen::new().build(&program).code)
 }
 
@@ -114,41 +130,302 @@ struct CompiledNode<'a> {
     span: (u32, u32),
     is_arrow: bool,
     function: oxc::Function<'a>,
+    gating: Option<GatingPlan>,
+}
+
+/// A gating import to inject: `import { <imported> [as <local>] } from "<source>"`.
+#[derive(Clone, PartialEq, Eq)]
+struct GatingImport {
+    source: String,
+    imported: String,
+    local: String,
 }
 
 /// Replace each original function statement with its compiled form, matched by
 /// the original source span. Supports top-level `function F`, `export [default]
-/// function F`, and `const F = (fn|arrow)`.
+/// function F`, `const F = (fn|arrow)`, `export default <arrow|fnexpr>`,
+/// reassignment `F = <fn>`, and object-property values. Gated functions
+/// (carrying a [`GatingPlan`]) are emitted in their gated form, which may expand
+/// a single statement into several.
 fn splice_functions<'a>(
     builder: &AstBuilder<'a>,
     program: &mut oxc::Program<'a>,
     compiled: Vec<CompiledNode<'a>>,
+    gating_imports: &mut Vec<GatingImport>,
 ) {
     // Map span.start -> compiled node, consumed as we walk the body.
     let mut by_start: std::collections::HashMap<u32, CompiledNode<'a>> =
         compiled.into_iter().map(|c| (c.span.0, c)).collect();
 
-    for stmt in program.body.iter_mut() {
-        let stmt_span = stmt.span();
-        // Direct match on the statement span (function declarations).
-        if let Some(node) = by_start.remove(&stmt_span.start) {
-            *stmt = build_replacement(builder, node);
-            continue;
+    // Rebuild the body, since gated functions can expand into multiple
+    // statements (the use-before-declaration dispatcher form).
+    let old_body = std::mem::replace(&mut program.body, builder.vec());
+    for mut stmt in old_body {
+        // Match on the function-declaration span. For bare `function F` this is
+        // the statement span; for `export [default] function F` the function
+        // span is nested inside the export wrapper, so look there too.
+        if let Some(start) = function_declaration_start(&stmt) {
+            if let Some(node) = by_start.remove(&start) {
+                emit_top_level(builder, &mut program.body, stmt, node, gating_imports);
+                continue;
+            }
         }
-        // For variable declarations the function span starts at the init
-        // expression, not the statement. Try to match nested forms.
-        if try_splice_nested(builder, stmt, &mut by_start) {
-            continue;
+        // For variable declarations / exports / assignments / object props the
+        // function span starts at the init expression, not the statement.
+        try_splice_nested(builder, &mut stmt, &mut by_start, gating_imports);
+        program.body.push(stmt);
+    }
+}
+
+/// Emit a top-level statement whose span matched a compiled node directly. This
+/// is the `function F(...) {}` / `export [default] function F(...) {}` case.
+fn emit_top_level<'a>(
+    builder: &AstBuilder<'a>,
+    body: &mut oxc_allocator::Vec<'a, oxc::Statement<'a>>,
+    stmt: oxc::Statement<'a>,
+    node: CompiledNode<'a>,
+    gating_imports: &mut Vec<GatingImport>,
+) {
+    // Locate the original function declaration and its surrounding form.
+    let (orig_fn, wrapper) = unwrap_function_declaration(stmt);
+    let orig_fn = match orig_fn {
+        Some(f) => f,
+        None => {
+            // Shouldn't happen, but fall back to plain replacement.
+            body.push(build_replacement(builder, node));
+            return;
+        }
+    };
+
+    let Some(plan) = node.gating.clone() else {
+        // No gating: replace the function body with the compiled version,
+        // preserving the original `export` / `export default` wrapper.
+        body.push(rewrap_function_declaration(builder, node, &wrapper, &orig_fn));
+        return;
+    };
+
+    gating_imports.push(GatingImport {
+        source: plan.gating_source.clone(),
+        imported: plan.gating_imported.clone(),
+        local: plan.gating_local_name.clone(),
+    });
+
+    if plan.referenced_before_declaration {
+        emit_dispatcher(builder, body, orig_fn, node, &plan);
+        return;
+    }
+
+    let original_name = orig_fn.id.as_ref().map(|id| id.name.to_string());
+    let compiled_expr = function_expression(builder, node);
+    let original_expr = function_decl_to_expression(builder, orig_fn);
+    let gating_expr =
+        gating_conditional(builder, &plan.gating_local_name, compiled_expr, original_expr);
+
+    match (wrapper, original_name) {
+        // `export default function F` -> `const F = <gating>; export default F;`
+        (Wrapper::ExportDefault, Some(name)) => {
+            body.push(const_decl(builder, &name, gating_expr));
+            body.push(export_default_ident(builder, &name));
+        }
+        // `export function F` -> `export const F = <gating>;`
+        (Wrapper::ExportNamed, Some(name)) => {
+            body.push(export_const_decl(builder, &name, gating_expr));
+        }
+        // `function F` -> `const F = <gating>;`
+        (Wrapper::None, Some(name)) => {
+            body.push(const_decl(builder, &name, gating_expr));
+        }
+        // Anonymous `export default function` (no id) -> `export default <gating>`.
+        (Wrapper::ExportDefault, None) => {
+            body.push(export_default_expr(builder, gating_expr));
+        }
+        (_, None) => {
+            body.push(builder.statement_expression(SPAN, gating_expr));
         }
     }
 }
 
+/// The use-before-declaration dispatcher form. Mirrors
+/// `insertAdditionalFunctionDeclaration` in `Entrypoint/Gating.ts`:
+///
+/// ```js
+/// const <result> = <gating>();
+/// function <orig>_optimized(...) { <compiled body> }
+/// function <orig>_unoptimized(...) { <original body> }
+/// function <orig>(arg0, ...) {
+///   if (<result>) return <orig>_optimized(arg0, ...);
+///   else return <orig>_unoptimized(arg0, ...);
+/// }
+/// ```
+fn emit_dispatcher<'a>(
+    builder: &AstBuilder<'a>,
+    body: &mut oxc_allocator::Vec<'a, oxc::Statement<'a>>,
+    mut orig_fn: ArenaBox<'a, oxc::Function<'a>>,
+    node: CompiledNode<'a>,
+    plan: &GatingPlan,
+) {
+    let result_name = plan.result_name.as_deref().unwrap_or("gating_result");
+    let optimized_name = plan.optimized_name.as_deref().unwrap_or("optimized");
+    let unoptimized_name = plan.unoptimized_name.as_deref().unwrap_or("unoptimized");
+    let dispatcher_name = orig_fn
+        .id
+        .as_ref()
+        .map(|id| id.name.to_string())
+        .unwrap_or_default();
+
+    // const <result> = <gating>();
+    let gating_call = call_no_args(builder, &plan.gating_local_name);
+    body.push(const_decl(builder, result_name, gating_call));
+
+    // function <orig>_optimized(...) { <compiled body> }
+    let mut compiled_fn = node.function;
+    compiled_fn.r#type = oxc::FunctionType::FunctionDeclaration;
+    compiled_fn.id = Some(builder.binding_identifier(SPAN, builder.atom(optimized_name)));
+    body.push(oxc::Statement::FunctionDeclaration(
+        builder.alloc(compiled_fn),
+    ));
+
+    // function <orig>_unoptimized(...) { <original body> } (the original, renamed).
+    let orig_param_count = orig_fn.params.items.len();
+    let orig_has_rest = orig_fn.params.rest.is_some();
+    orig_fn.r#type = oxc::FunctionType::FunctionDeclaration;
+    orig_fn.id = Some(builder.binding_identifier(SPAN, builder.atom(unoptimized_name)));
+    body.push(oxc::Statement::FunctionDeclaration(orig_fn));
+
+    // function <orig>(arg0, ...) { if (<result>) return <opt>(args); else return <unopt>(args); }
+    let dispatcher = build_dispatcher(
+        builder,
+        &dispatcher_name,
+        orig_param_count,
+        orig_has_rest,
+        result_name,
+        optimized_name,
+        unoptimized_name,
+    );
+    body.push(dispatcher);
+}
+
+/// Build the dispatcher `function <name>(arg0, ...) { if (<result>) return
+/// <optimized>(args); else return <unoptimized>(args); }`.
+#[allow(clippy::too_many_arguments)]
+fn build_dispatcher<'a>(
+    builder: &AstBuilder<'a>,
+    name: &str,
+    param_count: usize,
+    has_rest: bool,
+    result_name: &str,
+    optimized_name: &str,
+    unoptimized_name: &str,
+) -> oxc::Statement<'a> {
+    // Build params arg0..argN. If the original had a rest parameter, the last
+    // param is a rest element (and is spread in the calls). The rest element
+    // lives in a dedicated slot on `FormalParameters` rather than `items`.
+    let mut params = builder.vec();
+    let mut rest = None;
+    for i in 0..param_count {
+        let arg_name = format!("arg{i}");
+        if has_rest && i == param_count - 1 {
+            let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(&arg_name));
+            let rest_elem = builder.binding_rest_element(SPAN, pat);
+            rest = Some(builder.alloc(builder.formal_parameter_rest(
+                SPAN,
+                builder.vec(),
+                rest_elem,
+                None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+            )));
+        } else {
+            let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(&arg_name));
+            let fp = builder.formal_parameter(
+                SPAN,
+                builder.vec(),
+                pat,
+                None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+                None::<ArenaBox<'a, oxc::Expression<'a>>>,
+                false,
+                None,
+                false,
+                false,
+            );
+            params.push(fp);
+        }
+    }
+    let formal_params = builder.formal_parameters(
+        SPAN,
+        oxc::FormalParameterKind::FormalParameter,
+        params,
+        rest,
+    );
+
+    // if (<result>) return <optimized>(args); else return <unoptimized>(args);
+    let test = builder.expression_identifier(SPAN, builder.atom(result_name));
+    let opt_call = builder.expression_call(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.atom(optimized_name)),
+        None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+        dispatcher_args(builder, param_count, has_rest),
+        false,
+    );
+    let consequent = builder.statement_return(SPAN, Some(opt_call));
+    let unopt_call = builder.expression_call(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.atom(unoptimized_name)),
+        None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+        dispatcher_args(builder, param_count, has_rest),
+        false,
+    );
+    let alternate = builder.statement_return(SPAN, Some(unopt_call));
+    let if_stmt = builder.statement_if(SPAN, test, consequent, Some(alternate));
+
+    let mut stmts = builder.vec();
+    stmts.push(if_stmt);
+    let fn_body = builder.function_body(SPAN, builder.vec(), stmts);
+
+    let id = builder.binding_identifier(SPAN, builder.atom(name));
+    let function = builder.function(
+        SPAN,
+        oxc::FunctionType::FunctionDeclaration,
+        Some(id),
+        false,
+        false,
+        false,
+        None::<ArenaBox<'a, oxc::TSTypeParameterDeclaration<'a>>>,
+        None::<ArenaBox<'a, oxc::TSThisParameter<'a>>>,
+        formal_params,
+        None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+        Some(fn_body),
+    );
+    oxc::Statement::FunctionDeclaration(builder.alloc(function))
+}
+
+/// Build the call arguments `arg0, ..., [...argN]` for a dispatcher call.
+fn dispatcher_args<'a>(
+    builder: &AstBuilder<'a>,
+    param_count: usize,
+    has_rest: bool,
+) -> oxc_allocator::Vec<'a, oxc::Argument<'a>> {
+    let mut args = builder.vec();
+    for i in 0..param_count {
+        let arg_name = format!("arg{i}");
+        let ident = builder.expression_identifier(SPAN, builder.atom(&arg_name));
+        if has_rest && i == param_count - 1 {
+            args.push(oxc::Argument::SpreadElement(
+                builder.alloc(builder.spread_element(SPAN, ident)),
+            ));
+        } else {
+            args.push(oxc::Argument::from(ident));
+        }
+    }
+    args
+}
+
 /// Try to splice a compiled function nested inside the statement (variable
-/// declarator init, export wrappers). Returns true if a replacement happened.
+/// declarator init, export wrappers, assignment, object property). Returns true
+/// if a replacement happened.
 fn try_splice_nested<'a>(
     builder: &AstBuilder<'a>,
     stmt: &mut oxc::Statement<'a>,
     by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
+    gating_imports: &mut Vec<GatingImport>,
 ) -> bool {
     match stmt {
         oxc::Statement::VariableDeclaration(var) => {
@@ -156,9 +433,8 @@ fn try_splice_nested<'a>(
                 if let Some(init) = &decl.init {
                     let init_start = init.span().start;
                     if let Some(node) = by_start.remove(&init_start) {
-                        // Replace the initializer with a function expression
-                        // (or arrow-as-function-expression).
-                        decl.init = Some(function_expression(builder, node));
+                        let original = decl.init.take().unwrap();
+                        decl.init = Some(build_init_expr(builder, node, original, gating_imports));
                         return true;
                     }
                 }
@@ -171,7 +447,9 @@ fn try_splice_nested<'a>(
                     if let Some(init) = &decl.init {
                         let init_start = init.span().start;
                         if let Some(node) = by_start.remove(&init_start) {
-                            decl.init = Some(function_expression(builder, node));
+                            let original = decl.init.take().unwrap();
+                            decl.init =
+                                Some(build_init_expr(builder, node, original, gating_imports));
                             return true;
                         }
                     }
@@ -179,16 +457,321 @@ fn try_splice_nested<'a>(
             }
             false
         }
+        // `export default <arrow|fnexpr>`.
+        oxc::Statement::ExportDefaultDeclaration(export) => {
+            let is_fn = matches!(
+                &export.declaration,
+                oxc::ExportDefaultDeclarationKind::ArrowFunctionExpression(_)
+                    | oxc::ExportDefaultDeclarationKind::FunctionExpression(_)
+            );
+            if is_fn {
+                let decl_start = export.declaration.span().start;
+                if let Some(node) = by_start.remove(&decl_start) {
+                    let original = std::mem::replace(
+                        &mut export.declaration,
+                        oxc::ExportDefaultDeclarationKind::NullLiteral(
+                            builder.alloc(builder.null_literal(SPAN)),
+                        ),
+                    );
+                    let original_expr = export_default_kind_to_expr(builder, original);
+                    let new_expr = build_init_expr(builder, node, original_expr, gating_imports);
+                    export.declaration = oxc::ExportDefaultDeclarationKind::from(new_expr);
+                    return true;
+                }
+            }
+            false
+        }
+        // Reassignment `X = <fn>` as an expression statement, or object property
+        // values such as `{ key: <arrow> }`.
+        oxc::Statement::ExpressionStatement(expr_stmt) => {
+            if let oxc::Expression::AssignmentExpression(assign) = &mut expr_stmt.expression {
+                let rhs_start = assign.right.span().start;
+                if let Some(node) = by_start.remove(&rhs_start) {
+                    let original =
+                        std::mem::replace(&mut assign.right, builder.expression_null_literal(SPAN));
+                    assign.right = build_init_expr(builder, node, original, gating_imports);
+                    return true;
+                }
+            }
+            splice_in_expression(builder, &mut expr_stmt.expression, by_start, gating_imports)
+        }
         _ => false,
     }
 }
 
-/// Build a top-level replacement statement for a compiled function.
+/// Recursively look for a compiled function nested in an expression (currently:
+/// object property values, e.g. `{ useHook: <arrow> }`).
+fn splice_in_expression<'a>(
+    builder: &AstBuilder<'a>,
+    expr: &mut oxc::Expression<'a>,
+    by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
+    gating_imports: &mut Vec<GatingImport>,
+) -> bool {
+    if let oxc::Expression::ObjectExpression(obj) = expr {
+        for prop in obj.properties.iter_mut() {
+            if let oxc::ObjectPropertyKind::ObjectProperty(p) = prop {
+                let val_start = p.value.span().start;
+                if let Some(node) = by_start.remove(&val_start) {
+                    let original =
+                        std::mem::replace(&mut p.value, builder.expression_null_literal(SPAN));
+                    p.value = build_init_expr(builder, node, original, gating_imports);
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Core: produce the (possibly gated) replacement expression for an
+/// initializer/value position, given the *original* expression at that span.
+fn build_init_expr<'a>(
+    builder: &AstBuilder<'a>,
+    node: CompiledNode<'a>,
+    original: oxc::Expression<'a>,
+    gating_imports: &mut Vec<GatingImport>,
+) -> oxc::Expression<'a> {
+    let Some(plan) = node.gating.clone() else {
+        return function_expression(builder, node);
+    };
+    gating_imports.push(GatingImport {
+        source: plan.gating_source.clone(),
+        imported: plan.gating_imported.clone(),
+        local: plan.gating_local_name.clone(),
+    });
+    let compiled_expr = function_expression(builder, node);
+    gating_conditional(builder, &plan.gating_local_name, compiled_expr, original)
+}
+
+/// Build `gating() ? <compiled> : <original>`.
+fn gating_conditional<'a>(
+    builder: &AstBuilder<'a>,
+    gating_local_name: &str,
+    compiled: oxc::Expression<'a>,
+    original: oxc::Expression<'a>,
+) -> oxc::Expression<'a> {
+    let test = call_no_args(builder, gating_local_name);
+    builder.expression_conditional(SPAN, test, compiled, original)
+}
+
+/// `<name>()` call with no arguments.
+fn call_no_args<'a>(builder: &AstBuilder<'a>, name: &str) -> oxc::Expression<'a> {
+    builder.expression_call(
+        SPAN,
+        builder.expression_identifier(SPAN, builder.atom(name)),
+        None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+        builder.vec(),
+        false,
+    )
+}
+
+/// `const <name> = <init>;`.
+fn const_decl<'a>(
+    builder: &AstBuilder<'a>,
+    name: &str,
+    init: oxc::Expression<'a>,
+) -> oxc::Statement<'a> {
+    let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(name));
+    let declarator = builder.variable_declarator(
+        SPAN,
+        oxc::VariableDeclarationKind::Const,
+        pat,
+        None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+        Some(init),
+        false,
+    );
+    let mut decls = builder.vec();
+    decls.push(declarator);
+    let decl =
+        builder.variable_declaration(SPAN, oxc::VariableDeclarationKind::Const, decls, false);
+    oxc::Statement::VariableDeclaration(builder.alloc(decl))
+}
+
+/// `export const <name> = <init>;`.
+fn export_const_decl<'a>(
+    builder: &AstBuilder<'a>,
+    name: &str,
+    init: oxc::Expression<'a>,
+) -> oxc::Statement<'a> {
+    let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(name));
+    let declarator = builder.variable_declarator(
+        SPAN,
+        oxc::VariableDeclarationKind::Const,
+        pat,
+        None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+        Some(init),
+        false,
+    );
+    let mut decls = builder.vec();
+    decls.push(declarator);
+    let var_decl =
+        builder.variable_declaration(SPAN, oxc::VariableDeclarationKind::Const, decls, false);
+    let export = builder.export_named_declaration(
+        SPAN,
+        Some(oxc::Declaration::VariableDeclaration(
+            builder.alloc(var_decl),
+        )),
+        builder.vec(),
+        None,
+        oxc::ImportOrExportKind::Value,
+        None::<ArenaBox<'a, oxc::WithClause<'a>>>,
+    );
+    oxc::Statement::ExportNamedDeclaration(builder.alloc(export))
+}
+
+/// `export default <name>;`.
+fn export_default_ident<'a>(builder: &AstBuilder<'a>, name: &str) -> oxc::Statement<'a> {
+    let ident = builder.expression_identifier(SPAN, builder.atom(name));
+    export_default_expr(builder, ident)
+}
+
+/// `export default <expr>;`.
+fn export_default_expr<'a>(
+    builder: &AstBuilder<'a>,
+    expr: oxc::Expression<'a>,
+) -> oxc::Statement<'a> {
+    let export =
+        builder.export_default_declaration(SPAN, oxc::ExportDefaultDeclarationKind::from(expr));
+    oxc::Statement::ExportDefaultDeclaration(builder.alloc(export))
+}
+
+/// Convert an `ExportDefaultDeclarationKind` (arrow/fnexpr) into an expression.
+fn export_default_kind_to_expr<'a>(
+    builder: &AstBuilder<'a>,
+    kind: oxc::ExportDefaultDeclarationKind<'a>,
+) -> oxc::Expression<'a> {
+    match kind {
+        oxc::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
+            oxc::Expression::ArrowFunctionExpression(arrow)
+        }
+        oxc::ExportDefaultDeclarationKind::FunctionExpression(func) => {
+            oxc::Expression::FunctionExpression(func)
+        }
+        // Other forms shouldn't reach here (guarded by the caller); fall back to
+        // a null literal so the program remains well-formed.
+        _ => builder.expression_null_literal(SPAN),
+    }
+}
+
+/// The source-span start of the function declaration carried by `stmt`, if it
+/// is a bare `function F`, `export function F`, or `export default function F`.
+/// Used to match a statement against a compiled artifact (whose span is the
+/// inner function span, not the export wrapper span).
+fn function_declaration_start(stmt: &oxc::Statement<'_>) -> Option<u32> {
+    match stmt {
+        oxc::Statement::FunctionDeclaration(func) => Some(func.span().start),
+        oxc::Statement::ExportNamedDeclaration(export) => {
+            if let Some(oxc::Declaration::FunctionDeclaration(func)) = &export.declaration {
+                Some(func.span().start)
+            } else {
+                None
+            }
+        }
+        oxc::Statement::ExportDefaultDeclaration(export) => {
+            if let oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) = &export.declaration
+            {
+                Some(func.span().start)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Pull the `Function` out of a top-level function-declaration statement (bare,
+/// `export`, or `export default`), reporting which wrapper it was in.
+fn unwrap_function_declaration<'a>(
+    stmt: oxc::Statement<'a>,
+) -> (Option<ArenaBox<'a, oxc::Function<'a>>>, Wrapper) {
+    match stmt {
+        oxc::Statement::FunctionDeclaration(func) => (Some(func), Wrapper::None),
+        oxc::Statement::ExportNamedDeclaration(export) => {
+            let export = export.unbox();
+            if let Some(oxc::Declaration::FunctionDeclaration(func)) = export.declaration {
+                (Some(func), Wrapper::ExportNamed)
+            } else {
+                (None, Wrapper::None)
+            }
+        }
+        oxc::Statement::ExportDefaultDeclaration(export) => {
+            let export = export.unbox();
+            if let oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) = export.declaration
+            {
+                (Some(func), Wrapper::ExportDefault)
+            } else {
+                (None, Wrapper::None)
+            }
+        }
+        _ => (None, Wrapper::None),
+    }
+}
+
+enum Wrapper {
+    None,
+    ExportNamed,
+    ExportDefault,
+}
+
+/// Convert a `FunctionDeclaration` (as a boxed `Function`) into a
+/// `FunctionExpression` expression for use as the "original" side of a gating
+/// conditional, preserving id / params / body.
+fn function_decl_to_expression<'a>(
+    builder: &AstBuilder<'a>,
+    func: ArenaBox<'a, oxc::Function<'a>>,
+) -> oxc::Expression<'a> {
+    let mut function = func.unbox();
+    function.r#type = oxc::FunctionType::FunctionExpression;
+    oxc::Expression::FunctionExpression(builder.alloc(function))
+}
+
+/// Build a top-level replacement statement for a compiled function (no gating).
 fn build_replacement<'a>(builder: &AstBuilder<'a>, node: CompiledNode<'a>) -> oxc::Statement<'a> {
     // Top-level matched node is a function declaration form.
     let mut function = node.function;
     function.r#type = oxc::FunctionType::FunctionDeclaration;
     oxc::Statement::FunctionDeclaration(builder.alloc(function))
+}
+
+/// Build the compiled function declaration and rewrap it in the original
+/// `export` / `export default` wrapper (non-gated path). `orig_fn` supplies the
+/// original name for anonymous `export default function` forms.
+fn rewrap_function_declaration<'a>(
+    builder: &AstBuilder<'a>,
+    node: CompiledNode<'a>,
+    wrapper: &Wrapper,
+    orig_fn: &oxc::Function<'a>,
+) -> oxc::Statement<'a> {
+    let mut function = node.function;
+    function.r#type = oxc::FunctionType::FunctionDeclaration;
+    // Preserve the original function name (codegen keeps it, but be safe for
+    // anonymous default exports).
+    if function.id.is_none() {
+        if let Some(id) = &orig_fn.id {
+            function.id = Some(builder.binding_identifier(SPAN, builder.atom(id.name.as_str())));
+        }
+    }
+    let func_box = builder.alloc(function);
+    match wrapper {
+        Wrapper::None => oxc::Statement::FunctionDeclaration(func_box),
+        Wrapper::ExportNamed => {
+            let decl = oxc::Declaration::FunctionDeclaration(func_box);
+            let export = builder.export_named_declaration(
+                SPAN,
+                Some(decl),
+                builder.vec(),
+                None,
+                oxc::ImportOrExportKind::Value,
+                None::<ArenaBox<'a, oxc::WithClause<'a>>>,
+            );
+            oxc::Statement::ExportNamedDeclaration(builder.alloc(export))
+        }
+        Wrapper::ExportDefault => {
+            let kind = oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func_box);
+            let export = builder.export_default_declaration(SPAN, kind);
+            oxc::Statement::ExportDefaultDeclaration(builder.alloc(export))
+        }
+    }
 }
 
 /// Build a function expression initializer for a `const X = ...` form.
@@ -259,17 +842,6 @@ fn inject_memo_import<'a>(
     program: &mut oxc::Program<'a>,
     runtime_module: &str,
 ) {
-    // Avoid duplicate import if the source already imports it (rare in the
-    // simple slice; cheap to guard).
-    let already = program.body.iter().any(|stmt| {
-        if let oxc::Statement::ImportDeclaration(import) = stmt {
-            import.source.value.as_str() == runtime_module
-        } else {
-            false
-        }
-    });
-    let _ = already; // intentionally do not dedupe imported specifier yet
-
     let imported =
         oxc::ModuleExportName::IdentifierName(builder.identifier_name(SPAN, builder.atom("c")));
     let local = builder.binding_identifier(SPAN, builder.atom(MEMO_LOCAL_NAME));
@@ -289,4 +861,60 @@ fn inject_memo_import<'a>(
     );
     let import_stmt = oxc::Statement::ImportDeclaration(builder.alloc(import_decl));
     program.body.insert(0, import_stmt);
+}
+
+/// Inject the gating import(s) — `import { <imported> [as <local>] } from
+/// "<source>";` — after the leading `_c` import (matching TS). Duplicate
+/// specifiers are emitted once.
+fn inject_gating_imports<'a>(
+    builder: &AstBuilder<'a>,
+    program: &mut oxc::Program<'a>,
+    gating_imports: &[GatingImport],
+) {
+    if gating_imports.is_empty() {
+        return;
+    }
+    // Dedupe identical (source, imported, local) triples while preserving order.
+    let mut seen: Vec<&GatingImport> = Vec::new();
+    for gi in gating_imports {
+        if !seen.iter().any(|s| **s == *gi) {
+            seen.push(gi);
+        }
+    }
+
+    // Insert position: right after the first import (the `_c` memo import, if
+    // present); otherwise at the top.
+    let mut insert_at = if matches!(
+        program.body.first(),
+        Some(oxc::Statement::ImportDeclaration(_))
+    ) {
+        1usize
+    } else {
+        0usize
+    };
+
+    for gi in seen {
+        let imported = oxc::ModuleExportName::IdentifierName(
+            builder.identifier_name(SPAN, builder.atom(&gi.imported)),
+        );
+        let local = builder.binding_identifier(SPAN, builder.atom(&gi.local));
+        let specifier =
+            builder.import_specifier(SPAN, imported, local, oxc::ImportOrExportKind::Value);
+        let mut specifiers = builder.vec();
+        specifiers.push(oxc::ImportDeclarationSpecifier::ImportSpecifier(
+            builder.alloc(specifier),
+        ));
+        let source = builder.string_literal(SPAN, builder.atom(&gi.source), None);
+        let import_decl = builder.import_declaration(
+            SPAN,
+            Some(specifiers),
+            source,
+            None,
+            None::<ArenaBox<'a, oxc::WithClause<'a>>>,
+            oxc::ImportOrExportKind::Value,
+        );
+        let import_stmt = oxc::Statement::ImportDeclaration(builder.alloc(import_decl));
+        program.body.insert(insert_at, import_stmt);
+        insert_at += 1;
+    }
 }
