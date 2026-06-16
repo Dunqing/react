@@ -38,17 +38,8 @@ mod jsx;
 mod patterns;
 mod statements;
 
-#[allow(unused_imports)]
-pub(crate) use expressions::lower_expression;
 pub(crate) use expressions::lower_expression_to_temporary;
-#[allow(unused_imports)]
-pub(crate) use functions::{
-    lower_function, lower_function_declaration, lower_function_to_value, lower_object_method,
-};
-#[allow(unused_imports)]
-pub(crate) use patterns::{
-    AssignmentStyle, lower_assignment, lower_assignment_target, lower_identifier_for_assignment,
-};
+pub(crate) use patterns::{AssignmentStyle, lower_assignment, lower_assignment_target};
 // The per-construct lowering (statements / jsx / patterns) is transcribed
 // incrementally in later N1.2.x / N1.3 stages. Expression lowering (N1.2.3)
 // lives in `expressions.rs`. The dispatch in this module handles the function

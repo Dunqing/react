@@ -83,8 +83,7 @@ pub struct Environment {
     pub reference_node_ids: HashSet<u32>,
 
     // Hoisted identifiers: tracks which bindings have already been hoisted
-    // via DeclareContext to avoid duplicate hoisting.
-    // Uses u32 to avoid depending on react_compiler_ast types.
+    // via DeclareContext to avoid duplicate hoisting. Keyed by raw u32 id.
     hoisted_identifiers: HashSet<u32>,
 
     // Config flags for validation passes (kept for backwards compat with existing pipeline code)

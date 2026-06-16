@@ -2,7 +2,7 @@ use react_compiler_diagnostics::CompilerError;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::print::{self, PrintFormatter};
 use react_compiler_hir::{
-    BasicBlock, BlockId, HirFunction, Instruction, ParamPattern, Place, Terminal,
+    BasicBlock, BlockId, HirFunction, Instruction, ParamPattern, Terminal,
 };
 
 // =============================================================================
@@ -713,22 +713,4 @@ pub fn format_hir_function_into(reactive_fmt: &mut PrintFormatter, func: &HirFun
     // Copy back the seen state
     reactive_fmt.seen_identifiers = printer.fmt.seen_identifiers;
     reactive_fmt.seen_scopes = printer.fmt.seen_scopes;
-}
-
-// =============================================================================
-// Helpers for effect formatting (kept for backward compatibility)
-// =============================================================================
-
-#[allow(dead_code)]
-fn format_place_short(place: &Place, env: &Environment) -> String {
-    let ident = &env.identifiers[place.identifier.0 as usize];
-    let name = match &ident.name {
-        Some(name) => name.value().to_string(),
-        None => String::new(),
-    };
-    let scope = match ident.scope {
-        Some(scope_id) => format!(":{}", scope_id.0),
-        None => String::new(),
-    };
-    format!("{}${}{}", name, place.identifier.0, scope)
 }

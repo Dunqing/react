@@ -332,7 +332,6 @@ pub enum Transformed<T> {
 
 /// Result of transforming a ReactiveValue.
 /// TS: `TransformedValue`
-#[allow(dead_code)]
 pub enum TransformedValue {
     Keep,
     Replace(ReactiveValue),

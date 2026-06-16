@@ -14,8 +14,6 @@
 //! oxc AST via `codegen_oxc_function`, replaces the original function nodes by
 //! span, injects the `import { c as _c } from "<runtime>"`, and prints.
 
-use std::collections::HashSet;
-
 use oxc_allocator::Allocator;
 use oxc_allocator::Box as ArenaBox;
 use oxc_ast::AstBuilder;
@@ -291,11 +289,4 @@ fn inject_memo_import<'a>(
     );
     let import_stmt = oxc::Statement::ImportDeclaration(builder.alloc(import_decl));
     program.body.insert(0, import_stmt);
-}
-
-/// Collect the set of top-level statement span starts (helper, unused for now
-/// but documents the matching contract).
-#[allow(dead_code)]
-fn top_level_starts(program: &oxc::Program) -> HashSet<u32> {
-    program.body.iter().map(|s| s.span().start).collect()
 }

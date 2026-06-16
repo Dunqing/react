@@ -51,12 +51,10 @@ pub fn validate_exhaustive_dependencies(
     }
 
     let mut start_memo: Option<StartMemoInfo> = None;
-    let mut memo_locals: HashSet<IdentifierId> = HashSet::new();
 
     // Callbacks struct holding the mutable state
     let mut callbacks = Callbacks {
         start_memo: &mut start_memo,
-        memo_locals: &mut memo_locals,
         validate_memo,
         validate_effect: validate_effect.clone(),
         reactive: &reactive,
@@ -106,8 +104,6 @@ struct StartMemoInfo {
     manual_memo_id: u32,
     deps: Option<Vec<ManualMemoDependency>>,
     deps_loc: Option<Option<SourceLocation>>,
-    #[allow(dead_code)]
-    loc: Option<SourceLocation>,
 }
 
 /// A temporary value tracked during dependency collection
@@ -134,7 +130,6 @@ enum InferredDependency {
     Local {
         identifier: IdentifierId,
         path: Vec<DependencyPathEntry>,
-        #[allow(dead_code)]
         context: bool,
         loc: Option<SourceLocation>,
     },
@@ -179,8 +174,6 @@ fn path_to_string(path: &[DependencyPathEntry]) -> String {
 /// Callbacks for StartMemoize/FinishMemoize/Effect events
 struct Callbacks<'a> {
     start_memo: &'a mut Option<StartMemoInfo>,
-    #[allow(dead_code)]
-    memo_locals: &'a mut HashSet<IdentifierId>,
     validate_memo: bool,
     validate_effect: ExhaustiveEffectDepsMode,
     reactive: &'a HashSet<IdentifierId>,
@@ -820,7 +813,6 @@ fn collect_dependencies(
                     manual_memo_id,
                     deps,
                     deps_loc,
-                    loc,
                     ..
                 } => {
                     if let Some(cb) = callbacks.as_mut() {
@@ -829,7 +821,6 @@ fn collect_dependencies(
                             manual_memo_id: *manual_memo_id,
                             deps: deps.clone(),
                             deps_loc: *deps_loc,
-                            loc: *loc,
                         });
                         // Save current state and clear, matching TS which clears the shared
                         // dependencies/locals sets on StartMemoize

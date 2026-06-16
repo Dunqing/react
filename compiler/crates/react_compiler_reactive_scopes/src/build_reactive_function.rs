@@ -68,8 +68,6 @@ enum ControlFlowTarget {
     },
     Loop {
         block: BlockId,
-        #[allow(dead_code)]
-        owns_block: bool,
         continue_block: BlockId,
         loop_block: Option<BlockId>,
         owns_loop: bool,
@@ -176,7 +174,6 @@ impl<'a> Context<'a> {
     ) -> Result<u32, CompilerDiagnostic> {
         let id = self.next_schedule_id;
         self.next_schedule_id += 1;
-        let owns_block = !self.scheduled.contains(&fallthrough_block);
         self.scheduled.insert(fallthrough_block);
         if self.scheduled.contains(&continue_block) {
             return Err(CompilerDiagnostic::new(
@@ -197,7 +194,6 @@ impl<'a> Context<'a> {
 
         self.control_flow_stack.push(ControlFlowTarget::Loop {
             block: fallthrough_block,
-            owns_block,
             continue_block,
             loop_block,
             owns_loop,
@@ -318,7 +314,6 @@ impl<'a> Context<'a> {
 struct Driver<'a, 'b> {
     cx: &'b mut Context<'a>,
     hir: &'a HirFunction,
-    #[allow(dead_code)]
     env: &'a Environment,
 }
 

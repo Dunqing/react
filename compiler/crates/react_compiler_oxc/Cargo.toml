@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 react_compiler = { path = "../react_compiler" }
-react_compiler_diagnostics = { path = "../react_compiler_diagnostics" }
 react_compiler_hir = { path = "../react_compiler_hir" }
 react_compiler_reactive_scopes = { path = "../react_compiler_reactive_scopes" }
 oxc_parser = "0.121"
@@ -15,8 +14,4 @@ oxc_semantic = "0.121"
 oxc_allocator = "0.121"
 oxc_span = "0.121"
 oxc_diagnostics = "0.121"
-oxc_syntax = "0.121"
 oxc_codegen = "0.121"
-indexmap = { version = "2", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"

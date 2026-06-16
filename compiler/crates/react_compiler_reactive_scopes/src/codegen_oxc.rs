@@ -2858,22 +2858,3 @@ fn binding_pattern_name<'a>(pat: &'a oxc::BindingPattern<'a>) -> Option<&'a str>
         _ => None,
     }
 }
-
-#[allow(dead_code)]
-fn terminal_kind(t: &ReactiveTerminal) -> &'static str {
-    match t {
-        ReactiveTerminal::Break { .. } => "Break",
-        ReactiveTerminal::Continue { .. } => "Continue",
-        ReactiveTerminal::Return { .. } => "Return",
-        ReactiveTerminal::Throw { .. } => "Throw",
-        ReactiveTerminal::Switch { .. } => "Switch",
-        ReactiveTerminal::DoWhile { .. } => "DoWhile",
-        ReactiveTerminal::While { .. } => "While",
-        ReactiveTerminal::For { .. } => "For",
-        ReactiveTerminal::ForOf { .. } => "ForOf",
-        ReactiveTerminal::ForIn { .. } => "ForIn",
-        ReactiveTerminal::If { .. } => "If",
-        ReactiveTerminal::Label { .. } => "Label",
-        ReactiveTerminal::Try { .. } => "Try",
-    }
-}
