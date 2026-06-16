@@ -8,15 +8,9 @@
 import watcher from '@parcel/watcher';
 import path from 'path';
 import ts from 'typescript';
-import {
-  FIXTURES_PATH,
-  BABEL_PLUGIN_ROOT,
-  BABEL_PLUGIN_RUST_ROOT,
-  CRATES_PATH,
-} from './constants';
+import {FIXTURES_PATH, BABEL_PLUGIN_ROOT, CRATES_PATH} from './constants';
 import {TestFilter, getFixtures} from './fixture-utils';
 import {execSync} from 'child_process';
-import fs from 'fs';
 
 export function watchSrc(
   onStart: () => void,
@@ -197,47 +191,17 @@ function subscribeTsc(
 }
 
 export function buildRust(): boolean {
-  const compilerRoot = path.join(BABEL_PLUGIN_ROOT, '..', '..');
-  try {
-    execSync('cargo build -p react_compiler_napi', {
-      cwd: compilerRoot,
-      stdio: 'inherit',
-    });
-  } catch (e) {
-    console.error('Failed to build Rust compiler with cargo:', e);
-    return false;
-  }
-
-  // Copy the built native module to the babel plugin package
-  const platform = process.platform;
-  const ext = platform === 'darwin' ? 'dylib' : 'so';
-  const libName =
-    platform === 'darwin'
-      ? 'libreact_compiler_napi.dylib'
-      : 'libreact_compiler_napi.so';
-  const sourcePath = path.join(compilerRoot, 'target', 'debug', libName);
-  const destPath = path.join(BABEL_PLUGIN_RUST_ROOT, 'native', 'index.node');
-
-  try {
-    fs.copyFileSync(sourcePath, destPath);
-  } catch (e) {
-    console.error(
-      `Failed to copy native module (${sourcePath} -> ${destPath}):`,
-      e,
-    );
-    return false;
-  }
-
-  // Build the TypeScript wrapper
-  try {
-    execSync('yarn build', {cwd: BABEL_PLUGIN_RUST_ROOT, stdio: 'inherit'});
-    console.log('Built Rust compiler successfully');
-  } catch (e) {
-    console.error('Failed to build Rust babel plugin with tsc:', e);
-    return false;
-  }
-
-  return true;
+  // The legacy Rust-via-Babel/NAPI integration (the
+  // `babel-plugin-react-compiler-rust` package + `react_compiler_napi` crate)
+  // has been removed. The Rust compiler now runs natively on OXC; use the OXC
+  // oracles instead (compiler/scripts/compare-code.ts, compare-hir.ts,
+  // test-e2e.ts --variant oxc).
+  console.error(
+    'snap --rust is no longer supported: the legacy Rust Babel/NAPI bridge ' +
+      'has been removed. Use the OXC oracle scripts in compiler/scripts/ ' +
+      '(compare-code.ts, compare-hir.ts, test-e2e.ts --variant oxc).',
+  );
+  return false;
 }
 
 function subscribeRustCrates(

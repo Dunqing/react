@@ -63,20 +63,13 @@ function discoverFixtures(rootPath: string): string[] {
 }
 
 // --- Build ---
-console.error('Building Rust native module and e2e CLI...');
-execSync(
-  'rustup run 1.92.0 cargo build -p react_compiler_napi -p react_compiler_e2e_cli',
-  {cwd: path.join(REPO_ROOT, 'compiler/crates'), stdio: ['inherit', 'pipe', 'pipe'], shell: true},
-);
+console.error('Building e2e CLI...');
+execSync('rustup run 1.92.0 cargo build -p react_compiler_e2e_cli', {
+  cwd: path.join(REPO_ROOT, 'compiler/crates'),
+  stdio: ['inherit', 'pipe', 'pipe'],
+  shell: true,
+});
 const TARGET_DIR = path.join(REPO_ROOT, 'compiler/target/debug');
-const NATIVE_NODE_PATH = path.join(
-  REPO_ROOT,
-  'compiler/packages/babel-plugin-react-compiler-rust/native/index.node',
-);
-const dylib = fs.existsSync(path.join(TARGET_DIR, 'libreact_compiler_napi.dylib'))
-  ? path.join(TARGET_DIR, 'libreact_compiler_napi.dylib')
-  : path.join(TARGET_DIR, 'libreact_compiler_napi.so');
-fs.copyFileSync(dylib, NATIVE_NODE_PATH);
 const CLI_BINARY = path.join(TARGET_DIR, 'react-compiler-e2e');
 
 const tsPlugin = require('../packages/babel-plugin-react-compiler/src').default;

@@ -249,7 +249,7 @@ Rust crates live in `compiler/crates/`.
 ### After implementing:
 - Update the plan doc's status
 - Run `/compiler-verify`
-- Ensure `compiler/scripts/test-babel-ast.sh` passes
+- Ensure the OXC oracles do not regress (`compiler/scripts/compare-code.ts` SEMANTIC-pass, `compare-hir.ts` HIR-MATCH, `test-e2e.ts --variant oxc`)
 
 ## Debugging Tips
 

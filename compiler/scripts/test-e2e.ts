@@ -10,12 +10,12 @@
  *
  * Runs fixtures through:
  *   - TS baseline (Babel plugin, in-process)
- *   - babel variant: Rust via Babel plugin (in-process via NAPI)
  *   - oxc variant: Rust via OXC frontend (CLI binary)
  *
- * (The SWC frontend has been removed; only the OXC CLI frontend remains.)
+ * (The SWC and Babel/NAPI frontends have been removed; only the OXC CLI
+ * frontend remains.)
  *
- * Usage: npx tsx compiler/scripts/test-e2e.ts [fixtures-path] [--variant babel|oxc] [--limit N] [--no-color]
+ * Usage: npx tsx compiler/scripts/test-e2e.ts [fixtures-path] [--variant oxc] [--limit N] [--no-color]
  */
 
 import * as babel from '@babel/core';
@@ -33,8 +33,7 @@ const REPO_ROOT = path.resolve(__dirname, '../..');
 const rawArgs = process.argv.slice(2);
 const noColor = rawArgs.includes('--no-color') || !!process.env.NO_COLOR;
 const variantIdx = rawArgs.indexOf('--variant');
-const variantArg =
-  variantIdx >= 0 ? (rawArgs[variantIdx + 1] as 'babel' | 'oxc') : null;
+const variantArg = variantIdx >= 0 ? (rawArgs[variantIdx + 1] as 'oxc') : null;
 const limitIdx = rawArgs.indexOf('--limit');
 const limitArg = limitIdx >= 0 ? parseInt(rawArgs[limitIdx + 1], 10) : 50;
 
@@ -98,16 +97,13 @@ function discoverFixtures(rootPath: string): string[] {
 }
 
 // --- Build ---
-console.log('Building Rust native module and e2e CLI...');
+console.log('Building e2e CLI...');
 try {
-  execSync(
-    'rustup run 1.92.0 cargo build -p react_compiler_napi -p react_compiler_e2e_cli',
-    {
-      cwd: path.join(REPO_ROOT, 'compiler/crates'),
-      stdio: ['inherit', 'pipe', 'pipe'],
-      shell: true,
-    },
-  );
+  execSync('rustup run 1.92.0 cargo build -p react_compiler_e2e_cli', {
+    cwd: path.join(REPO_ROOT, 'compiler/crates'),
+    stdio: ['inherit', 'pipe', 'pipe'],
+    shell: true,
+  });
 } catch (e: any) {
   // Show stderr on build failure (includes errors + warnings)
   if (e.stderr) {
@@ -117,33 +113,11 @@ try {
   process.exit(1);
 }
 
-// Copy the built dylib as index.node
-const NATIVE_DIR = path.join(
-  REPO_ROOT,
-  'compiler/packages/babel-plugin-react-compiler-rust/native',
-);
-const NATIVE_NODE_PATH = path.join(NATIVE_DIR, 'index.node');
 const TARGET_DIR = path.join(REPO_ROOT, 'compiler/target/debug');
-const dylib = fs.existsSync(
-  path.join(TARGET_DIR, 'libreact_compiler_napi.dylib'),
-)
-  ? path.join(TARGET_DIR, 'libreact_compiler_napi.dylib')
-  : path.join(TARGET_DIR, 'libreact_compiler_napi.so');
-
-if (!fs.existsSync(dylib)) {
-  console.error(
-    `${RED}ERROR: Could not find built native module in ${TARGET_DIR}${RESET}`,
-  );
-  process.exit(1);
-}
-fs.copyFileSync(dylib, NATIVE_NODE_PATH);
-
 const CLI_BINARY = path.join(TARGET_DIR, 'react-compiler-e2e');
 
 // --- Load plugins ---
 const tsPlugin = require('../packages/babel-plugin-react-compiler/src').default;
-const rustPlugin =
-  require('../packages/babel-plugin-react-compiler-rust/src').default;
 
 // --- Normalize code for comparison ---
 // Reparse with Babel and regenerate with compact:true to erase all
@@ -418,9 +392,10 @@ function unifiedDiff(
 }
 
 // --- Main ---
-type Variant = 'babel' | 'oxc';
-const ALL_VARIANTS: Variant[] = ['babel', 'oxc'];
-const variants: Variant[] = variantArg ? [variantArg] : ALL_VARIANTS;
+// The Babel/NAPI variant has been removed; only the OXC CLI frontend remains.
+type Variant = 'oxc';
+const ALL_VARIANTS: Variant[] = ['oxc'];
+const variants: Variant[] = ['oxc'];
 
 const fixtures = discoverFixtures(fixturesPath);
 if (fixtures.length === 0) {
@@ -494,19 +469,19 @@ async function runVariant(
 
     // Skip Flow files for the OXC variant — OXC has no native Flow parser,
     // so Flow type cast syntax (e.g., `(x: Type)`) fails to parse.
-    if (variant !== 'babel' && isFlow) {
+    if (isFlow) {
       s.passed++;
       s.codePassed++;
       s.eventsPassed++;
       continue;
     }
 
-    let variantResult: CompileResult;
-    if (variant === 'babel') {
-      variantResult = compileBabel(rustPlugin, fixturePath, source, firstLine);
-    } else {
-      variantResult = compileCli(variant, fixturePath, source, firstLine);
-    }
+    const variantResult: CompileResult = compileCli(
+      variant,
+      fixturePath,
+      source,
+      firstLine,
+    );
 
     const variantCode = await formatCode(variantResult.code ?? '', isFlow);
     const variantEvents = normalizeEvents(variantResult.events);

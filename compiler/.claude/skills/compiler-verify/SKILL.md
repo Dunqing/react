@@ -24,9 +24,9 @@ Arguments:
    - `yarn workspace babel-plugin-react-compiler lint` — lint compiler source
 
 3. **If Rust changed**, run these sequentially (stop on failure):
-   - `bash compiler/scripts/test-babel-ast.sh` — Babel AST round-trip tests
-   - `bash compiler/scripts/test-rust-port.sh` — full Rust port test suite (compares Rust vs TS compiler output across all passes; must have 0 failures — do not regress)
-   - `yarn snap --rust` — end-to-end snap tests using the Rust compiler (compares compiled output and logger events against `.expect.md` fixtures; use `yarn snap --rust -p <pattern>` for focused checks)
+   - `rustup run 1.92.0 cargo test` (from `compiler/`) — Rust unit tests; must pass
+   - `npx tsx compiler/scripts/compare-code.ts --limit 0` — OXC semantic-parity oracle (compares native Rust-on-OXC output vs the TS compiler across all fixtures; SEMANTIC-pass must not regress)
+   - `npx tsx compiler/scripts/test-e2e.ts --variant oxc` — end-to-end OXC oracle (compares the OXC CLI's compiled output and logger events against the TS baseline)
 
 4. **Always run** (from the repo root):
    - `yarn prettier-all` — format all changed files
