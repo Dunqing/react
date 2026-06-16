@@ -31,7 +31,8 @@ oxc_semantic = "..."
 oxc_allocator = "..."
 oxc_span = "..."
 oxc_diagnostics = "..."
-oxc_linter = "..."       # for Rule trait
+# oxc_linter — NOT added: not published to crates.io (Rule trait is internal to
+# the oxc monorepo). See the deferred "oxc_linter::Rule Implementation" section.
 indexmap = "..."
 ```
 
@@ -213,7 +214,36 @@ pub fn lint_source(
 
 Same as transform but with `no_emit = true` / lint output mode. Only collects diagnostics, no AST output.
 
-#### oxc_linter::Rule Implementation
+#### oxc_linter::Rule Implementation — DEFERRED (N3)
+
+**Status: deferred.** The original sketch below is aspirational and cannot be
+implemented against the project's pinned oxc 0.121 toolchain. Diagnosis:
+
+- **`oxc_linter` is not published to crates.io — at 0.121 or any version.**
+  `cargo add oxc_linter@0.121` (and bare `cargo add oxc_linter`) both fail with
+  "could not be found in registry index", while `oxc_parser`/`oxc_semantic`/etc.
+  *are* published (latest 0.136.0; we pin 0.121). There is no `oxc_linter = "0.121"`
+  dependency to add. Depending on the `Rule` trait would require a git/path
+  dependency on the entire oxc monorepo at a matching revision — a heavyweight,
+  version-fragile coupling we do not want in this crate.
+- **The `Rule` trait is internal to the oxc monorepo.** Rules live in
+  `crates/oxc_linter/src/rules/` and are wired up via the `declare_oxc_lint!`
+  macro plus a generated rule registry; there is no external registration path.
+  The oxc maintainers explicitly recommend **JS plugins** (an ESLint-compatible
+  API) for external custom rules, not external Rust `Rule` impls
+  (see oxc discussion #20086 and https://oxc.rs/docs/guide/usage/linter/js-plugins.html).
+- **The sketch's signature is also stale**: real `lint()` takes
+  `(program, semantic, source_text, options)` — 4 args, no `ctx.comments()`.
+
+**The capability already exists without the Rule trait.** The standalone
+`lint(program, semantic, source_text, options) -> LintResult` and `lint_source(...)`
+functions in `lib.rs` already run the full validation pipeline natively on the
+oxc AST + semantic and return `Vec<oxc_diagnostics::OxcDiagnostic>` — precisely
+what a `ctx.diagnostic(...)` loop would forward. Any future oxlint `Rule`
+registration therefore belongs in the oxc project itself (per upstream #36743),
+where `oxc_linter` is in-tree, rather than in this crate.
+
+Aspirational sketch (do NOT implement against 0.121):
 
 ```rust
 pub struct ReactCompilerRule {
@@ -227,7 +257,6 @@ impl oxc_linter::Rule for ReactCompilerRule {
             ctx.program(),
             ctx.semantic(),
             ctx.source_text(),
-            ctx.comments(),
             self.options.clone(),
         );
         for diagnostic in result.diagnostics {
@@ -236,8 +265,6 @@ impl oxc_linter::Rule for ReactCompilerRule {
     }
 }
 ```
-
-This avoids double-parsing since oxc_linter provides pre-parsed AST and semantic analysis.
 
 ## Implementation Phases
 
