@@ -484,12 +484,11 @@ fn try_splice_nested<'a>(
     match stmt {
         oxc::Statement::VariableDeclaration(var) => {
             for decl in var.declarations.iter_mut() {
-                if let Some(init) = &decl.init {
-                    let init_start = init.span().start;
-                    if let Some(node) = by_start.remove(&init_start) {
-                        let original = decl.init.take().unwrap();
-                        decl.init = Some(build_init_expr(builder, node, original, gating_imports));
-                        return vec![init_start];
+                if let Some(init) = &mut decl.init {
+                    if let Some(start) =
+                        splice_into_init(builder, init, by_start, gating_imports)
+                    {
+                        return vec![start];
                     }
                 }
             }
@@ -498,20 +497,18 @@ fn try_splice_nested<'a>(
         oxc::Statement::ExportNamedDeclaration(export) => {
             if let Some(oxc::Declaration::VariableDeclaration(var)) = &mut export.declaration {
                 for decl in var.declarations.iter_mut() {
-                    if let Some(init) = &decl.init {
-                        let init_start = init.span().start;
-                        if let Some(node) = by_start.remove(&init_start) {
-                            let original = decl.init.take().unwrap();
-                            decl.init =
-                                Some(build_init_expr(builder, node, original, gating_imports));
-                            return vec![init_start];
+                    if let Some(init) = &mut decl.init {
+                        if let Some(start) =
+                            splice_into_init(builder, init, by_start, gating_imports)
+                        {
+                            return vec![start];
                         }
                     }
                 }
             }
             Vec::new()
         }
-        // `export default <arrow|fnexpr>`.
+        // `export default <arrow|fnexpr>` or `export default React.memo(<fn>)`.
         oxc::Statement::ExportDefaultDeclaration(export) => {
             let is_fn = matches!(
                 &export.declaration,
@@ -532,25 +529,79 @@ fn try_splice_nested<'a>(
                     export.declaration = oxc::ExportDefaultDeclarationKind::from(new_expr);
                     return vec![decl_start];
                 }
+            } else if let Some(expr) = export.declaration.as_expression_mut() {
+                // `export default React.memo(<fn>)` — splice into the call arg.
+                if let Some(start) = splice_into_init(builder, expr, by_start, gating_imports) {
+                    return vec![start];
+                }
             }
             Vec::new()
         }
-        // Reassignment `X = <fn>` as an expression statement, or object property
-        // values such as `{ key: <arrow> }`.
+        // Reassignment `X = <fn>` as an expression statement, object property
+        // values such as `{ key: <arrow> }`, or a bare `React.memo(<fn>)`
+        // statement.
         oxc::Statement::ExpressionStatement(expr_stmt) => {
-            if let oxc::Expression::AssignmentExpression(assign) = &mut expr_stmt.expression {
-                let rhs_start = assign.right.span().start;
-                if let Some(node) = by_start.remove(&rhs_start) {
-                    let original =
-                        std::mem::replace(&mut assign.right, builder.expression_null_literal(SPAN));
-                    assign.right = build_init_expr(builder, node, original, gating_imports);
-                    return vec![rhs_start];
+            match &mut expr_stmt.expression {
+                oxc::Expression::AssignmentExpression(assign) => {
+                    if let Some(start) =
+                        splice_into_init(builder, &mut assign.right, by_start, gating_imports)
+                    {
+                        return vec![start];
+                    }
                 }
+                // Bare `React.memo(<fn>)` / `forwardRef(<fn>)` call statement.
+                expr @ oxc::Expression::CallExpression(_) => {
+                    if let Some(start) = splice_into_init(builder, expr, by_start, gating_imports) {
+                        return vec![start];
+                    }
+                }
+                _ => {}
             }
             splice_in_expression(builder, &mut expr_stmt.expression, by_start, gating_imports)
         }
         _ => Vec::new(),
     }
+}
+
+/// Splice a compiled function into an initializer/value/argument expression.
+///
+/// Handles two shapes at this position:
+///   * the expression IS the compiled function literal (its span is keyed in
+///     `by_start`), in which case it is replaced wholesale; or
+///   * the expression is a `memo(<fn>)`/`React.memo(<fn>)`/`forwardRef(<fn>)`/
+///     `React.forwardRef(<fn>)` call whose first argument is the compiled
+///     function literal, in which case only the argument is replaced and the
+///     call wrapper is preserved (matching TS `getComponentOrHookLike`'s
+///     forwardRef/memo callback handling).
+///
+/// Returns the spliced span start when a replacement happened.
+fn splice_into_init<'a>(
+    builder: &AstBuilder<'a>,
+    expr: &mut oxc::Expression<'a>,
+    by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
+    gating_imports: &mut Vec<GatingImport>,
+) -> Option<u32> {
+    // Direct function literal at this position.
+    let start = expr.span().start;
+    if let Some(node) = by_start.remove(&start) {
+        let original = std::mem::replace(expr, builder.expression_null_literal(SPAN));
+        *expr = build_init_expr(builder, node, original, gating_imports);
+        return Some(start);
+    }
+    // `memo(<fn>)` / `forwardRef(<fn>)` wrapper: replace only the first argument.
+    if let oxc::Expression::CallExpression(call) = expr {
+        if let Some(first) = call.arguments.first_mut() {
+            if let Some(arg) = first.as_expression_mut() {
+                let arg_start = arg.span().start;
+                if let Some(node) = by_start.remove(&arg_start) {
+                    let original = std::mem::replace(arg, builder.expression_null_literal(SPAN));
+                    *arg = build_init_expr(builder, node, original, gating_imports);
+                    return Some(arg_start);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Recursively look for a compiled function nested in an expression (currently:
@@ -565,12 +616,10 @@ fn splice_in_expression<'a>(
     if let oxc::Expression::ObjectExpression(obj) = expr {
         for prop in obj.properties.iter_mut() {
             if let oxc::ObjectPropertyKind::ObjectProperty(p) = prop {
-                let val_start = p.value.span().start;
-                if let Some(node) = by_start.remove(&val_start) {
-                    let original =
-                        std::mem::replace(&mut p.value, builder.expression_null_literal(SPAN));
-                    p.value = build_init_expr(builder, node, original, gating_imports);
-                    return vec![val_start];
+                if let Some(start) =
+                    splice_into_init(builder, &mut p.value, by_start, gating_imports)
+                {
+                    return vec![start];
                 }
             }
         }

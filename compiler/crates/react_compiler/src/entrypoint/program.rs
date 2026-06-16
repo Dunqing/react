@@ -107,20 +107,36 @@ fn is_component_name(name: &str) -> bool {
 /// final fallback differs by mode: when `compile_all` is true a `None` result
 /// becomes `Other`, otherwise it stays `None` (function is skipped).
 ///
-/// (The `forwardRef`/`memo` callback branch of `getComponentOrHookLike` is not
-/// yet ported — current oxc discovery does not surface those anyway.)
+/// The `forwardRef`/`memo` callback branch of `getComponentOrHookLike` is
+/// ported via [`ClassifyContext::wrapper_callee`]: when the function literal is
+/// the direct argument of a `memo(...)`/`React.memo(...)`/`forwardRef(...)`/
+/// `React.forwardRef(...)` call, it is treated as a Component if it calls hooks
+/// or creates JSX (regardless of its name).
 fn classify_function(
     name: Option<&str>,
     params: &oxc::FormalParameters,
     body: &dyn FnBody,
     compile_all: bool,
+    ctx: ClassifyContext,
 ) -> Option<ReactFunctionType> {
-    let result = get_component_or_hook_like(name, params, body);
+    let result = get_component_or_hook_like(name, params, body, ctx);
     match result {
         Some(t) => Some(t),
         None if compile_all => Some(ReactFunctionType::Other),
         None => None,
     }
+}
+
+/// Extra positional context needed to fully port `getComponentOrHookLike`.
+#[derive(Clone, Copy, Default)]
+struct ClassifyContext<'a, 'b> {
+    /// The callee of the call expression this function literal is a direct
+    /// argument of (for the `memo`/`forwardRef` branch). `None` for function
+    /// declarations and any literal that is not such an argument.
+    wrapper_callee: Option<&'b oxc::Expression<'a>>,
+    /// Whether the function being classified is a `FunctionDeclaration`. The
+    /// `memo`/`forwardRef` branch only applies to function/arrow *expressions*.
+    is_declaration: bool,
 }
 
 /// Abstraction over the two function forms (`Function` / arrow) for the body
@@ -170,27 +186,40 @@ fn get_component_or_hook_like(
     name: Option<&str>,
     params: &oxc::FormalParameters,
     body: &dyn FnBody,
+    ctx: ClassifyContext,
 ) -> Option<ReactFunctionType> {
-    let name = name?;
-    if is_component_name(name) {
-        let is_component = calls_hooks_or_creates_jsx(body)
-            && is_valid_component_params(params)
-            && !returns_non_node(body);
-        if is_component {
+    // Check if the name is component or hook like:
+    if let Some(name) = name {
+        if is_component_name(name) {
+            let is_component = calls_hooks_or_creates_jsx(body)
+                && is_valid_component_params(params)
+                && !returns_non_node(body);
+            return if is_component {
+                Some(ReactFunctionType::Component)
+            } else {
+                None
+            };
+        } else if is_hook_name(name) {
+            // Hooks have hook invocations or JSX, but can take any # of arguments.
+            return if calls_hooks_or_creates_jsx(body) {
+                Some(ReactFunctionType::Hook)
+            } else {
+                None
+            };
+        }
+    }
+
+    // Otherwise for function or arrow function expressions, check if they appear
+    // as the argument to `React.forwardRef()` or `React.memo()`.
+    if !ctx.is_declaration && is_memo_or_forwardref_callback(ctx.wrapper_callee) {
+        // As an added check we also look for hook invocations or JSX.
+        return if calls_hooks_or_creates_jsx(body) {
             Some(ReactFunctionType::Component)
         } else {
             None
-        }
-    } else if is_hook_name(name) {
-        // Hooks have hook invocations or JSX, but can take any # of arguments.
-        if calls_hooks_or_creates_jsx(body) {
-            Some(ReactFunctionType::Hook)
-        } else {
-            None
-        }
-    } else {
-        None
+        };
     }
+    None
 }
 
 /// Port of `isHook` (Program.ts ~953) for an expression callee: a hook is either
@@ -214,6 +243,36 @@ fn is_hook_callee(callee: &oxc::Expression) -> bool {
 /// Matches the TS `/^[A-Z].*/` namespace check in `isHook`.
 fn is_pascal_case_namespace(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
+/// Port of `isReactAPI` (Program.ts ~978): the callee is either a bare
+/// identifier `<function_name>`, or a non-computed member expression
+/// `React.<function_name>`.
+fn is_react_api(callee: &oxc::Expression, function_name: &str) -> bool {
+    match callee {
+        oxc::Expression::Identifier(ident) => ident.name == function_name,
+        oxc::Expression::StaticMemberExpression(member) => {
+            member.property.name == function_name
+                && matches!(
+                    &member.object,
+                    oxc::Expression::Identifier(obj) if obj.name == "React"
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Port of `isForwardRefCallback` / `isMemoCallback` (Program.ts ~998/~1011): a
+/// function/arrow literal is a forwardRef/memo render callback when its parent
+/// is a call expression whose callee is `forwardRef`/`memo` (or
+/// `React.forwardRef`/`React.memo`). `wrapper_callee` is the callee of the call
+/// expression the function literal is a direct argument of, or `None` when it is
+/// not such an argument.
+fn is_memo_or_forwardref_callback(wrapper_callee: Option<&oxc::Expression>) -> bool {
+    let Some(callee) = wrapper_callee else {
+        return false;
+    };
+    is_react_api(callee, "forwardRef") || is_react_api(callee, "memo")
 }
 
 /// Port of `callsHooksOrCreatesJsx` (Program.ts ~1143): traverse the function's
@@ -407,6 +466,7 @@ fn find_functions_to_compile<'a>(
             }
             // export default function Foo() {} / export default function () {}
             // export default () => {} / export default function () {}
+            // export default React.memo(() => {}) / forwardRef(...)
             oxc::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
                 oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
                     consider_function(func, None, compile_all, &mut queue);
@@ -415,23 +475,13 @@ fn find_functions_to_compile<'a>(
                     consider_function(func, None, compile_all, &mut queue);
                 }
                 oxc::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
-                    if let Some(fn_type) = classify_function(
-                        None,
-                        &arrow.params,
-                        &ArrowBodyRef(arrow),
-                        compile_all,
-                    ) {
-                        queue.push(CompileSource {
-                            func: FunctionForm::Arrow(arrow),
-                            fn_name: None,
-                            fn_type,
-                            fn_span: arrow.span(),
-                            // Anonymous; never referenced-before-declared.
-                            fn_symbol_id: None,
-                        });
+                    consider_anonymous_arrow(arrow, ClassifyContext::default(), compile_all, &mut queue);
+                }
+                expr_kind => {
+                    if let Some(expr) = expr_kind.as_expression() {
+                        consider_expression(expr, None, compile_all, &mut queue);
                     }
                 }
-                _ => {}
             },
             // export function Foo() {}
             oxc::Statement::ExportNamedDeclaration(export) => {
@@ -442,43 +492,46 @@ fn find_functions_to_compile<'a>(
                     consider_variable_declaration(var, compile_all, &mut queue);
                 }
             }
-            // const Foo = () => {} / const Foo = function () {}
+            // const Foo = () => {} / const Foo = function () {} / const Foo = memo(...)
             oxc::Statement::VariableDeclaration(var) => {
                 consider_variable_declaration(var, compile_all, &mut queue);
             }
-            // Foo = () => {} / Foo = function () {} (reassignment of a binding).
+            // Foo = () => {} / Foo = function () {} (reassignment of a binding),
+            // or a bare `React.memo(() => {})` / `forwardRef(...)` call statement.
             // Unlike a `const Foo = () => {}` *declarator*, an assignment does
             // not give the arrow an inferred name (matching Babel's name
             // inference, which only fires on variable declarators), so the
             // function is classified anonymously (`fn_type: Other` for an arrow
             // with no name). The binding name is preserved by the original
             // assignment target during assembly (only the RHS is spliced).
-            oxc::Statement::ExpressionStatement(expr_stmt) => {
-                if let oxc::Expression::AssignmentExpression(assign) = &expr_stmt.expression {
-                    match &assign.right {
-                        oxc::Expression::ArrowFunctionExpression(arrow) => {
-                            if let Some(fn_type) = classify_function(
-                                None,
-                                &arrow.params,
-                                &ArrowBodyRef(arrow),
-                                compile_all,
-                            ) {
-                                queue.push(CompileSource {
-                                    func: FunctionForm::Arrow(arrow),
-                                    fn_name: None,
-                                    fn_type,
-                                    fn_span: arrow.span(),
-                                    fn_symbol_id: None,
-                                });
-                            }
-                        }
-                        oxc::Expression::FunctionExpression(func) => {
-                            consider_function(func, None, compile_all, &mut queue);
-                        }
-                        _ => {}
+            oxc::Statement::ExpressionStatement(expr_stmt) => match &expr_stmt.expression {
+                oxc::Expression::AssignmentExpression(assign) => match &assign.right {
+                    oxc::Expression::ArrowFunctionExpression(arrow) => {
+                        consider_anonymous_arrow(
+                            arrow,
+                            ClassifyContext::default(),
+                            compile_all,
+                            &mut queue,
+                        );
                     }
+                    oxc::Expression::FunctionExpression(func) => {
+                        consider_function(func, None, compile_all, &mut queue);
+                    }
+                    _ => {}
+                },
+                // A standalone `React.memo(props => <div />)` statement: the
+                // call's function-literal argument is a forwardRef/memo render
+                // callback.
+                oxc::Expression::CallExpression(_) => {
+                    consider_expression(
+                        &expr_stmt.expression,
+                        None,
+                        compile_all,
+                        &mut queue,
+                    );
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -486,9 +539,103 @@ fn find_functions_to_compile<'a>(
     queue
 }
 
+/// Consider an expression that may carry a (possibly anonymous) function to
+/// compile: a function/arrow literal directly, or a `memo(...)`/`React.memo(...)`/
+/// `forwardRef(...)`/`React.forwardRef(...)` call whose first argument is such a
+/// literal. `inferred_name` is the binding name (from a declarator) used for
+/// name-based classification; `None` for anonymous positions.
+fn consider_expression<'a>(
+    expr: &'a oxc::Expression<'a>,
+    inferred_name: Option<&str>,
+    compile_all: bool,
+    queue: &mut Vec<CompileSource<'a>>,
+) {
+    match expr {
+        oxc::Expression::ArrowFunctionExpression(arrow) => {
+            consider_arrow(arrow, inferred_name, ClassifyContext::default(), compile_all, queue);
+        }
+        oxc::Expression::FunctionExpression(func) => {
+            consider_function(func, inferred_name, compile_all, queue);
+        }
+        // memo(fnLiteral) / React.memo(fnLiteral) / forwardRef(...) — the
+        // function-literal argument is the render callback (a Component when it
+        // calls hooks or creates JSX). The wrapper callee context distinguishes
+        // it from a plain helper call. Only the FIRST argument is the callback.
+        oxc::Expression::CallExpression(call) => {
+            if !is_memo_or_forwardref_callback(Some(&call.callee)) {
+                return;
+            }
+            let Some(arg) = call.arguments.first().and_then(|a| a.as_expression()) else {
+                return;
+            };
+            let ctx = ClassifyContext {
+                wrapper_callee: Some(&call.callee),
+                is_declaration: false,
+            };
+            match arg {
+                oxc::Expression::ArrowFunctionExpression(arrow) => {
+                    consider_arrow(arrow, None, ctx, compile_all, queue);
+                }
+                oxc::Expression::FunctionExpression(func) => {
+                    consider_function_with_ctx(func, None, ctx, compile_all, queue);
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Push an anonymous arrow (no inferred name) using the given classify context.
+fn consider_anonymous_arrow<'a>(
+    arrow: &'a oxc::ArrowFunctionExpression<'a>,
+    ctx: ClassifyContext<'a, '_>,
+    compile_all: bool,
+    queue: &mut Vec<CompileSource<'a>>,
+) {
+    consider_arrow(arrow, None, ctx, compile_all, queue);
+}
+
+/// Classify and (if it matches) enqueue an arrow function.
+fn consider_arrow<'a>(
+    arrow: &'a oxc::ArrowFunctionExpression<'a>,
+    inferred_name: Option<&str>,
+    ctx: ClassifyContext<'a, '_>,
+    compile_all: bool,
+    queue: &mut Vec<CompileSource<'a>>,
+) {
+    let Some(fn_type) = classify_function(
+        inferred_name,
+        &arrow.params,
+        &ArrowBodyRef(arrow),
+        compile_all,
+        ctx,
+    ) else {
+        return;
+    };
+    queue.push(CompileSource {
+        func: FunctionForm::Arrow(arrow),
+        fn_name: inferred_name.map(|s| s.to_string()),
+        fn_type,
+        fn_span: arrow.span(),
+        // Arrows have no own-name binding; never referenced-before-declared.
+        fn_symbol_id: None,
+    });
+}
+
 fn consider_function<'a>(
     func: &'a oxc::Function<'a>,
     inferred_name: Option<&str>,
+    compile_all: bool,
+    queue: &mut Vec<CompileSource<'a>>,
+) {
+    consider_function_with_ctx(func, inferred_name, ClassifyContext::default(), compile_all, queue);
+}
+
+fn consider_function_with_ctx<'a>(
+    func: &'a oxc::Function<'a>,
+    inferred_name: Option<&str>,
+    ctx: ClassifyContext<'a, '_>,
     compile_all: bool,
     queue: &mut Vec<CompileSource<'a>>,
 ) {
@@ -510,6 +657,7 @@ fn consider_function<'a>(
         &func.params,
         &FunctionBodyRef(func),
         compile_all,
+        ctx,
     ) {
         Some(t) => t,
         None => return,
@@ -534,31 +682,7 @@ fn consider_variable_declaration<'a>(
             _ => continue,
         };
         let Some(init) = &decl.init else { continue };
-        match init {
-            oxc::Expression::ArrowFunctionExpression(arrow) => {
-                let fn_type = match classify_function(
-                    Some(&name),
-                    &arrow.params,
-                    &ArrowBodyRef(arrow),
-                    compile_all,
-                ) {
-                    Some(t) => t,
-                    None => continue,
-                };
-                queue.push(CompileSource {
-                    func: FunctionForm::Arrow(arrow),
-                    fn_name: Some(name),
-                    fn_type,
-                    fn_span: arrow.span(),
-                    // Arrows have no own-name binding; never referenced-before-declared.
-                    fn_symbol_id: None,
-                });
-            }
-            oxc::Expression::FunctionExpression(func) => {
-                consider_function(func, Some(&name), compile_all, queue);
-            }
-            _ => {}
-        }
+        consider_expression(init, Some(&name), compile_all, queue);
     }
 }
 
