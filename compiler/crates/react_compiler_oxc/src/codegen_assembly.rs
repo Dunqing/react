@@ -80,6 +80,7 @@ pub fn assemble_and_print(
                     is_arrow: artifact.is_arrow,
                     function: output.function,
                     gating: artifact.gating.clone(),
+                    insert_after: artifact.insert_after_span,
                 });
             }
             Err(_bail) => {
@@ -98,18 +99,45 @@ pub fn assemble_and_print(
 
     // Partition outlined functions (sentinel span (0, 0)) from spanned ones.
     // Outlined functions have no source location, so they cannot be spliced by
-    // span; they are appended to the program body as top-level function
-    // declarations after splicing (mirroring TS `insertNewOutlinedFunctionNode`).
+    // span. TS inserts each outlined declaration directly after its parent
+    // function (`insertNewOutlinedFunctionNode`), so we group outlined nodes by
+    // their parent's source-span start and emit them immediately after the
+    // parent's spliced statement. Any outlined node whose parent is missing
+    // (e.g. the parent bailed) falls back to being appended at the end.
     let (outlined, spanned): (Vec<CompiledNode<'_>>, Vec<CompiledNode<'_>>) =
         compiled.into_iter().partition(|c| c.span == (0, 0));
 
-    // Splice compiled functions into the program body by matching spans. Gating
-    // imports needed by gated functions are collected as we go.
-    let mut gating_imports: Vec<GatingImport> = Vec::new();
-    splice_functions(&builder, &mut program, spanned, &mut gating_imports);
-
-    // Append outlined functions as top-level function declarations.
+    let mut outlined_by_parent: std::collections::HashMap<u32, Vec<CompiledNode<'_>>> =
+        std::collections::HashMap::new();
+    let mut orphan_outlined: Vec<CompiledNode<'_>> = Vec::new();
+    let spanned_starts: std::collections::HashSet<u32> =
+        spanned.iter().map(|c| c.span.0).collect();
     for node in outlined {
+        match node.insert_after {
+            Some(parent_span) if spanned_starts.contains(&parent_span.0) => {
+                outlined_by_parent
+                    .entry(parent_span.0)
+                    .or_default()
+                    .push(node);
+            }
+            _ => orphan_outlined.push(node),
+        }
+    }
+
+    // Splice compiled functions into the program body by matching spans. Gating
+    // imports needed by gated functions are collected as we go. Outlined nodes
+    // are emitted right after their parent statement.
+    let mut gating_imports: Vec<GatingImport> = Vec::new();
+    splice_functions(
+        &builder,
+        &mut program,
+        spanned,
+        &mut gating_imports,
+        &mut outlined_by_parent,
+    );
+
+    // Append any outlined functions whose parent was not spliced.
+    for node in orphan_outlined {
         let decl = build_replacement(&builder, node);
         program.body.push(decl);
     }
@@ -131,6 +159,9 @@ struct CompiledNode<'a> {
     is_arrow: bool,
     function: oxc::Function<'a>,
     gating: Option<GatingPlan>,
+    /// For outlined functions, the parent function's source span. The outlined
+    /// declaration is inserted directly after the parent's spliced statement.
+    insert_after: Option<(u32, u32)>,
 }
 
 /// A gating import to inject: `import { <imported> [as <local>] } from "<source>"`.
@@ -152,6 +183,7 @@ fn splice_functions<'a>(
     program: &mut oxc::Program<'a>,
     compiled: Vec<CompiledNode<'a>>,
     gating_imports: &mut Vec<GatingImport>,
+    outlined_by_parent: &mut std::collections::HashMap<u32, Vec<CompiledNode<'a>>>,
 ) {
     // Map span.start -> compiled node, consumed as we walk the body.
     let mut by_start: std::collections::HashMap<u32, CompiledNode<'a>> =
@@ -167,13 +199,35 @@ fn splice_functions<'a>(
         if let Some(start) = function_declaration_start(&stmt) {
             if let Some(node) = by_start.remove(&start) {
                 emit_top_level(builder, &mut program.body, stmt, node, gating_imports);
+                emit_outlined_children(builder, &mut program.body, start, outlined_by_parent);
                 continue;
             }
         }
         // For variable declarations / exports / assignments / object props the
-        // function span starts at the init expression, not the statement.
-        try_splice_nested(builder, &mut stmt, &mut by_start, gating_imports);
+        // function span starts at the init expression, not the statement. Record
+        // which nested span(s) were spliced so any outlined children can be
+        // emitted directly after this statement.
+        let spliced = try_splice_nested(builder, &mut stmt, &mut by_start, gating_imports);
         program.body.push(stmt);
+        for start in spliced {
+            emit_outlined_children(builder, &mut program.body, start, outlined_by_parent);
+        }
+    }
+}
+
+/// Emit the outlined function declarations registered for the parent at
+/// `parent_start`, directly after the parent's spliced statement. Mirrors TS
+/// `insertNewOutlinedFunctionNode`.
+fn emit_outlined_children<'a>(
+    builder: &AstBuilder<'a>,
+    body: &mut oxc_allocator::Vec<'a, oxc::Statement<'a>>,
+    parent_start: u32,
+    outlined_by_parent: &mut std::collections::HashMap<u32, Vec<CompiledNode<'a>>>,
+) {
+    if let Some(children) = outlined_by_parent.remove(&parent_start) {
+        for child in children {
+            body.push(build_replacement(builder, child));
+        }
     }
 }
 
@@ -426,7 +480,7 @@ fn try_splice_nested<'a>(
     stmt: &mut oxc::Statement<'a>,
     by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
     gating_imports: &mut Vec<GatingImport>,
-) -> bool {
+) -> Vec<u32> {
     match stmt {
         oxc::Statement::VariableDeclaration(var) => {
             for decl in var.declarations.iter_mut() {
@@ -435,11 +489,11 @@ fn try_splice_nested<'a>(
                     if let Some(node) = by_start.remove(&init_start) {
                         let original = decl.init.take().unwrap();
                         decl.init = Some(build_init_expr(builder, node, original, gating_imports));
-                        return true;
+                        return vec![init_start];
                     }
                 }
             }
-            false
+            Vec::new()
         }
         oxc::Statement::ExportNamedDeclaration(export) => {
             if let Some(oxc::Declaration::VariableDeclaration(var)) = &mut export.declaration {
@@ -450,12 +504,12 @@ fn try_splice_nested<'a>(
                             let original = decl.init.take().unwrap();
                             decl.init =
                                 Some(build_init_expr(builder, node, original, gating_imports));
-                            return true;
+                            return vec![init_start];
                         }
                     }
                 }
             }
-            false
+            Vec::new()
         }
         // `export default <arrow|fnexpr>`.
         oxc::Statement::ExportDefaultDeclaration(export) => {
@@ -476,10 +530,10 @@ fn try_splice_nested<'a>(
                     let original_expr = export_default_kind_to_expr(builder, original);
                     let new_expr = build_init_expr(builder, node, original_expr, gating_imports);
                     export.declaration = oxc::ExportDefaultDeclarationKind::from(new_expr);
-                    return true;
+                    return vec![decl_start];
                 }
             }
-            false
+            Vec::new()
         }
         // Reassignment `X = <fn>` as an expression statement, or object property
         // values such as `{ key: <arrow> }`.
@@ -490,23 +544,24 @@ fn try_splice_nested<'a>(
                     let original =
                         std::mem::replace(&mut assign.right, builder.expression_null_literal(SPAN));
                     assign.right = build_init_expr(builder, node, original, gating_imports);
-                    return true;
+                    return vec![rhs_start];
                 }
             }
             splice_in_expression(builder, &mut expr_stmt.expression, by_start, gating_imports)
         }
-        _ => false,
+        _ => Vec::new(),
     }
 }
 
 /// Recursively look for a compiled function nested in an expression (currently:
-/// object property values, e.g. `{ useHook: <arrow> }`).
+/// object property values, e.g. `{ useHook: <arrow> }`). Returns the spliced
+/// start span(s).
 fn splice_in_expression<'a>(
     builder: &AstBuilder<'a>,
     expr: &mut oxc::Expression<'a>,
     by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
     gating_imports: &mut Vec<GatingImport>,
-) -> bool {
+) -> Vec<u32> {
     if let oxc::Expression::ObjectExpression(obj) = expr {
         for prop in obj.properties.iter_mut() {
             if let oxc::ObjectPropertyKind::ObjectProperty(p) = prop {
@@ -515,12 +570,12 @@ fn splice_in_expression<'a>(
                     let original =
                         std::mem::replace(&mut p.value, builder.expression_null_literal(SPAN));
                     p.value = build_init_expr(builder, node, original, gating_imports);
-                    return true;
+                    return vec![val_start];
                 }
             }
         }
     }
-    false
+    Vec::new()
 }
 
 /// Core: produce the (possibly gated) replacement expression for an

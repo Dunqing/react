@@ -76,4 +76,12 @@ pub struct NativeArtifact {
     /// between the compiled and original function at runtime. `None` for the
     /// common (non-gated) case and for outlined functions.
     pub gating: Option<GatingPlan>,
+    /// For outlined functions (which have a sentinel `fn_span` of `(0, 0)` and
+    /// no source location), the source span of the PARENT function the outlined
+    /// fn was extracted from. Assembly inserts the outlined declaration directly
+    /// AFTER the parent's spliced statement, mirroring TS
+    /// `insertNewOutlinedFunctionNode` (which inserts adjacent to the parent)
+    /// rather than appending all outlined fns at the end of the program. `None`
+    /// for ordinary (spanned) functions.
+    pub insert_after_span: Option<(u32, u32)>,
 }

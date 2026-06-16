@@ -1221,6 +1221,9 @@ pub fn compile_fn(
                     fn_name: None,
                     // Outlined functions are never gated.
                     gating: None,
+                    // Insert the outlined declaration right after its parent
+                    // function, matching TS `insertNewOutlinedFunctionNode`.
+                    insert_after_span: Some((native_fn_span.0, native_fn_span.1)),
                 });
             }
             Err(_err) => {
@@ -1246,6 +1249,8 @@ pub fn compile_fn(
         // Gating is resolved in `compile_program` after this returns, where the
         // ProgramContext import/uid state and the semantic model are available.
         gating: None,
+        // Spanned (non-outlined) functions are spliced by their own span.
+        insert_after_span: None,
     });
 
     Ok(stats)
