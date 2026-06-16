@@ -27,10 +27,10 @@ Two oracles, both comparing the native Oxc compiler against the in-process TS co
 
 - **`compiler/scripts/compare-code.ts`** — SEMANTIC equivalence of compiled output (structural: alpha-
   renames temporaries, masks `$[N]`/`_c(N)` slot indices, normalizes JSX self-close / decl-kind /
-  comments). This is the PRIMARY metric. `tsx compiler/scripts/compare-code.ts --limit 0` (corpus),
+  comments / numeric-literal form). This is the PRIMARY metric. `tsx compiler/scripts/compare-code.ts --limit 0` (corpus),
   `tsx compiler/scripts/compare-code.ts <fixture>` (single, prints diff), `--list BAIL|OTHER|N-VAL`.
-  **SEMANTIC-pass ≈ 1673/1803 (92.8%).**
-- **`compiler/scripts/compare-hir.ts`** — per-pass HIR diff (printer-independent). **HIR-MATCH ≈ 1445/1803**
+  **SEMANTIC-pass ≈ 1719/1803 (95.3%)** (after @gating + scattered-tail fixes; was 1673 at migration-complete).
+- **`compiler/scripts/compare-hir.ts`** — per-pass HIR diff (printer-independent). **HIR-MATCH ≈ 1447/1803**
   byte-identical to the TS compiler. (Many semantically-correct fixtures differ only in HIR temp/block
   ID *numbering*, which compiles identically — so HIR-MATCH < SEMANTIC-pass by design.)
 
@@ -57,10 +57,20 @@ were already AST-agnostic. Only lowering, discovery, and codegen were retargeted
 This was scoped to **semantic parity excluding big opt-in features** (user decision). Remaining buckets
 (regenerate exact lists with `compare-code.ts --list {BAIL|OTHER|N-VAL}`):
 
-### Deferred opt-in/pragma features (~50)
-- **`@gating` dynamic gating** (~16) — emit the gated-export wrapper. `gating.rs` was removed in cleanup; re-add the codegen.
-- **`enableJsxOutlining`** (~10) — outline JSX subtrees into separate components (distinct from the
-  function-outlining already implemented in N2.8).
+### ✅ Done after migration-complete (climbing the tail)
+- **`@gating`** — gated-export codegen implemented natively (commit 2c1107bc09). 14/16 fixtures pass; 2 remain
+  (one needs `@enableEmitInstrumentForget`, one needs nested-object-property arrow discovery).
+- **Scattered single-cause** (7 fixes, commits 57e3b1e6..325fefb9): `@script` require-import, `-0` folding,
+  TS `as`/`satisfies` codegen (+ cleared 3 TypeCast BAILs), fn-expression naming ×2, top-level arrow block-body,
+  `enableNameAnonymousFunctions` wrapping.
+
+### Deferred opt-in/pragma features
+- **`enableJsxOutlining`** (~9) — the native `outline_jsx` pass produces structurally-wrong output (wrong outlined-fn
+  shape/fragments) — a pass-correctness bug, not a single-cause fix. Distinct from the function-outlining done in N2.8.
+- **Deep recursive function-discovery** (several fixtures across buckets) — TS `program.traverse` discovers/compiles
+  EVERY nested function (IIFEs, array/object-nested arrows); native discovery only checks specific syntactic positions.
+  Matching TS's full recursive traversal + `skip()` is one coherent (but large, regression-prone) change that would
+  unlock several fixtures at once.
 - **fbt / fbs** (~22 BAIL + ~2 OTHER) — `<fbt>`/`<fbs>` JSX is its own transform subsystem; the TS test
   path even runs `babel-plugin-fbt` preprocessing. Native codegen bails on fbt JSX tags.
 - **`@enableEmitInstrumentForget` instrumentation** (~2), **optimizeForSSR / SSR mode** (~1).
