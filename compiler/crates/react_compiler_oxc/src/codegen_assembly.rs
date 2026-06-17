@@ -36,6 +36,7 @@ use oxc_span::SourceType;
 use react_compiler::entrypoint::compile_result::BindingRenameInfo;
 use react_compiler::entrypoint::native_codegen::GatingPlan;
 use react_compiler::entrypoint::native_codegen::NativeArtifact;
+use react_compiler::entrypoint::program::ResolvedImport;
 use react_compiler_reactive_scopes::codegen_oxc::codegen_oxc_function;
 
 use crate::rename_apply::apply_renames_to_program;
@@ -54,6 +55,7 @@ pub fn assemble_and_print(
     artifacts: &[NativeArtifact],
     runtime_module: &str,
     renames: &[BindingRenameInfo],
+    extra_imports: &[ResolvedImport],
 ) -> Option<String> {
     if artifacts.is_empty() {
         return None;
@@ -157,6 +159,13 @@ pub fn assemble_and_print(
     // Inject the gating import(s) after the `_c` import (TS emits the gating
     // import right after the memo-cache import). Dedupe identical specifiers.
     inject_gating_imports(&builder, &mut program, &gating_imports);
+
+    // Inject the instrumentation / hook-guard imports (resolved in the pipeline,
+    // carried out-of-band). TS injects all generated imports together
+    // (`addImportsToProgram`), grouped by source. The semantic oracle normalizes
+    // import order + split/merge differences (structural-normalize.ts pass 5),
+    // so we inject each as a separate statement after the `_c` import.
+    inject_extra_imports(&builder, &mut program, extra_imports);
 
     // Apply lowering-time binding renames to any function that was emitted from
     // the original source AST (uncompiled passthrough functions left untouched
@@ -1085,6 +1094,37 @@ fn inject_gating_imports<'a>(
 
     for gi in seen {
         let import_stmt = build_named_import(builder, &gi.source, &gi.imported, &gi.local);
+        program.body.insert(insert_at, import_stmt);
+        insert_at += 1;
+    }
+}
+
+/// Inject the instrumentation / hook-guard imports — one `import { <imported>
+/// [as <local>] } from "<source>";` statement per entry — after the leading
+/// `_c` memo import. TS injects all generated imports together via
+/// `addImportsToProgram` (grouped by source, sorted); the semantic oracle
+/// normalizes import order + split/merge (structural-normalize.ts pass 5), so we
+/// emit each as a separate statement.
+fn inject_extra_imports<'a>(
+    builder: &AstBuilder<'a>,
+    program: &mut oxc::Program<'a>,
+    extra_imports: &[ResolvedImport],
+) {
+    if extra_imports.is_empty() {
+        return;
+    }
+    // Insert right after the leading `_c` memo import (if present), else at top.
+    let mut insert_at = if matches!(
+        program.body.first(),
+        Some(oxc::Statement::ImportDeclaration(_))
+    ) {
+        1usize
+    } else {
+        0usize
+    };
+
+    for ei in extra_imports {
+        let import_stmt = build_named_import(builder, &ei.source, &ei.imported, &ei.local);
         program.body.insert(insert_at, import_stmt);
         insert_at += 1;
     }

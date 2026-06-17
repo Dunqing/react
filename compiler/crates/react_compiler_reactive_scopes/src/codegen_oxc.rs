@@ -77,6 +77,14 @@ const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 /// the early-return guard appended after a reactive scope.
 const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
 
+/// Guard kinds passed to the `@enableEmitHookGuards` dispatcher guard function.
+/// Must match `GuardKind` in `Utils/RuntimeDiagnosticConstants.ts` and the
+/// `react-compiler-runtime` enum.
+const GUARD_PUSH_HOOK: f64 = 0.0;
+const GUARD_POP_HOOK: f64 = 1.0;
+const GUARD_ALLOW_HOOK: f64 = 2.0;
+const GUARD_DISALLOW_HOOK: f64 = 3.0;
+
 /// Signals that codegen could not emit a function.
 ///
 /// `invariant: false` is the common case — an unsupported construct the native
@@ -157,7 +165,7 @@ pub fn codegen_oxc_function<'a>(
         fbt_operands,
     };
 
-    let (function, cache_count) = cx.codegen_function(func)?;
+    let (function, cache_count) = cx.codegen_function(func, /* top_level */ true)?;
 
     Ok(OxcCodegenOutput {
         function,
@@ -316,10 +324,198 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
         oxc::Statement::VariableDeclaration(self.b.alloc(decl))
     }
 
+    /// Whether `@enableEmitHookGuards` is active for this function. The feature
+    /// only emits in `client` output mode (matching TS `env.outputMode ===
+    /// 'client'`) and requires the resolved guard import local name.
+    fn hook_guards_enabled(&self) -> Option<&str> {
+        if self.env.config.enable_emit_hook_guards.is_some()
+            && self.env.output_mode == react_compiler_hir::environment::OutputMode::Client
+        {
+            self.env.hook_guard_name.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// `<guardFn>(<kind>);` as an expression statement.
+    fn hook_guard_call_stmt(&self, guard_fn: &str, kind: f64) -> oxc::Statement<'a> {
+        let callee = self.ident_expr(guard_fn);
+        let arg = self
+            .b
+            .expression_numeric_literal(SPAN, kind, None, oxc::NumberBase::Decimal);
+        let mut args = self.b.vec();
+        args.push(oxc::Argument::from(arg));
+        let call = self.b.expression_call(
+            SPAN,
+            callee,
+            None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+            args,
+            false,
+        );
+        self.b.statement_expression(SPAN, call)
+    }
+
+    /// Wrap `stmts` in a `try { <guard before>; ...stmts } finally { <guard
+    /// after>; }` statement. Mirrors TS `createHookGuard`.
+    fn build_hook_guard(
+        &self,
+        guard_fn: &str,
+        stmts: ArenaVec<'a, oxc::Statement<'a>>,
+        before: f64,
+        after: f64,
+    ) -> oxc::Statement<'a> {
+        let mut try_stmts = self.b.vec();
+        try_stmts.push(self.hook_guard_call_stmt(guard_fn, before));
+        try_stmts.extend(stmts);
+        let try_block = self.b.block_statement(SPAN, try_stmts);
+
+        let mut finally_stmts = self.b.vec();
+        finally_stmts.push(self.hook_guard_call_stmt(guard_fn, after));
+        let finally_block = self.b.block_statement(SPAN, finally_stmts);
+
+        self.b.statement_try(
+            SPAN,
+            try_block,
+            None::<oxc::CatchClause<'a>>,
+            Some(self.b.alloc(finally_block)),
+        )
+    }
+
+    /// Wrap a hook call expression in the per-call dispatcher guard IIFE:
+    /// `(function () { try { $guard(AllowHook); return <call>; } finally {
+    /// $guard(DisallowHook); } })()`. Mirrors TS `createCallExpression`.
+    fn wrap_hook_call(&self, guard_fn: &str, call: oxc::Expression<'a>) -> oxc::Expression<'a> {
+        let mut inner = self.b.vec();
+        inner.push(self.b.statement_return(SPAN, Some(call)));
+        let guard = self.build_hook_guard(guard_fn, inner, GUARD_ALLOW_HOOK, GUARD_DISALLOW_HOOK);
+
+        let mut body_stmts = self.b.vec();
+        body_stmts.push(guard);
+        let body = self.b.function_body(SPAN, self.b.vec(), body_stmts);
+        let formal_params = self.b.formal_parameters(
+            SPAN,
+            oxc::FormalParameterKind::FormalParameter,
+            self.b.vec(),
+            None::<ArenaBox<'a, oxc::FormalParameterRest<'a>>>,
+        );
+        let func = self.b.function(
+            SPAN,
+            oxc::FunctionType::FunctionExpression,
+            None::<oxc::BindingIdentifier>,
+            false,
+            false,
+            false,
+            None::<ArenaBox<'a, oxc::TSTypeParameterDeclaration<'a>>>,
+            None::<ArenaBox<'a, oxc::TSThisParameter<'a>>>,
+            formal_params,
+            None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+            Some(body),
+        );
+        let iife_callee = oxc::Expression::FunctionExpression(self.b.alloc(func));
+        self.b.expression_call(
+            SPAN,
+            iife_callee,
+            None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+            self.b.vec(),
+            false,
+        )
+    }
+
+    /// Build the `@enableEmitInstrumentForget` instrumentation statement for
+    /// this function, if the feature is active. Returns
+    /// `if (<gate>) <instrumentFn>("<fnId>", "<filename>");`, mirroring TS
+    /// `codegenFunction`. `None` when the feature is off, the function is
+    /// anonymous, or the output mode is not `client`.
+    fn build_instrument_forget(&self, func: &ReactiveFunction) -> Bail<Option<oxc::Statement<'a>>> {
+        let Some(config) = &self.env.config.enable_emit_instrument_forget else {
+            return Ok(None);
+        };
+        let Some(fn_id) = func.id.as_deref() else {
+            return Ok(None);
+        };
+        if self.env.output_mode != react_compiler_hir::environment::OutputMode::Client {
+            return Ok(None);
+        }
+
+        // The gate test: `globalGating && gating`, `gating`, or `globalGating`.
+        // `gating` is the resolved local import name; `globalGating` is a raw
+        // global identifier (e.g. `DEV`). At least one is guaranteed present by
+        // the `InstrumentationSchema` refinement.
+        let gating = self.env.instrument_gating_name.as_deref();
+        let global_gating = config.global_gating.as_deref();
+        let test = match (global_gating, gating) {
+            (Some(global), Some(gate)) => {
+                let left = self.ident_expr(global);
+                let right = self.ident_expr(gate);
+                self.b.expression_logical(SPAN, left, OxcLogOp::And, right)
+            }
+            (None, Some(gate)) => self.ident_expr(gate),
+            (Some(global), None) => self.ident_expr(global),
+            (None, None) => {
+                invariant_bail!(
+                    "Bad config not caught! Expected at least one of gating or globalGating"
+                )
+            }
+        };
+
+        // The instrumentation call: `<instrumentFn>("<fnId>", "<filename>")`.
+        let Some(instrument_fn) = self.env.instrument_fn_name.as_deref() else {
+            return Ok(None);
+        };
+        let callee = self.ident_expr(instrument_fn);
+        let mut args = self.b.vec();
+        args.push(oxc::Argument::from(self.b.expression_string_literal(
+            SPAN,
+            self.atom(fn_id),
+            None,
+        )));
+        let filename = self.env.filename.as_deref().unwrap_or("");
+        args.push(oxc::Argument::from(self.b.expression_string_literal(
+            SPAN,
+            self.atom(filename),
+            None,
+        )));
+        let call = self.b.expression_call(
+            SPAN,
+            callee,
+            None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
+            args,
+            false,
+        );
+        let consequent = self.b.statement_expression(SPAN, call);
+        Ok(Some(self.b.statement_if(SPAN, test, consequent, None)))
+    }
+
+    /// Whether the call's callee identifier resolves to a hook. Mirrors TS
+    /// `getHookKind(cx.env, callee.identifier) != null`. A type lookup that
+    /// errors (should not happen here) is treated as "not a hook".
+    fn is_hook_callee(&self, callee: IdentifierId) -> bool {
+        matches!(self.env.get_hook_kind_for_id(callee), Ok(Some(_)))
+    }
+
+    /// Apply the per-hook-call dispatcher guard wrap when `@enableEmitHookGuards`
+    /// is active and `is_hook` is true; otherwise return the call unchanged.
+    fn maybe_wrap_hook_call(
+        &self,
+        is_hook: bool,
+        call: oxc::Expression<'a>,
+    ) -> oxc::Expression<'a> {
+        if is_hook && let Some(guard_fn) = self.hook_guards_enabled() {
+            let guard_fn = guard_fn.to_string();
+            self.wrap_hook_call(&guard_fn, call)
+        } else {
+            call
+        }
+    }
+
     /// Codegen a full `oxc::Function` from a `ReactiveFunction`, returning the
     /// function and the number of memo cache slots it used. Nested functions
     /// call this recursively with a saved/restored cache counter.
-    fn codegen_function(&mut self, func: &ReactiveFunction) -> Bail<(oxc::Function<'a>, u32)> {
+    fn codegen_function(
+        &mut self,
+        func: &ReactiveFunction,
+        top_level: bool,
+    ) -> Bail<(oxc::Function<'a>, u32)> {
         // Save and reset the cache counter so the function gets its own
         // `const $ = _c(N)` numbering independent of any enclosing function.
         let saved_cache_index = self.next_cache_index;
@@ -358,11 +554,37 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
             body_stmts.pop();
         }
 
+        // `@enableEmitHookGuards`: wrap the whole body in a
+        // `try { $guard(PushHookGuard); ...body } finally { $guard(PopHookGuard); }`.
+        // This happens BEFORE the cache preface is inserted, so `const $ = _c(N)`
+        // stays OUTSIDE the try (matching TS `codegenFunction`, which wraps the
+        // body then unshifts the cache decl). Only the TOP-LEVEL function gets
+        // this body wrap; nested function expressions go through
+        // `codegenReactiveFunction` in TS, which does not wrap. (The per-hook-CALL
+        // guard still applies at every nesting level — see the call-expr arms.)
+        if top_level && let Some(guard_fn) = self.hook_guards_enabled() {
+            let guard_fn = guard_fn.to_string();
+            let wrapped =
+                self.build_hook_guard(&guard_fn, body_stmts, GUARD_PUSH_HOOK, GUARD_POP_HOOK);
+            body_stmts = self.b.vec();
+            body_stmts.push(wrapped);
+        }
+
         // Cache var preface: const $ = _c(N);
         let cache_count = self.next_cache_index;
         if cache_count != 0 {
             let preface = self.cache_var_decl(cache_count);
             body_stmts.insert(0, preface);
+        }
+
+        // `@enableEmitInstrumentForget`: prepend a dev-only instrumentation call
+        // `if (<gate>) <instrumentFn>("<fnId>", "<filename>");`. Inserted at the
+        // front (after the cache preface is unshifted, so it lands ABOVE it,
+        // matching TS `codegenFunction`). Only for named TOP-LEVEL functions in
+        // `client` output mode (nested function expressions go through
+        // `codegenReactiveFunction` in TS, which does not instrument).
+        if top_level && let Some(instrument_stmt) = self.build_instrument_forget(func)? {
+            body_stmts.insert(0, instrument_stmt);
         }
 
         let function = self.build_function_shell(func, params, rest, body_stmts)?;
@@ -1755,15 +1977,17 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
                 Ok(self.b.expression_unary(SPAN, map_unary_op(*operator), v))
             }
             InstructionValue::CallExpression { callee, args, .. } => {
+                let is_hook = self.is_hook_callee(callee.identifier);
                 let callee_expr = self.place_expr(callee)?;
                 let arguments = self.arguments(args)?;
-                Ok(self.b.expression_call(
+                let call = self.b.expression_call(
                     SPAN,
                     callee_expr,
                     None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
                     arguments,
                     false,
-                ))
+                );
+                Ok(self.maybe_wrap_hook_call(is_hook, call))
             }
             InstructionValue::MethodCall {
                 receiver,
@@ -1775,15 +1999,17 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
                 // temporary in the reference; here we resolve it as a member of
                 // the receiver. The HIR MethodCall carries the property Place,
                 // which is itself a PropertyLoad temporary on `receiver`.
+                let is_hook = self.is_hook_callee(property.identifier);
                 let callee = self.method_callee(receiver, property)?;
                 let arguments = self.arguments(args)?;
-                Ok(self.b.expression_call(
+                let call = self.b.expression_call(
                     SPAN,
                     callee,
                     None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
                     arguments,
                     false,
-                ))
+                );
+                Ok(self.maybe_wrap_hook_call(is_hook, call))
             }
             InstructionValue::PropertyLoad {
                 object, property, ..
@@ -2084,7 +2310,8 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
 
         // Recurse. The nested function shares this Cx (arena, temp table,
         // declared set) and gets its own cache numbering.
-        let (function, _nested_cache) = self.codegen_function(&reactive_fn)?;
+        let (function, _nested_cache) =
+            self.codegen_function(&reactive_fn, /* top_level */ false)?;
 
         let expr = match expr_type {
             FunctionExpressionType::ArrowFunctionExpression => {
@@ -2154,7 +2381,8 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
     ) -> Bail<oxc::Expression<'a>> {
         let reactive_fn = self.lower_nested_reactive_fn(lowered_func, false)?;
 
-        let (mut function, _nested_cache) = self.codegen_function(&reactive_fn)?;
+        let (mut function, _nested_cache) =
+            self.codegen_function(&reactive_fn, /* top_level */ false)?;
         function.r#type = oxc::FunctionType::FunctionExpression;
         function.id = None;
         Ok(oxc::Expression::FunctionExpression(self.b.alloc(function)))

@@ -721,3 +721,15 @@ Cleared valid-setState ×2, fbt-param-with-{newline,unicode}. Independently veri
 OPEN: fbt-param-with-quotes — vendored oxc_codegen 0.136 hardcodes single-quote for JSX attr values
 containing `"` (ignores single_quote option); TS emits invalid-JSX `name="\"…\""` that only matches
 via the oracle's textual fallback. Needs an oxc_codegen patch/bump — out of clean scope.
+
+## 20260617 Port instrumentation codegen to native (+4, → 1783/1797)
+Reimplemented two pragma-gated codegen features lost in the codegen rewrite:
+- `@enableEmitInstrumentForget`: resolve instrument-fn/gating import names (collision-safe) at the
+  former TODO(N1.3) site (program.rs), thread `extra_imports` through assemble_and_print, emit
+  `if (<DEV && gate>) instrumentFn("fnId","filename")` per compiled top-level fn (codegen_oxc.rs).
+- `@enableEmitHookGuards`: per-hook-call IIFE try/finally guards (wired into CallExpression/MethodCall
+  arms via is_hook_callee) + whole-body PushHookGuard/PopHookGuard on the top-level fn only
+  (new `top_level` param on codegen_function).
+All infra (config flags, OutputMode, add_import_specifier) already existed — last-mile wiring.
+Cleared codegen-instrument-forget-test, conflict-codegen-instrument-forget,
+gating/codegen-instrument-forget-gating-test, flag-enable-emit-hook-guards. Verified 0 regressions.

@@ -58,6 +58,23 @@ use super::plugin_options::PluginOptions;
 pub struct CompileProgramResult {
     pub result: CompileResult,
     pub native_artifacts: Vec<NativeArtifact>,
+    /// Extra module imports the compiled output depends on beyond the `_c` memo
+    /// cache import and the gating imports (which assembly handles separately).
+    /// Covers `@enableEmitInstrumentForget` (the instrument fn + its gating
+    /// function) and `@enableEmitHookGuards` (the dispatcher guard fn). Resolved
+    /// here (where the `ProgramContext` import/uid state lives) and injected by
+    /// `assemble_and_print`. Mirrors TS `programContext.addImportSpecifier`.
+    pub extra_imports: Vec<ResolvedImport>,
+}
+
+/// A resolved module import to inject into the compiled program: `import {
+/// <imported> [as <local>] } from "<source>";`. The `local` name is
+/// collision-safe (allocated via `ProgramContext::add_import_specifier`).
+#[derive(Debug, Clone)]
+pub struct ResolvedImport {
+    pub source: String,
+    pub imported: String,
+    pub local: String,
 }
 
 // =============================================================================
@@ -771,6 +788,7 @@ pub fn compile_program(
         return CompileProgramResult {
             result: success(None, early_ordered_log, Vec::new()),
             native_artifacts: Vec::new(),
+            extra_imports: Vec::new(),
         };
     }
 
@@ -783,6 +801,7 @@ pub fn compile_program(
         return CompileProgramResult {
             result: success(None, early_ordered_log, Vec::new()),
             native_artifacts: Vec::new(),
+            extra_imports: Vec::new(),
         };
     }
 
@@ -843,7 +862,56 @@ pub fn compile_program(
     context.init_from_semantic(semantic);
     context.ordered_log.extend(early_ordered_log);
 
-    // TODO(N1.3): pre-register instrumentation / hook-guard imports.
+    // Pre-register instrumentation / hook-guard imports. These features emit
+    // calls to imported runtime functions whose collision-safe local names must
+    // be resolved before per-function compilation (the names are copied onto
+    // each function's `Environment` so native codegen can emit them). Only the
+    // `client` output mode emits these, matching TS `codegenFunction` /
+    // `createCallExpression` (`env.outputMode === 'client'`). The local names
+    // are also collected as `ResolvedImport`s and injected during assembly,
+    // mirroring TS `programContext.addImportSpecifier`.
+    //
+    // TS resolves the names lazily during each function's codegen, in this
+    // order: for instrument-forget, the gating specifier first (if any), then
+    // the instrument fn; for hook-guards, the guard fn. We resolve eagerly in
+    // the same order so the generated `_name`/`_name2` collision suffixes match.
+    let mut extra_imports: Vec<ResolvedImport> = Vec::new();
+    if output_mode == CompilerOutputMode::Client {
+        if let Some(instrument) = &options.environment.enable_emit_instrument_forget {
+            if let Some(gating) = &instrument.gating {
+                let local = context
+                    .add_import_specifier(&gating.source, &gating.import_specifier_name, None)
+                    .name;
+                context.instrument_gating_name = Some(local.clone());
+                extra_imports.push(ResolvedImport {
+                    source: gating.source.clone(),
+                    imported: gating.import_specifier_name.clone(),
+                    local,
+                });
+            }
+            let fn_ = &instrument.fn_;
+            let local = context
+                .add_import_specifier(&fn_.source, &fn_.import_specifier_name, None)
+                .name;
+            context.instrument_fn_name = Some(local.clone());
+            extra_imports.push(ResolvedImport {
+                source: fn_.source.clone(),
+                imported: fn_.import_specifier_name.clone(),
+                local,
+            });
+        }
+        if let Some(guard) = &options.environment.enable_emit_hook_guards {
+            let local = context
+                .add_import_specifier(&guard.source, &guard.import_specifier_name, None)
+                .name;
+            context.hook_guard_name = Some(local.clone());
+            extra_imports.push(ResolvedImport {
+                source: guard.source.clone(),
+                imported: guard.import_specifier_name.clone(),
+                local,
+            });
+        }
+    }
 
     let env_config = options.environment.clone();
     let queue = find_functions_to_compile(program, compile_all);
@@ -871,6 +939,7 @@ pub fn compile_program(
                 return CompileProgramResult {
                     result,
                     native_artifacts: Vec::new(),
+                    extra_imports: Vec::new(),
                 };
             }
             continue;
@@ -890,6 +959,7 @@ pub fn compile_program(
                 return CompileProgramResult {
                     result,
                     native_artifacts: Vec::new(),
+                    extra_imports: Vec::new(),
                 };
             }
             continue;
@@ -1035,6 +1105,7 @@ pub fn compile_program(
                     return CompileProgramResult {
                         result,
                         native_artifacts: Vec::new(),
+                        extra_imports: Vec::new(),
                     };
                 }
             }
@@ -1054,6 +1125,12 @@ pub fn compile_program(
     } else {
         std::mem::take(&mut context.native_artifacts)
     };
+    // The instrumentation / hook-guard imports are only emitted when at least
+    // one function is actually compiled into the output (TS adds them lazily
+    // during a function's codegen). If nothing compiled, drop them.
+    if native_artifacts.is_empty() {
+        extra_imports.clear();
+    }
     CompileProgramResult {
         result: CompileResult::Success {
             events: context.events,
@@ -1062,6 +1139,7 @@ pub fn compile_program(
             timing: Vec::new(),
         },
         native_artifacts,
+        extra_imports,
     }
 }
 

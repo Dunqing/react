@@ -70,6 +70,7 @@ pub fn transform(
     );
     let result = compiled.result;
     let native_artifacts = compiled.native_artifacts;
+    let extra_imports = compiled.extra_imports;
 
     let diagnostics = compile_result_to_diagnostics(&result);
     let (events, ordered_log, renames) = match result {
@@ -96,6 +97,7 @@ pub fn transform(
         &native_artifacts,
         &runtime_module,
         &renames,
+        &extra_imports,
     );
 
     TransformResult {
