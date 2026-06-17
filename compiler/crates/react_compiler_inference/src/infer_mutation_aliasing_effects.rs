@@ -1259,6 +1259,8 @@ fn freeze_function_captures_transitive(
 // applyEffect
 // =============================================================================
 
+// reason: param threads context through the recursion; removing it would change the API for no benefit
+#[allow(clippy::only_used_in_recursion)]
 fn apply_effect(
     context: &mut Context,
     state: &mut InferenceState,
@@ -2542,6 +2544,8 @@ fn compute_signature_for_instruction(
 // Legacy signature support
 // =============================================================================
 
+// reason: codegen/lowering fn legitimately takes many distinct args; bundling into a struct adds churn without real benefit
+#[allow(clippy::too_many_arguments)]
 fn compute_effects_for_legacy_signature(
     state: &InferenceState,
     signature: &FunctionSignature,
@@ -2716,6 +2720,8 @@ fn compute_effects_for_legacy_signature(
     effects
 }
 
+// reason: identical branches kept distinct for intent/clarity; merging would obscure the logic
+#[allow(clippy::if_same_then_else)]
 fn get_argument_effect(
     sig_effect: Effect,
     is_spread: bool,
@@ -2829,6 +2835,8 @@ fn is_known_mutable_effect(effect: Effect) -> bool {
 // Aliasing signature config support (new-style signatures)
 // =============================================================================
 
+// reason: codegen/lowering fn legitimately takes many distinct args; bundling into a struct adds churn without real benefit
+#[allow(clippy::too_many_arguments)]
 fn compute_effects_for_aliasing_signature_config(
     env: &mut Environment,
     config: &react_compiler_hir::type_config::AliasingSignatureConfig,

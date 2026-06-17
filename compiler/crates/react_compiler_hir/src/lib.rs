@@ -1387,6 +1387,8 @@ pub enum MutationReason {
 /// Describes the aliasing/mutation/data-flow effects of an instruction or terminal.
 /// Ported from TS `AliasingEffect` in `AliasingEffects.ts`.
 #[derive(Debug, Clone)]
+// reason: Box-wrapping the large variant changes layout and adds indirection; not worth it without profiling
+#[allow(clippy::large_enum_variant)]
 pub enum AliasingEffect {
     /// Marks the given value and its direct aliases as frozen.
     Freeze { value: Place, reason: ValueReason },

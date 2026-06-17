@@ -79,6 +79,8 @@ fn format_variable_name(place: &Place, identifiers: &[Identifier]) -> String {
 /// context variable. Returns the reassigned place if found, or None.
 ///
 /// Side effects: accumulates async-function reassignment diagnostics into `diagnostics`.
+// reason: codegen/lowering fn legitimately takes many distinct args; the recursion-only param threads context through recursion — both bundling/removal add churn without real benefit
+#[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
 fn get_context_reassignment(
     func: &HirFunction,
     identifiers: &[Identifier],

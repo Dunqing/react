@@ -287,6 +287,8 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
         }
         ReactiveValue::Instruction(InstructionValue::StoreLocal { lvalue, value, .. }) => {
             // Track reassignments from inlining of manual memo
+            // reason: borrow-checker-blocked — an intervening immutable borrow between the is_some() check and .unwrap() prevents the if-let rewrite from compiling
+            #[allow(clippy::unnecessary_unwrap)]
             if state.manual_memo_state.is_some() && lvalue.kind == InstructionKind::Reassign {
                 let decl_id =
                     state.env.identifiers[lvalue.place.identifier.0 as usize].declaration_id;
@@ -305,6 +307,8 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
                 let place_ident = &state.env.identifiers[place.identifier.0 as usize];
                 if let Some(ref lvalue) = instr.lvalue {
                     let lvalue_ident = &state.env.identifiers[lvalue.identifier.0 as usize];
+                    // reason: borrow-checker-blocked — an intervening immutable borrow between the is_some() check and .unwrap() prevents the if-let rewrite from compiling
+                    #[allow(clippy::unnecessary_unwrap)]
                     if place_ident.scope.is_some() && lvalue_ident.scope.is_none() {
                         state
                             .manual_memo_state
@@ -351,6 +355,8 @@ fn record_temporaries(instr: &ReactiveInstruction, state: &mut VisitorState) {
 
     if let Some(ref lvalue) = instr.lvalue {
         let lv_ident = &state.env.identifiers[lvalue.identifier.0 as usize];
+        // reason: borrow-checker-blocked — an intervening immutable borrow between the is_some() check and .unwrap() prevents the if-let rewrite from compiling
+        #[allow(clippy::unnecessary_unwrap)]
         if is_named(lv_ident) && state.manual_memo_state.is_some() {
             state
                 .manual_memo_state

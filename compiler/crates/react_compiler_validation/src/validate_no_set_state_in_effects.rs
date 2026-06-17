@@ -353,6 +353,8 @@ fn create_ref_controlled_block_checker(
 /// Checks inner function body for direct setState calls. Returns the callee Place info
 /// if a setState call is found in the function body.
 /// Tracks ref-derived values to allow setState when the value being set comes from a ref.
+// reason: codegen/lowering fn legitimately takes many distinct args; bundling into a struct adds churn without real benefit
+#[allow(clippy::too_many_arguments)]
 fn get_set_state_call(
     func: &HirFunction,
     set_state_functions: &mut HashMap<IdentifierId, SetStateInfo>,

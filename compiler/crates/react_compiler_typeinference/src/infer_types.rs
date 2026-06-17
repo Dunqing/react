@@ -511,6 +511,8 @@ fn generate_for_function_id(
     Ok(())
 }
 
+// reason: codegen/lowering fn legitimately takes many distinct args; bundling into a struct adds churn without real benefit
+#[allow(clippy::too_many_arguments)]
 fn generate_instruction_types(
     instr: &react_compiler_hir::Instruction,
     instr_id: InstructionId,

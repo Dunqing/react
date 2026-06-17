@@ -46,6 +46,8 @@ pub type ReactiveBlock = Vec<ReactiveStatement>;
 
 /// TS: ReactiveStatement (discriminated union with 'kind' field)
 #[derive(Debug, Clone)]
+// reason: Box-wrapping the large variant changes layout and adds indirection; not worth it without profiling
+#[allow(clippy::large_enum_variant)]
 pub enum ReactiveStatement {
     Instruction(ReactiveInstruction),
     Terminal(ReactiveTerminalStatement),

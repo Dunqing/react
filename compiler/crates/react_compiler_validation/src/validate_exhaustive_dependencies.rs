@@ -1204,6 +1204,8 @@ fn collect_dependencies(
 // validateDependencies
 // =============================================================================
 
+// reason: codegen/lowering fn legitimately takes many distinct args; bundling into a struct adds churn without real benefit
+#[allow(clippy::too_many_arguments)]
 fn validate_dependencies(
     mut inferred: Vec<InferredDependency>,
     manual_dependencies: &[ManualMemoDependency],

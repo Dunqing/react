@@ -498,6 +498,8 @@ fn record_phi_derivations(
     }
 }
 
+// reason: param threads context through the recursion; removing it would change the API for no benefit
+#[allow(clippy::only_used_in_recursion)]
 fn record_instruction_derivations(
     instr: &react_compiler_hir::Instruction,
     context: &mut ValidationContext,
@@ -1257,6 +1259,8 @@ fn validate_effect_non_exp(
     // Check that the effect function only captures effect deps and setState
     for ctx in &effect_func.context {
         let ctx_ty = &tys[ids[ctx.identifier.0 as usize].type_.0 as usize];
+        // reason: identical branches kept distinct for intent/clarity; merging would obscure the logic
+        #[allow(clippy::if_same_then_else)]
         if is_set_state_type(ctx_ty) {
             continue;
         } else if effect_deps.contains(&ctx.identifier) {

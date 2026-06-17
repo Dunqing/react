@@ -1222,6 +1222,8 @@ fn collect_non_nulls_in_blocks(
             {
                 let inner_func = &env.functions[lowered_func.func.0 as usize];
                 // Build nested fn immutable context
+                // reason: borrow-checker-blocked — an intervening immutable borrow between the is_some() check and .unwrap() prevents the if-let rewrite from compiling
+                #[allow(clippy::unnecessary_unwrap)]
                 let nested_fn_immutable_context: HashSet<IdentifierId> = if ctx
                     .nested_fn_immutable_context
                     .is_some()

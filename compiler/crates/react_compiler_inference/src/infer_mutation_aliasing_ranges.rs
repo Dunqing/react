@@ -235,6 +235,8 @@ impl AliasingState {
         }
     }
 
+    // reason: codegen/lowering fn legitimately takes many distinct args; bundling into a struct adds churn without real benefit
+    #[allow(clippy::too_many_arguments)]
     fn mutate(
         &mut self,
         index: usize,

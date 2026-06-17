@@ -117,6 +117,8 @@ pub enum CompileResult {
 /// An item in the ordered log, which can be either a logger event or a debug entry.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+// reason: Box-wrapping the large variant changes layout and adds indirection; not worth it without profiling
+#[allow(clippy::large_enum_variant)]
 pub enum OrderedLogItem {
     Event { event: LoggerEvent },
     Debug { entry: DebugLogEntry },

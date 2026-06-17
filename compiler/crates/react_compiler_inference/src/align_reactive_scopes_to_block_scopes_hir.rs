@@ -252,6 +252,8 @@ pub fn align_reactive_scopes_to_block_scopes_hir(func: &mut HirFunction, env: &m
             } else if node.is_none() || is_ternary_logical_optional {
                 // Create a new node when transitioning non-value -> value,
                 // or for ternary/logical/optional terminals.
+                // reason: borrow-checker-blocked — an intervening immutable borrow between the is_none() check and .unwrap() prevents the if-let rewrite from compiling
+                #[allow(clippy::unnecessary_unwrap)]
                 let value_range = if node.is_none() {
                     // Transition from block -> value block
                     let ft = fallthrough.expect("Expected a fallthrough for value block");

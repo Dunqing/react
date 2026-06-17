@@ -1128,6 +1128,8 @@ fn validate_no_ref_access_in_render_impl(
                             found_ref_id = Some(*id);
                         }
 
+                        // reason: identical branches kept distinct for intent/clarity; merging would obscure the logic
+                        #[allow(clippy::if_same_then_else)]
                         if matches!(&left_type, Some(RefAccessType::Nullable)) {
                             nullish = true;
                         } else if matches!(&right_type, Some(RefAccessType::Nullable)) {
