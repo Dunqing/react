@@ -70,10 +70,12 @@ frontend (oxc parse+semantic) **1.2%**, compiler core **98%**, output codegen
 **Output is semantically equivalent (verified, not assumed).** Over the 1123
 intersection fixtures, normalized with the project's `structuralNormalize`
 (alpha-renames temporaries, masks `$[N]`/`_c(N)` slot indices): **pre-Oxc Rust ≡ TS
-on 100%**, **native ≡ TS on 98.3%** (the 19 diffs are the documented semantic-parity
-tail — fbt lambdas, try-catch edge cases, lone-surrogate codegen, `script-source-type`),
-and all three emit memoized output on the SAME 953 fixtures. So the timing compares
-equivalent work — not a faster engine doing less.
+on 100%**, **native ≡ TS on 98.3%** (a conservative floor — spot-checking the 19
+diffs, several are cosmetic `structuralNormalize` artifacts like a stray empty
+statement or a dropped comment with byte-identical logic, one is a benchmark `@script`
+parse quirk, and the genuine remainder is the documented parity tail: fbt lambdas,
+lone-surrogate codegen). All three emit memoized output on the SAME 953 fixtures. So
+the timing compares equivalent work — not a faster engine doing less.
 
 > **Correction (the previous numbers were ad-hoc).** Earlier revisions recorded
 > 1.38 ms / 6.1× (pre-Oxc) and 1.895 ms / 8.1× (TS) from one-off measurements with
