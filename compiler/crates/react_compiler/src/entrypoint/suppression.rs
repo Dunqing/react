@@ -4,99 +4,20 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
+use oxc_ast::ast::Comment;
 use react_compiler_diagnostics::{
     CompilerDiagnostic, CompilerDiagnosticDetail, CompilerError, CompilerSuggestion,
     CompilerSuggestionOperation, ErrorCategory,
 };
 
-/// A 1-based line / 0-based column source position, with an optional byte
-/// `index`. Local to suppression parsing (mirrors Babel's `t.SourceLocation`
-/// position shape).
-#[derive(Debug, Clone)]
-pub struct Position {
-    pub line: u32,
-    pub column: u32,
-    pub index: Option<u32>,
-}
-
-/// A source-location span (start/end positions). `filename`/`identifier_name`
-/// are kept for shape-parity with the diagnostic location but are unused here.
-#[derive(Debug, Clone)]
-pub struct SourceLocation {
-    pub start: Position,
-    pub end: Position,
-    #[allow(dead_code)]
-    pub filename: Option<String>,
-    #[allow(dead_code)]
-    pub identifier_name: Option<String>,
-}
-
-/// The inner data of a comment: its (delimiter-stripped) text, full span
-/// offsets, and source location. Mirrors Babel's `t.Comment`.
-#[derive(Debug, Clone)]
-pub struct CommentData {
-    pub value: String,
-    pub start: Option<u32>,
-    pub end: Option<u32>,
-    pub loc: Option<SourceLocation>,
-}
-
-/// A program comment — line (`//`) or block (`/* */`).
-#[derive(Debug, Clone)]
-pub enum Comment {
-    CommentLine(CommentData),
-    CommentBlock(CommentData),
-}
-
-/// Convert oxc program comments into the local [`Comment`] shape used by
-/// [`find_program_suppressions`]. Mirrors Babel's `t.Comment`:
-/// - `value` is the comment's inner text (delimiters stripped), matching
-///   Babel's `comment.value`.
-/// - `start`/`end` are the *full* comment span (including `/* */` or `//`),
-///   matching Babel's `comment.start`/`comment.end` used for range checks and
-///   the removal suggestion.
-pub fn oxc_comments_to_ast_comments(
-    comments: &[oxc_ast::ast::Comment],
-    source_text: &str,
-) -> Vec<Comment> {
-    comments
-        .iter()
-        .map(|comment| {
-            let full_span = comment.span;
-            let content_span = comment.content_span();
-            let value = source_text
-                .get(content_span.start as usize..content_span.end as usize)
-                .unwrap_or("")
-                .to_string();
-            let loc = SourceLocation {
-                start: position_of_offset(source_text, full_span.start),
-                end: position_of_offset(source_text, full_span.end),
-                filename: None,
-                identifier_name: None,
-            };
-            let data = CommentData {
-                value,
-                start: Some(full_span.start),
-                end: Some(full_span.end),
-                loc: Some(loc),
-            };
-            if comment.is_line() {
-                Comment::CommentLine(data)
-            } else {
-                Comment::CommentBlock(data)
-            }
-        })
-        .collect()
-}
-
-/// Compute a 1-based line / 0-based column `Position` from a byte offset.
-fn position_of_offset(source: &str, offset: u32) -> Position {
-    let (line, column) = react_compiler_diagnostics::offset_to_line_column(source, offset);
-    Position {
-        line,
-        column,
-        index: Some(offset),
-    }
+/// The inner (delimiter-stripped) text of an oxc comment — the equivalent of
+/// Babel's `comment.value`, computed on demand by slicing the source over the
+/// comment's content span.
+fn comment_value<'a>(comment: &Comment, source_text: &'a str) -> &'a str {
+    let content_span = comment.content_span();
+    source_text
+        .get(content_span.start as usize..content_span.end as usize)
+        .unwrap_or("")
 }
 
 #[derive(Debug, Clone)]
@@ -111,17 +32,15 @@ pub enum SuppressionSource {
 ///
 /// The enable comment can be missing in the case where only a disable block is present,
 /// ie the rest of the file has potential React violations.
+///
+/// Comments are stored as oxc [`Comment`]s; the inner text is recomputed on
+/// demand from the source via [`comment_value`], and `span.start`/`.end` give
+/// the full comment range used for overlap checks and the removal suggestion.
 #[derive(Debug, Clone)]
 pub struct SuppressionRange {
-    pub disable_comment: CommentData,
-    pub enable_comment: Option<CommentData>,
+    pub disable_comment: Comment,
+    pub enable_comment: Option<Comment>,
     pub source: SuppressionSource,
-}
-
-fn comment_data(comment: &Comment) -> &CommentData {
-    match comment {
-        Comment::CommentBlock(data) | Comment::CommentLine(data) => data,
-    }
 }
 
 /// Check if a comment value matches `eslint-disable-next-line <rule>` for any rule in `rule_names`.
@@ -203,56 +122,56 @@ fn matches_flow_suppression(value: &str) -> bool {
 }
 
 /// Parse eslint-disable/enable and Flow suppression comments from program comments.
-/// Equivalent to findProgramSuppressions in Suppression.ts
+/// Equivalent to findProgramSuppressions in Suppression.ts.
+///
+/// Consumes oxc [`Comment`]s directly: each comment's inner text is sliced from
+/// `source_text` on demand and its `span.start`/`.end` give the full range.
 pub fn find_program_suppressions(
     comments: &[Comment],
+    source_text: &str,
     rule_names: Option<&[String]>,
     flow_suppressions: bool,
 ) -> Vec<SuppressionRange> {
     let mut suppression_ranges: Vec<SuppressionRange> = Vec::new();
-    let mut disable_comment: Option<CommentData> = None;
-    let mut enable_comment: Option<CommentData> = None;
+    let mut disable_comment: Option<Comment> = None;
+    let mut enable_comment: Option<Comment> = None;
     let mut source: Option<SuppressionSource> = None;
 
     let has_rules = matches!(rule_names, Some(names) if !names.is_empty());
 
     for comment in comments {
-        let data = comment_data(comment);
-
-        if data.start.is_none() || data.end.is_none() {
-            continue;
-        }
+        let value = comment_value(comment, source_text);
 
         // Check for eslint-disable-next-line (only if not already within a block)
         if disable_comment.is_none() && has_rules
             && let Some(names) = rule_names
-                && matches_eslint_disable_next_line(&data.value, names) {
-                    disable_comment = Some(data.clone());
-                    enable_comment = Some(data.clone());
+                && matches_eslint_disable_next_line(value, names) {
+                    disable_comment = Some(*comment);
+                    enable_comment = Some(*comment);
                     source = Some(SuppressionSource::Eslint);
                 }
 
         // Check for Flow suppression (only if not already within a block)
-        if flow_suppressions && disable_comment.is_none() && matches_flow_suppression(&data.value) {
-            disable_comment = Some(data.clone());
-            enable_comment = Some(data.clone());
+        if flow_suppressions && disable_comment.is_none() && matches_flow_suppression(value) {
+            disable_comment = Some(*comment);
+            enable_comment = Some(*comment);
             source = Some(SuppressionSource::Flow);
         }
 
         // Check for eslint-disable (block start)
         if has_rules
             && let Some(names) = rule_names
-                && matches_eslint_disable(&data.value, names) {
-                    disable_comment = Some(data.clone());
+                && matches_eslint_disable(value, names) {
+                    disable_comment = Some(*comment);
                     source = Some(SuppressionSource::Eslint);
                 }
 
         // Check for eslint-enable (block end)
         if has_rules
             && let Some(names) = rule_names
-                && matches_eslint_enable(&data.value, names)
+                && matches_eslint_enable(value, names)
                     && matches!(source, Some(SuppressionSource::Eslint)) {
-                        enable_comment = Some(data.clone());
+                        enable_comment = Some(*comment);
                     }
 
         // If we have a complete suppression, push it
@@ -280,10 +199,7 @@ pub fn filter_suppressions_that_affect_function(
     let mut suppressions_in_scope: Vec<&SuppressionRange> = Vec::new();
 
     for suppression in suppressions {
-        let disable_start = match suppression.disable_comment.start {
-            Some(s) => s,
-            None => continue,
-        };
+        let disable_start = suppression.disable_comment.span.start;
 
         // The suppression is within the function
         if disable_start > fn_start
@@ -291,8 +207,7 @@ pub fn filter_suppressions_that_affect_function(
                 || suppression
                     .enable_comment
                     .as_ref()
-                    .and_then(|c| c.end)
-                    .is_some_and(|end| end < fn_end))
+                    .is_some_and(|c| c.span.end < fn_end))
         {
             suppressions_in_scope.push(suppression);
         }
@@ -303,8 +218,7 @@ pub fn filter_suppressions_that_affect_function(
                 || suppression
                     .enable_comment
                     .as_ref()
-                    .and_then(|c| c.end)
-                    .is_some_and(|end| end > fn_end))
+                    .is_some_and(|c| c.span.end > fn_end))
         {
             suppressions_in_scope.push(suppression);
         }
@@ -313,8 +227,12 @@ pub fn filter_suppressions_that_affect_function(
     suppressions_in_scope
 }
 
-/// Convert suppression ranges to a CompilerError.
-pub fn suppressions_to_compiler_error(suppressions: &[SuppressionRange]) -> CompilerError {
+/// Convert suppression ranges to a CompilerError. The comment text and
+/// diagnostic location are recomputed from `source_text` on demand.
+pub fn suppressions_to_compiler_error(
+    suppressions: &[SuppressionRange],
+    source_text: &str,
+) -> CompilerError {
     assert!(
         !suppressions.is_empty(),
         "Expected at least one suppression comment source range"
@@ -323,13 +241,8 @@ pub fn suppressions_to_compiler_error(suppressions: &[SuppressionRange]) -> Comp
     let mut error = CompilerError::new();
 
     for suppression in suppressions {
-        let (disable_start, disable_end) = match (
-            suppression.disable_comment.start,
-            suppression.disable_comment.end,
-        ) {
-            (Some(s), Some(e)) => (s, e),
-            _ => continue,
-        };
+        let disable_start = suppression.disable_comment.span.start;
+        let disable_end = suppression.disable_comment.span.end;
 
         let (reason, suggestion) = match suppression.source {
             SuppressionSource::Eslint => (
@@ -344,7 +257,7 @@ pub fn suppressions_to_compiler_error(suppressions: &[SuppressionRange]) -> Comp
 
         let description = format!(
             "React Compiler only works when your components follow all the rules of React, disabling them may result in unexpected or incorrect behavior. Found suppression `{}`",
-            suppression.disable_comment.value.trim()
+            comment_value(&suppression.disable_comment, source_text).trim()
         );
 
         let mut diagnostic =
@@ -357,20 +270,22 @@ pub fn suppressions_to_compiler_error(suppressions: &[SuppressionRange]) -> Comp
             text: None,
         }]);
 
-        // Add error detail with location info
-        let loc = suppression.disable_comment.loc.as_ref().map(|l| {
-            react_compiler_diagnostics::SourceLocation {
-                start: react_compiler_diagnostics::Position {
-                    line: l.start.line,
-                    column: l.start.column,
-                    index: l.start.index,
-                },
-                end: react_compiler_diagnostics::Position {
-                    line: l.end.line,
-                    column: l.end.column,
-                    index: l.end.index,
-                },
-            }
+        // Add error detail with location info, computed from the full comment span.
+        let (start_line, start_column) =
+            react_compiler_diagnostics::offset_to_line_column(source_text, disable_start);
+        let (end_line, end_column) =
+            react_compiler_diagnostics::offset_to_line_column(source_text, disable_end);
+        let loc = Some(react_compiler_diagnostics::SourceLocation {
+            start: react_compiler_diagnostics::Position {
+                line: start_line,
+                column: start_column,
+                index: Some(disable_start),
+            },
+            end: react_compiler_diagnostics::Position {
+                line: end_line,
+                column: end_column,
+                index: Some(disable_end),
+            },
         });
 
         diagnostic = diagnostic.with_detail(CompilerDiagnosticDetail::Error {

@@ -755,7 +755,8 @@ pub fn compile_program(
         )
     };
     let suppressions = super::suppression::find_program_suppressions(
-        &super::suppression::oxc_comments_to_ast_comments(&program.comments, source_text),
+        &program.comments,
+        source_text,
         rule_names.as_deref(),
         options.flow_suppressions,
     );
@@ -804,7 +805,10 @@ pub fn compile_program(
         if !suppressions_in_fn.is_empty() {
             let suppression_ranges: Vec<_> =
                 suppressions_in_fn.into_iter().cloned().collect();
-            let err = super::suppression::suppressions_to_compiler_error(&suppression_ranges);
+            let err = super::suppression::suppressions_to_compiler_error(
+                &suppression_ranges,
+                source_text,
+            );
             let fn_loc =
                 span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
             if let Some(result) = handle_error(&err, fn_loc, &mut context) {
