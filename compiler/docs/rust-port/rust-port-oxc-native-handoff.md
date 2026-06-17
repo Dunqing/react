@@ -45,7 +45,7 @@ End-to-end compile (full source → compiled output), per-fixture median:
 
 | | per-fixture | fixtures/sec | vs native |
 |---|---|---|---|
-| **Native-Oxc** (oxc parse→semantic→passes→native codegen) | **0.225 ms** | ~4,450 | 1× |
+| **Native-Oxc** (oxc parse→semantic→passes→native codegen) | **~0.23 ms** | ~4,300 | 1× |
 | **Pre-Oxc Rust port** (Babel parse→scope→JSON→NAPI Rust→Babel codegen) | 1.38 ms | ~720 | **6.1× slower** |
 | **TS/Babel reference** (in-process) | 1.895 ms | ~528 | **~8.1× slower** |
 | Native parse+semantic only | 0.0029 ms | ~350k | — |
