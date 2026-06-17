@@ -376,14 +376,18 @@ fn lower_declarator_assignment(
         }
         other => {
             // Destructuring declaration targets (object / array / default).
-            super::lower_assignment(
-                builder,
-                loc,
-                kind,
-                other,
-                value,
-                super::AssignmentStyle::Assignment,
-            )?;
+            // Mirror the reference `lowerStatement` for `VariableDeclaration`:
+            // an object/array pattern `id` is lowered with the `Destructure`
+            // style (so context-variable elements are routed through promoted
+            // temporaries + StoreContext followups), while other targets use
+            // `Assignment`.
+            let style = match other {
+                oxc::BindingPattern::ObjectPattern(_) | oxc::BindingPattern::ArrayPattern(_) => {
+                    super::AssignmentStyle::Destructure
+                }
+                _ => super::AssignmentStyle::Assignment,
+            };
+            super::lower_assignment(builder, loc, kind, other, value, style)?;
             Ok(())
         }
     }

@@ -29,21 +29,26 @@ use crate::hir_builder::reserved_identifier_diagnostic;
 use crate::hir_builder::todo_diagnostic;
 use crate::semantic_queries as sq;
 
-/// The style of assignment (used internally by `lower_assignment`).
+/// The style of assignment (mirrors the reference `lowerAssignment`'s
+/// `assignmentKind` parameter), used by [`lower_assignment`] to decide whether a
+/// context-variable element may be destructured directly into place.
 ///
 /// In oxc, destructuring *assignment expressions* (`({a} = obj)` / `[x] = arr`)
 /// live in a separate AST family (`AssignmentTarget`) handled by
-/// [`lower_assignment_target`], so the binding-pattern [`lower_assignment`] path
-/// is only ever reached with [`AssignmentStyle::Assignment`]. The
-/// [`AssignmentStyle::Destructure`] variant documents the reference's second
-/// style and is kept for parity with the assignment-target `can_use_direct`
-/// rule (context vars are not assigned directly under `Destructure`).
+/// [`lower_assignment_target`]. The binding-pattern [`lower_assignment`] path is
+/// reached with [`AssignmentStyle::Destructure`] for object/array *declaration*
+/// targets (`const {a} = …` / `let [x] = …`, mirroring the reference's
+/// `id.isObjectPattern() || id.isArrayPattern() ? 'Destructure' : 'Assignment'`)
+/// and with [`AssignmentStyle::Assignment`] for everything else (single
+/// identifier targets, params, for-of/in heads, catch). Under `Destructure`, a
+/// context variable is not assigned directly: it is routed through a promoted
+/// temporary and stored via a `StoreContext` followup.
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum AssignmentStyle {
-    /// Assignment via `=` (declarations, params, for-of/in heads, catch).
+    /// Assignment via `=` (single-identifier declarations, params,
+    /// for-of/in heads, catch).
     Assignment,
-    /// Destructuring assignment expression (`({a} = obj)` / `[x] = arr`).
+    /// Destructuring of an object/array declaration target (`const {a} = …`).
     Destructure,
 }
 
@@ -1046,13 +1051,25 @@ fn lower_array_assignment_target(
     let mut items: Vec<ArrayPatternElement> = Vec::new();
     let mut followups: Vec<(Place, FollowupTarget)> = Vec::new();
 
+    // Mirror the reference `forceTemporaries`: a destructuring *reassignment*
+    // mixes new declarations only for nested patterns rewritten into followups.
+    // A given `Destructure` must be single-kind, so if any element is not a
+    // simple resolvable non-context identifier (a default value, a nested
+    // pattern, a member-expression target, a context variable, or a non-local
+    // binding) we route ALL elements through promoted temporaries and emit the
+    // real reassignments as followups.
+    let force_temporaries = target_array_force_temporaries(builder, pattern)?;
+
     for element in &pattern.elements {
         match element {
             None => items.push(ArrayPatternElement::Hole),
             Some(maybe) => {
-                if let Some(place) =
+                let direct = if force_temporaries {
+                    None
+                } else {
                     direct_simple_target_place(builder, maybe, InstructionKind::Reassign)?
-                {
+                };
+                if let Some(place) = direct {
                     items.push(ArrayPatternElement::Place(place));
                 } else {
                     let elem_loc = Some(builder.loc_of_span(maybe.span()));
@@ -1067,9 +1084,12 @@ fn lower_array_assignment_target(
 
     if let Some(rest) = &pattern.rest {
         let rest_loc = Some(builder.loc_of_span(rest.span));
-        if let Some(place) =
+        let direct = if force_temporaries {
+            None
+        } else {
             direct_simple_assignment_target_place(builder, &rest.target, InstructionKind::Reassign)?
-        {
+        };
+        if let Some(place) = direct {
             items.push(ArrayPatternElement::Spread(SpreadPattern { place }));
         } else {
             let temp = build_temporary_place(builder, rest_loc);
@@ -1343,6 +1363,61 @@ fn direct_simple_identifier_reference_place(
         })),
         _ => Ok(None),
     }
+}
+
+/// Mirror of the reference `forceTemporaries` for an array destructuring
+/// *reassignment* target: true if the pattern has a rest element, or any
+/// element is not a simple resolvable non-context identifier (a default value,
+/// a nested pattern, a member-expression target, a context variable, or a
+/// non-local binding). When true, every element is routed through a promoted
+/// temporary so the emitted `Destructure` is single-kind and the followup
+/// reassignments run in order.
+fn target_array_force_temporaries(
+    builder: &mut HirBuilder,
+    pattern: &oxc::ArrayAssignmentTarget,
+) -> Result<bool, CompilerError> {
+    if pattern.rest.is_some() {
+        return Ok(true);
+    }
+    for element in &pattern.elements {
+        match element {
+            // A hole (`[, a]`) is neither a declaration nor a reassignment, so
+            // it does not force temporaries on its own.
+            None => {}
+            Some(maybe) => {
+                // `[a = dflt]` has a default → not a plain identifier target.
+                let is_plain_identifier = match maybe {
+                    oxc::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(_) => false,
+                    other => match other.as_assignment_target() {
+                        Some(oxc::AssignmentTarget::AssignmentTargetIdentifier(ident)) => {
+                            let symbol_id =
+                                sq::resolve_identifier_reference(builder.semantic(), ident);
+                            // Context variables reassign via StoreContext, so they
+                            // cannot be destructured directly into place.
+                            if builder.is_context_symbol(symbol_id) {
+                                false
+                            } else {
+                                let id_loc = Some(builder.loc_of_span(ident.span));
+                                matches!(
+                                    builder.resolve_identifier_symbol(
+                                        &ident.name,
+                                        symbol_id,
+                                        id_loc
+                                    )?,
+                                    VariableBinding::Identifier { .. }
+                                )
+                            }
+                        }
+                        _ => false,
+                    },
+                };
+                if !is_plain_identifier {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Mirror of the reference `forceTemporaries` for an object destructuring

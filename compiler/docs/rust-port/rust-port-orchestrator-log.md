@@ -688,3 +688,18 @@ error.default-param-accesses-local, skip-useMemoCache. compare-code.ts 1741→17
   a new `parse_statement` helper (statements.rs + codegen_oxc.rs; +serde_json dep).
 Independently verified compare-code.ts 1746→1770, **0 regressions** (32 newly passing vs the
 1738 baseline cumulative across the three fix batches).
+
+## 20260617 Remove 6 port-debugging scratch fixtures (corpus 1803 → 1797)
+hir_loc_diff, round2_loc_diff, todo-hir_numeric_format, todo-pattern1b_type_to_primitive,
+todo-hir_identifier_diff, todo-round3_promote_used_temps — all introduced only by the port
+commit 03e775554a (#36173), HIR-diff categorization probes, no React semantics. New baseline 1770/1797.
+
+## 20260617 Fix destructure lowering: context-var + mixed-kind (+5, → 1775/1797)
+- Declaration destructures now pass `AssignmentStyle::Destructure` (statements.rs ~377), routing
+  context-var elements through a promoted temp + `StoreContext` followup (existing machinery) — so
+  context vars never appear as a `Destructure` operand. (also cleared hoisting-setstate, same root cause)
+- `lower_array_assignment_target` gains a `force_temporaries` gate (patterns.rs) mirroring TS
+  `forceTemporaries`, so a mixed const/reassign array destructure emits a single-kind `Destructure`
+  with reassignments as followups — no more mixed-kind SSA invariant.
+Independently verified 1770→1775, **0 regressions**. SSA invariant + validate_context_variable_lvalues
+left untouched (the fix is purely in lowering, as in BuildHIR.ts).
