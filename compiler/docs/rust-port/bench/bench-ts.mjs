@@ -8,7 +8,7 @@
  *
  * compileOne is the BARE in-process TS pipeline ONLY:
  *   Babel parse (plugins ['typescript','jsx'], sourceType 'module')
- *   -> babel-plugin-react-compiler (compilationMode 'all', panicThreshold 'none')
+ *   -> babel-plugin-react-compiler (compilationMode 'all', panicThreshold 'all_errors')
  *   -> Babel codegen.
  * No prettier, no sprout/shared-runtime type provider, no @expect-error
  * handling, no hermes-parser, no HIR re-validation, no fbt/idx plugins,
@@ -44,10 +44,11 @@ const FIXTURES_DIR = path.join(
 // default export = BabelPluginReactCompiler (src/index.ts line 62-63).
 const BabelPluginReactCompiler = require(PLUGIN_DIST).default;
 
-// Bare plugin options: compile every function, never throw on diagnostics.
+// Bare plugin options: compile every function. panicThreshold 'all_errors'
+// matches the native bench + the compare-code.ts oracle (bail on error fns).
 const PLUGIN_OPTIONS = {
   compilationMode: 'all',
-  panicThreshold: 'none',
+  panicThreshold: 'all_errors',
 };
 
 /**

@@ -104,7 +104,7 @@ function prep(source, filename) {
   });
   if (programPath == null) throw new Error('no Program path');
   const opts = resolveOptions(
-    {compilationMode: 'all', panicThreshold: 'none'},
+    {compilationMode: 'all', panicThreshold: 'all_errors'},
     file,
     filename,
     ast,

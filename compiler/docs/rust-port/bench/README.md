@@ -12,18 +12,22 @@ Reproduces the three-way compile-time comparison in
 All three are measured with the **same methodology**: same 1505-fixture corpus
 (non-`*.flow.js` `.js` under `fixtures/compiler/`), all sources read up front
 (IO excluded), warmup discarded, median-of-8, single-threaded,
-`compilationMode: 'all'`. The native side uses the Rust `--bench` harness
-(`react_compiler_e2e_cli`); the two JS pipelines use the shared
-`bench-harness.mjs` here, which mirrors the Rust `run_bench` loop exactly.
+`compilationMode: 'all'`, `panicThreshold: 'all_errors'` (the config the
+`compare-code.ts` oracle uses — all three bail on error functions). The native
+side uses the Rust `--bench` harness (`react_compiler_e2e_cli`); the two JS
+pipelines use the shared `bench-harness.mjs` here, which mirrors the Rust
+`run_bench` loop exactly.
 
 ## Why an intersection run
 
-Native bails *cheaply* on ~370 fixtures gated behind deferred features (fbt,
-jsx-outlining, …) — it produces code for 1134/1505 vs 1458/1505 for the other
+Native bails on ~320 fixtures gated behind deferred features (fbt,
+jsx-outlining, …) — it produces code for 1134/1505 vs 1185/1505 for the other
 two. A corpus-average would flatter native by counting those cheap bails. So
 the apples-to-apples figure is taken over the **intersection** of fixtures all
-three fully compile (1134). The ratios turn out nearly identical either way
-(see the handoff doc), confirming the confound is symmetric.
+three fully compile (1123). On that intersection the three outputs are verified
+semantically equivalent (`structuralNormalize`): pre-Oxc ≡ TS on 100%, native ≡
+TS on 98.3% (the rest is the documented parity tail), and all three memoize the
+same 953 fixtures — so the timing compares equivalent work.
 
 ## Native (current tree)
 
@@ -93,6 +97,23 @@ git worktree remove /tmp/react-preoxc   # cleanup
 Toolchain used for the recorded numbers: rustc/cargo 1.91.0 (edition 2024),
 node v24.16.0, Apple M4 Max, release builds.
 
+## Verify the outputs are semantically equivalent
+
+The timing is only fair if the three pipelines do equivalent work. To confirm,
+dump the pre-Oxc + TS outputs (worktree) and compare all three under
+`structuralNormalize` (the same oracle `compare-code.ts` uses):
+
+```bash
+# in the worktree (PREOXC_COMPILER_ROOT exported), after computing intersection.txt:
+node dump-outputs.mjs /tmp/intersection.txt        # -> /tmp/out-preoxc, /tmp/out-ts, /tmp/out-map.tsv
+# in the main tree (spawns native CLI per fixture, imports structuralNormalize):
+npx tsx compiler/scripts/compare-three-pipelines.ts
+```
+
+Recorded result over the 1123-fixture intersection: **pre-Oxc ≡ TS 100%**, **native
+≡ TS 98.3%** (19 diffs = the documented parity tail), all three memoize the same
+953 fixtures.
+
 ## Files
 - `bench-harness.mjs` — shared `run_bench`-mirroring loop (`runBench`,
   `collectFixtures`); honours `BENCH_FILTER` / `BENCH_DUMP` env vars.
@@ -100,3 +121,7 @@ node v24.16.0, Apple M4 Max, release builds.
   sub-phase split). Replicates `BabelPlugin.ts` orchestration against the built
   `dist/` modules.
 - `bench-ts.mjs` — in-process TS/Babel reference (bare parse→plugin→codegen).
+- `dump-outputs.mjs` — dumps pre-Oxc + TS compiled output per fixture for the
+  equivalence check.
+- `../../../scripts/compare-three-pipelines.ts` — normalizes + compares all three
+  outputs (semantic-equivalence oracle for the benchmark).
