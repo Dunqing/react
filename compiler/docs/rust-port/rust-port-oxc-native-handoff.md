@@ -50,6 +50,10 @@ End-to-end compile (full source → compiled output), per-fixture median:
 | **TS/Babel reference** (in-process) | 1.895 ms | ~528 | **~8.1× slower** |
 | Native parse+semantic only | 0.0029 ms | ~350k | — |
 
+**Binary size** (release, fat-LTO, stripped): native-Oxc **4.64 MB** (oxc 0.136; was 5.1 MB at 0.121 — the upgrade +
+dead-code polish shrank it ~9%) vs pre-Oxc NAPI cdylib **5.92 MB** → native is **~22% smaller** despite bundling a full
+JS parser+semantic (deleting `react_compiler_ast` + serde + the NAPI glue more than offsets oxc). CLI-vs-cdylib caveat applies.
+
 **Where the migration's win comes from** (pre-Oxc sub-phase breakdown): JS frontend (Babel parse+scope) ~24%,
 JSON/NAPI boundary (serialize+deserialize round-trip) ~36%, **shared Rust compiler core ~36%**, output codegen ~4%.
 The Rust `compile_program` core is *shared* between the two states (pre-Oxc core alone = 0.335 ms/fix, slightly MORE
