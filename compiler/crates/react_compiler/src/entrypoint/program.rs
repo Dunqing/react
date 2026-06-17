@@ -463,20 +463,6 @@ impl<'a> Visit<'a> for ReturnsNonNodeVisitor {
     fn visit_arrow_function_expression(&mut self, _expr: &oxc::ArrowFunctionExpression<'a>) {}
 }
 
-/// Discover the top-level functions to compile.
-///
-/// Considers: top-level `function Foo() {}`, `export [default] function`,
-/// `const X = (arrow|function expr)`, `X = (arrow|function expr)`
-/// reassignments, and `memo(...)`/`React.memo(...)`/`forwardRef(...)`/
-/// `React.forwardRef(...)` render-callback wrappers in declarator-init,
-/// export-default, and bare-statement positions. Each is classified by name (or
-/// any name when `compilationMode == "all"`), with the `forwardRef`/`memo`
-/// callback branch of `getComponentOrHookLike` applied via [`ClassifyContext`].
-///
-/// TODO(N1.3): full recursive nested-function discovery (TS `program.traverse`
-/// descends into non-matching functions to find nested components/hooks, with
-/// `skip()` semantics) and object-method components are not yet ported — only
-/// top-level / wrapper-callback discovery.
 /// Returns true if the program contains an `import {c} from "<module_name>"`
 /// declaration, regardless of the local name of the `c` specifier and the
 /// presence of other specifiers in the same declaration. A file that imports
@@ -510,154 +496,411 @@ fn has_memo_cache_function_import(program: &oxc::Program, module_name: &str) -> 
     false
 }
 
+/// Discover every program-scoped function to compile.
+///
+/// Faithful port of TS `findFunctionsToCompile` (`Entrypoint/Program.ts` ~535):
+/// `program.traverse` visits every nested function and `traverseFunction`
+/// compiles those that are program-scoped — a function whose own scope's parent
+/// is the program scope (Babel: `fn.scope.getProgramParent() === fn.scope.parent`).
+/// In `compilationMode: "all"` every program-scoped function is compiled (its
+/// classification falls back to `Other`); in other modes only those that
+/// `getComponentOrHookLike` classifies are compiled.
+///
+/// Functions defined inside classes are NOT visited (they can reference `this`).
+/// Program-scoping is the *one-hop* test: a function literal directly inside a
+/// top-level object/array literal, `if`/`try` test or argument list, etc. is
+/// program-scoped (those constructs create no scope), whereas a function nested
+/// inside a block, loop, catch, or another function body is not. Because any
+/// function lexically inside another function body necessarily has a
+/// function-scope parent, descending into function bodies can never reveal more
+/// program-scoped functions — so we never recurse into function bodies (this is
+/// exactly equivalent to TS's `fn.skip()` after compiling a program-scoped
+/// function, plus the early-return for non-program-scoped ones).
+///
+/// Naming and the `memo`/`forwardRef` callback context for each function are
+/// derived from its immediate parent position, mirroring TS `getFunctionName` /
+/// `isMemoCallback` / `isForwardRefCallback`.
 fn find_functions_to_compile<'a>(
     program: &'a oxc::Program<'a>,
     compile_all: bool,
 ) -> Vec<CompileSource<'a>> {
-    let mut queue: Vec<CompileSource<'a>> = Vec::new();
-
+    let mut discovery = Discovery {
+        compile_all,
+        queue: Vec::new(),
+    };
     for stmt in &program.body {
-        match stmt {
-            // function Foo() {}
-            oxc::Statement::FunctionDeclaration(func) => {
-                consider_function(func, None, compile_all, &mut queue);
-            }
-            // export default function Foo() {} / export default function () {}
-            // export default () => {} / export default function () {}
-            // export default React.memo(() => {}) / forwardRef(...)
-            oxc::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
-                oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
-                    consider_function(func, None, compile_all, &mut queue);
-                }
-                oxc::ExportDefaultDeclarationKind::FunctionExpression(func) => {
-                    consider_function(func, None, compile_all, &mut queue);
-                }
-                oxc::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
-                    consider_anonymous_arrow(
-                        arrow,
-                        ClassifyContext::default(),
-                        compile_all,
-                        &mut queue,
-                    );
-                }
-                expr_kind => {
-                    if let Some(expr) = expr_kind.as_expression() {
-                        consider_expression(expr, None, compile_all, &mut queue);
-                    }
-                }
+        discovery.walk_statement(stmt);
+    }
+    discovery.queue
+}
+
+/// Recursive program-scope discovery state. Walks statements/expressions in
+/// source order, considering each *program-scoped* function/arrow it reaches
+/// with the naming + wrapper context implied by that function's immediate parent.
+struct Discovery<'a> {
+    compile_all: bool,
+    queue: Vec<CompileSource<'a>>,
+}
+
+impl<'a> Discovery<'a> {
+    // -- Functions: the only nodes that get enqueued ------------------------
+    //
+    // The walker only ever *reaches* a function when it is program-scoped: it
+    // stops descending at every Babel-`Scopable` boundary (block, loop, switch,
+    // catch, function body, class), so any function reached has the program as
+    // its enclosing scope (Babel `fn.scope.getProgramParent() === fn.scope.parent`).
+    // Hence `consider_*` enqueue unconditionally (subject to classification).
+
+    /// Consider a program-scoped function expression / declaration at a position
+    /// described by `ctx`. Never descends into the body (a function body is a
+    /// `Scopable` boundary, so nothing inside it is program-scoped).
+    fn consider_function(&mut self, func: &'a oxc::Function<'a>, ctx: PositionCtx<'a>) {
+        consider_function_with_ctx(
+            func,
+            ctx.inferred_name,
+            ClassifyContext {
+                wrapper_callee: ctx.wrapper_callee,
+                is_declaration: ctx.is_declaration,
             },
-            // export function Foo() {}
-            oxc::Statement::ExportNamedDeclaration(export) => {
-                if let Some(oxc::Declaration::FunctionDeclaration(func)) = &export.declaration {
-                    consider_function(func, None, compile_all, &mut queue);
-                } else if let Some(oxc::Declaration::VariableDeclaration(var)) = &export.declaration
-                {
-                    consider_variable_declaration(var, compile_all, &mut queue);
+            self.compile_all,
+            &mut self.queue,
+        );
+    }
+
+    /// Consider a program-scoped arrow at a position described by `ctx`.
+    fn consider_arrow(
+        &mut self,
+        arrow: &'a oxc::ArrowFunctionExpression<'a>,
+        ctx: PositionCtx<'a>,
+    ) {
+        consider_arrow(
+            arrow,
+            ctx.inferred_name,
+            ClassifyContext {
+                wrapper_callee: ctx.wrapper_callee,
+                is_declaration: false,
+            },
+            self.compile_all,
+            &mut self.queue,
+        );
+    }
+
+    // -- Statements ---------------------------------------------------------
+
+    /// Walk a statement that is itself in program scope. Descends only into
+    /// child positions that remain in program scope; it STOPS at every
+    /// Babel-`Scopable` boundary — `BlockStatement`, the loop statements
+    /// (`for`/`for-in`/`for-of`/`while`/`do-while`), `SwitchStatement`, the
+    /// `catch`/finally blocks, classes, and function bodies — because a function
+    /// lexically inside any of those is NOT program-scoped and is never compiled.
+    /// (Crucially, the *whole* of a loop/switch is its own scope, so a function
+    /// in a `while`/`for` test/header is not program-scoped, whereas a function
+    /// in an `if`/`with`/`try` test/object/label IS, because those node types are
+    /// not `Scopable`. This exactly matches Babel's `Scopable` set.)
+    fn walk_statement(&mut self, stmt: &'a oxc::Statement<'a>) {
+        match stmt {
+            // Classes are not visited: functions inside them may reference
+            // `this` (TS `ClassDeclaration`/`ClassExpression` → `node.skip()`).
+            oxc::Statement::ClassDeclaration(_) => {}
+            oxc::Statement::FunctionDeclaration(func) => {
+                self.consider_function(func, PositionCtx::declaration());
+            }
+            oxc::Statement::VariableDeclaration(var) => self.walk_variable_declaration(var),
+            oxc::Statement::ExpressionStatement(s) => {
+                self.walk_expression(&s.expression, PositionCtx::default())
+            }
+            oxc::Statement::ExportNamedDeclaration(export) => match &export.declaration {
+                Some(oxc::Declaration::FunctionDeclaration(func)) => {
+                    self.consider_function(func, PositionCtx::declaration());
                 }
-            }
-            // const Foo = () => {} / const Foo = function () {} / const Foo = memo(...)
-            oxc::Statement::VariableDeclaration(var) => {
-                consider_variable_declaration(var, compile_all, &mut queue);
-            }
-            // Foo = () => {} / Foo = function () {} (reassignment of a binding),
-            // or a bare `React.memo(() => {})` / `forwardRef(...)` call statement.
-            // Unlike a `const Foo = () => {}` *declarator*, an assignment does
-            // not give the arrow an inferred name (matching Babel's name
-            // inference, which only fires on variable declarators), so the
-            // function is classified anonymously (`fn_type: Other` for an arrow
-            // with no name). The binding name is preserved by the original
-            // assignment target during assembly (only the RHS is spliced).
-            oxc::Statement::ExpressionStatement(expr_stmt) => match &expr_stmt.expression {
-                oxc::Expression::AssignmentExpression(assign) => match &assign.right {
-                    oxc::Expression::ArrowFunctionExpression(arrow) => {
-                        consider_anonymous_arrow(
-                            arrow,
-                            ClassifyContext::default(),
-                            compile_all,
-                            &mut queue,
-                        );
-                    }
-                    oxc::Expression::FunctionExpression(func) => {
-                        consider_function(func, None, compile_all, &mut queue);
-                    }
-                    _ => {}
-                },
-                // A standalone `React.memo(props => <div />)` statement: the
-                // call's function-literal argument is a forwardRef/memo render
-                // callback.
-                oxc::Expression::CallExpression(_) => {
-                    consider_expression(&expr_stmt.expression, None, compile_all, &mut queue);
+                Some(oxc::Declaration::VariableDeclaration(var)) => {
+                    self.walk_variable_declaration(var);
                 }
                 _ => {}
             },
+            oxc::Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+                oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                    self.consider_function(func, PositionCtx::declaration());
+                }
+                oxc::ExportDefaultDeclarationKind::ClassDeclaration(_) => {}
+                expr_kind => {
+                    if let Some(expr) = expr_kind.as_expression() {
+                        self.walk_expression(expr, PositionCtx::default());
+                    }
+                }
+            },
+            // `if`/`with`/`try`/labeled/`return`/`throw` are NOT `Scopable`:
+            // their non-block child expressions remain in program scope.
+            oxc::Statement::IfStatement(s) => {
+                self.walk_expression(&s.test, PositionCtx::default());
+                self.walk_statement(&s.consequent);
+                if let Some(alt) = &s.alternate {
+                    self.walk_statement(alt);
+                }
+            }
+            oxc::Statement::LabeledStatement(s) => self.walk_statement(&s.body),
+            oxc::Statement::ReturnStatement(s) => {
+                if let Some(arg) = &s.argument {
+                    self.walk_expression(arg, PositionCtx::default());
+                }
+            }
+            oxc::Statement::ThrowStatement(s) => {
+                self.walk_expression(&s.argument, PositionCtx::default());
+            }
+            oxc::Statement::WithStatement(s) => {
+                self.walk_expression(&s.object, PositionCtx::default());
+                self.walk_statement(&s.body);
+            }
+            // `BlockStatement`, the loop statements, `SwitchStatement`, and
+            // `TryStatement`'s blocks are all `Scopable` boundaries: anything
+            // inside is no longer program-scoped, so we do not descend.
             _ => {}
         }
     }
 
-    queue
-}
+    /// `const X = <init>` / `let X = ...` — each declarator's init carries the
+    /// binding name (an identifier id) into the inferred-name slot, mirroring TS
+    /// `getFunctionName`'s VariableDeclarator branch.
+    fn walk_variable_declaration(&mut self, var: &'a oxc::VariableDeclaration<'a>) {
+        for decl in &var.declarations {
+            let Some(init) = &decl.init else { continue };
+            let name = match &decl.id {
+                oxc::BindingPattern::BindingIdentifier(id) => Some(id.name.as_str()),
+                _ => None,
+            };
+            self.walk_expression(init, PositionCtx::named(name));
+        }
+    }
 
-/// Consider an expression that may carry a (possibly anonymous) function to
-/// compile: a function/arrow literal directly, or a `memo(...)`/`React.memo(...)`/
-/// `forwardRef(...)`/`React.forwardRef(...)` call whose first argument is such a
-/// literal. `inferred_name` is the binding name (from a declarator) used for
-/// name-based classification; `None` for anonymous positions.
-fn consider_expression<'a>(
-    expr: &'a oxc::Expression<'a>,
-    inferred_name: Option<&str>,
-    compile_all: bool,
-    queue: &mut Vec<CompileSource<'a>>,
-) {
-    match expr {
-        oxc::Expression::ArrowFunctionExpression(arrow) => {
-            consider_arrow(
-                arrow,
-                inferred_name,
-                ClassifyContext::default(),
-                compile_all,
-                queue,
-            );
-        }
-        oxc::Expression::FunctionExpression(func) => {
-            consider_function(func, inferred_name, compile_all, queue);
-        }
-        // memo(fnLiteral) / React.memo(fnLiteral) / forwardRef(...) — the
-        // function-literal argument is the render callback (a Component when it
-        // calls hooks or creates JSX). The wrapper callee context distinguishes
-        // it from a plain helper call. Only the FIRST argument is the callback.
-        oxc::Expression::CallExpression(call) => {
-            if !is_memo_or_forwardref_callback(Some(&call.callee)) {
-                return;
+    // -- Expressions --------------------------------------------------------
+
+    /// Walk an expression, considering a function literal found directly here
+    /// with the supplied position context (name + wrapper). Recurses into
+    /// sub-expressions, but with a *cleared* context (only the immediate parent
+    /// determines a function's name/wrapper, per `getFunctionName`).
+    fn walk_expression(&mut self, expr: &'a oxc::Expression<'a>, ctx: PositionCtx<'a>) {
+        match expr {
+            oxc::Expression::FunctionExpression(func) => self.consider_function(func, ctx),
+            oxc::Expression::ArrowFunctionExpression(arrow) => self.consider_arrow(arrow, ctx),
+            oxc::Expression::ParenthesizedExpression(p) => self.walk_expression(&p.expression, ctx),
+            oxc::Expression::ClassExpression(_) => {
+                // Don't visit functions inside classes (`this` is unsafe).
             }
-            let Some(arg) = call.arguments.first().and_then(|a| a.as_expression()) else {
-                return;
-            };
-            let ctx = ClassifyContext {
-                wrapper_callee: Some(&call.callee),
-                is_declaration: false,
-            };
-            match arg {
-                oxc::Expression::ArrowFunctionExpression(arrow) => {
-                    consider_arrow(arrow, None, ctx, compile_all, queue);
+            oxc::Expression::CallExpression(call) => {
+                self.walk_expression(&call.callee, PositionCtx::default());
+                // A `memo(<fn>)` / `React.memo(<fn>)` / `forwardRef(<fn>)` /
+                // `React.forwardRef(<fn>)` call gives its FIRST argument the
+                // render-callback wrapper context. All arguments are still
+                // descended into for further program-scoped functions.
+                let is_wrapper = is_memo_or_forwardref_callback(Some(&call.callee));
+                for (i, arg) in call.arguments.iter().enumerate() {
+                    let Some(arg_expr) = arg.as_expression() else {
+                        continue;
+                    };
+                    let arg_ctx = if is_wrapper && i == 0 {
+                        PositionCtx {
+                            inferred_name: None,
+                            wrapper_callee: Some(&call.callee),
+                            is_declaration: false,
+                        }
+                    } else {
+                        PositionCtx::default()
+                    };
+                    self.walk_expression(arg_expr, arg_ctx);
                 }
-                oxc::Expression::FunctionExpression(func) => {
-                    consider_function_with_ctx(func, None, ctx, compile_all, queue);
+            }
+            oxc::Expression::NewExpression(call) => {
+                self.walk_expression(&call.callee, PositionCtx::default());
+                for arg in &call.arguments {
+                    if let Some(arg_expr) = arg.as_expression() {
+                        self.walk_expression(arg_expr, PositionCtx::default());
+                    }
                 }
-                _ => {}
+            }
+            oxc::Expression::ArrayExpression(arr) => {
+                for el in &arr.elements {
+                    match el {
+                        oxc::ArrayExpressionElement::SpreadElement(s) => {
+                            self.walk_expression(&s.argument, PositionCtx::default());
+                        }
+                        oxc::ArrayExpressionElement::Elision(_) => {}
+                        _ => {
+                            if let Some(e) = el.as_expression() {
+                                self.walk_expression(e, PositionCtx::default());
+                            }
+                        }
+                    }
+                }
+            }
+            oxc::Expression::ObjectExpression(obj) => self.walk_object(obj),
+            oxc::Expression::AssignmentExpression(assign) => {
+                // `X = <fn>` reassignment. Unlike a declarator, an assignment
+                // gives the function NO inferred name (Babel name inference only
+                // fires for declarators), so it is classified anonymously; the
+                // binding name is preserved by the assignment target during
+                // assembly. (TS `getFunctionName` does handle assignment LHS for
+                // a *member* target like `obj.fn = () => {}`, but the simple
+                // identifier case is intentionally treated as anonymous to match
+                // the existing splicing contract.)
+                let ctx = match &assign.left {
+                    oxc::AssignmentTarget::StaticMemberExpression(member) => {
+                        PositionCtx::named_member(&member.property.name)
+                    }
+                    _ => PositionCtx::default(),
+                };
+                self.walk_expression(&assign.right, ctx);
+                self.walk_assignment_target(&assign.left);
+            }
+            oxc::Expression::SequenceExpression(seq) => {
+                for e in &seq.expressions {
+                    self.walk_expression(e, PositionCtx::default());
+                }
+            }
+            oxc::Expression::ConditionalExpression(c) => {
+                self.walk_expression(&c.test, PositionCtx::default());
+                self.walk_expression(&c.consequent, PositionCtx::default());
+                self.walk_expression(&c.alternate, PositionCtx::default());
+            }
+            oxc::Expression::LogicalExpression(l) => {
+                self.walk_expression(&l.left, PositionCtx::default());
+                self.walk_expression(&l.right, PositionCtx::default());
+            }
+            oxc::Expression::BinaryExpression(b) => {
+                self.walk_expression(&b.left, PositionCtx::default());
+                self.walk_expression(&b.right, PositionCtx::default());
+            }
+            oxc::Expression::UnaryExpression(u) => {
+                self.walk_expression(&u.argument, PositionCtx::default());
+            }
+            oxc::Expression::UpdateExpression(_) => {}
+            oxc::Expression::AwaitExpression(a) => {
+                self.walk_expression(&a.argument, PositionCtx::default());
+            }
+            oxc::Expression::YieldExpression(y) => {
+                if let Some(arg) = &y.argument {
+                    self.walk_expression(arg, PositionCtx::default());
+                }
+            }
+            oxc::Expression::StaticMemberExpression(m) => {
+                self.walk_expression(&m.object, PositionCtx::default());
+            }
+            oxc::Expression::ComputedMemberExpression(m) => {
+                self.walk_expression(&m.object, PositionCtx::default());
+                self.walk_expression(&m.expression, PositionCtx::default());
+            }
+            oxc::Expression::TaggedTemplateExpression(t) => {
+                self.walk_expression(&t.tag, PositionCtx::default());
+                for e in &t.quasi.expressions {
+                    self.walk_expression(e, PositionCtx::default());
+                }
+            }
+            oxc::Expression::TemplateLiteral(t) => {
+                for e in &t.expressions {
+                    self.walk_expression(e, PositionCtx::default());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_object(&mut self, obj: &'a oxc::ObjectExpression<'a>) {
+        for prop in &obj.properties {
+            match prop {
+                oxc::ObjectPropertyKind::ObjectProperty(p) => {
+                    // Babel parses a shorthand method / getter / setter
+                    // (`{ foo() {} }`, `{ get foo() {} }`, `{ set foo(v) {} }`)
+                    // as an `ObjectMethod` node, which `program.traverse`'s
+                    // `traverseFunction` is NOT registered for — so object
+                    // methods are never compiled. oxc instead models them as an
+                    // `ObjectProperty` whose value is a `FunctionExpression` with
+                    // `method`/`kind` set; skip those to match TS. Only a plain
+                    // `key: <fn>` / `key: () => {}` property (`Init`, non-method)
+                    // carries a discoverable function.
+                    if p.method || p.kind != oxc::PropertyKind::Init {
+                        continue;
+                    }
+                    // A non-computed identifier/string key names the function
+                    // (TS `getFunctionName` Property branch). Computed keys give
+                    // no name.
+                    let name = if p.computed {
+                        None
+                    } else {
+                        object_key_name(&p.key)
+                    };
+                    self.walk_expression(&p.value, PositionCtx::named(name));
+                }
+                oxc::ObjectPropertyKind::SpreadProperty(s) => {
+                    self.walk_expression(&s.argument, PositionCtx::default());
+                }
             }
         }
-        _ => {}
+    }
+
+    fn walk_assignment_target(&mut self, target: &'a oxc::AssignmentTarget<'a>) {
+        match target {
+            oxc::AssignmentTarget::StaticMemberExpression(m) => {
+                self.walk_expression(&m.object, PositionCtx::default());
+            }
+            oxc::AssignmentTarget::ComputedMemberExpression(m) => {
+                self.walk_expression(&m.object, PositionCtx::default());
+                self.walk_expression(&m.expression, PositionCtx::default());
+            }
+            _ => {}
+        }
     }
 }
 
-/// Push an anonymous arrow (no inferred name) using the given classify context.
-fn consider_anonymous_arrow<'a>(
-    arrow: &'a oxc::ArrowFunctionExpression<'a>,
-    ctx: ClassifyContext<'a, '_>,
-    compile_all: bool,
-    queue: &mut Vec<CompileSource<'a>>,
-) {
-    consider_arrow(arrow, None, ctx, compile_all, queue);
+/// The naming + wrapper context implied by a function literal's immediate
+/// parent position. Mirrors the inputs TS derives via `getFunctionName` and the
+/// `memo`/`forwardRef` callback checks.
+#[derive(Clone, Copy, Default)]
+struct PositionCtx<'a> {
+    /// The inferred binding name for name-based classification (declarator id,
+    /// non-computed object key, member-assignment property), or `None`.
+    inferred_name: Option<&'a str>,
+    /// The callee of the call expression this function is the first argument of,
+    /// for the `memo`/`forwardRef` branch.
+    wrapper_callee: Option<&'a oxc::Expression<'a>>,
+    /// Whether this position is a `FunctionDeclaration` (the memo/forwardRef
+    /// branch never applies to declarations).
+    is_declaration: bool,
+}
+
+impl<'a> PositionCtx<'a> {
+    fn named(name: Option<&'a str>) -> Self {
+        PositionCtx {
+            inferred_name: name,
+            wrapper_callee: None,
+            is_declaration: false,
+        }
+    }
+
+    fn named_member(name: &'a str) -> Self {
+        PositionCtx {
+            inferred_name: Some(name),
+            wrapper_callee: None,
+            is_declaration: false,
+        }
+    }
+
+    fn declaration() -> Self {
+        PositionCtx {
+            inferred_name: None,
+            wrapper_callee: None,
+            is_declaration: true,
+        }
+    }
+}
+
+/// The static name of a non-computed object property key, or `None`. Mirrors the
+/// `parent.get('key').isLVal()` branch of TS `getFunctionName` (identifier and
+/// string-literal keys give a name; numeric/computed keys do not).
+fn object_key_name<'a>(key: &'a oxc::PropertyKey<'a>) -> Option<&'a str> {
+    match key {
+        oxc::PropertyKey::StaticIdentifier(id) => Some(id.name.as_str()),
+        oxc::PropertyKey::StringLiteral(s) => Some(s.value.as_str()),
+        _ => None,
+    }
 }
 
 /// Classify and (if it matches) enqueue an arrow function.
@@ -685,21 +928,6 @@ fn consider_arrow<'a>(
         // Arrows have no own-name binding; never referenced-before-declared.
         fn_symbol_id: None,
     });
-}
-
-fn consider_function<'a>(
-    func: &'a oxc::Function<'a>,
-    inferred_name: Option<&str>,
-    compile_all: bool,
-    queue: &mut Vec<CompileSource<'a>>,
-) {
-    consider_function_with_ctx(
-        func,
-        inferred_name,
-        ClassifyContext::default(),
-        compile_all,
-        queue,
-    );
 }
 
 fn consider_function_with_ctx<'a>(
@@ -739,21 +967,6 @@ fn consider_function_with_ctx<'a>(
         fn_span: func.span(),
         fn_symbol_id: func.id.as_ref().and_then(|id| id.symbol_id.get()),
     });
-}
-
-fn consider_variable_declaration<'a>(
-    var: &'a oxc::VariableDeclaration<'a>,
-    compile_all: bool,
-    queue: &mut Vec<CompileSource<'a>>,
-) {
-    for decl in &var.declarations {
-        let name = match &decl.id {
-            oxc::BindingPattern::BindingIdentifier(id) => id.name.to_string(),
-            _ => continue,
-        };
-        let Some(init) = &decl.init else { continue };
-        consider_expression(init, Some(&name), compile_all, queue);
-    }
 }
 
 // =============================================================================

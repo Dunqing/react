@@ -747,3 +747,23 @@ Cleared fast-refresh-reloading, jsx-preserve-whitespace. Verified 0 regressions.
 - **Invariant-divergence N-VAL (4):** error.bug-invariant-local-or-context-references, error.bug-invariant-unnamed-temporary, error.todo-repro-named-function-with-shadowed-local-same-name (×2). DEFERRED — handoff doc warns forcing risks false-positives on 1700+ passing; the validators exist, the divergence is upstream HIR shape.
 - **ValidateSourceLocations (1):** error.todo-missing-source-locations — needs native codegen source-location tracking (HARD, low-yield, pragma-gated).
 - **Vendored oxc_codegen (2):** lone-surrogate-string-values, fbt/fbt-param-with-quotes — oxc_codegen 0.136 string/JSX-attr printer limitations; need an oxc patch/bump.
+
+## 20260617 Recursive program-scope function discovery — TODO(N1.3) (+5, → 1790/1797)
+Replaced native's fixed-position discovery with a lexical **Babel-`Scopable` traversal** (program.rs):
+descend from the program body and stop at every Scopable boundary (block / loop / switch / catch+finally
+blocks / function bodies / classes), so every function reached is program-scoped by construction —
+matching TS `fn.scope.getProgramParent() === fn.scope.parent`. Key subtlety: Babel's Scopable set ≠ OXC's
+scope model — `if`/`with`/`try`/labeled are NOT Scopable (a fn in an `if`-test IS program-scoped), but
+`while`/`for`/`switch` ARE; `ObjectMethod`/accessors are never compiled. Naming/memo/forwardRef context
+derived per-position via PositionCtx. Generalized `codegen_assembly` splicing to a recursive `splice_expr`
+that splices compiled functions nested anywhere (object/array/call-args/member/if-test/…). Removed the
+stale TODO(N1.3). Cleared nested-function-discovery-if-test-expr, gating/{gating-nonreferenced-identifier-collision,
+invalid-fnexpr-reference}, props-method-dependency, try-catch-optional-call. Independently verified
+1785→1790, **0 regressions**; compare-hir.ts byte-identical (1450 MATCH).
+
+## Status: 1790/1797 SEMANTIC-pass — 7 remaining, all deferred-by-design or blocked
+- **4 invariant-divergence N-VAL** (error.bug-invariant-local-or-context-references, error.bug-invariant-unnamed-temporary,
+  error.todo-repro-named-function-with-shadowed-local-same-name ×2): validators exist; the divergence is upstream
+  HIR shape. Handoff doc warns forcing risks false-positives on the 1780+ passing → NOT forced.
+- **1 ValidateSourceLocations** (error.todo-missing-source-locations): needs native codegen source-location tracking.
+- **2 vendored oxc_codegen** (lone-surrogate-string-values, fbt/fbt-param-with-quotes): printer limitations; need oxc patch/bump.
