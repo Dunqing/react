@@ -1086,7 +1086,7 @@ pub fn compile_fn(
         match react_compiler_reactive_scopes::codegen_oxc::codegen_oxc_function(
             &native_reactive_fn,
             &env,
-            native_unique_identifiers.clone(),
+            &native_unique_identifiers,
             &builder,
             "_c",
         ) {

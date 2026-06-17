@@ -140,7 +140,7 @@ pub struct OxcCodegenOutput<'a> {
 pub fn codegen_oxc_function<'a>(
     func: &ReactiveFunction,
     env: &Environment,
-    unique_identifiers: HashSet<String>,
+    unique_identifiers: &HashSet<String>,
     builder: &AstBuilder<'a>,
     memo_local_name: &str,
 ) -> Bail<OxcCodegenOutput<'a>> {
@@ -148,7 +148,7 @@ pub fn codegen_oxc_function<'a>(
         b: *builder,
         env,
         next_cache_index: 0,
-        cache_name: synthesize_name("$", &unique_identifiers),
+        cache_name: synthesize_name("$", unique_identifiers),
         memo_local_name: Str::from_in(memo_local_name, builder.allocator),
         temp: HashMap::new(),
         declared: HashSet::new(),
@@ -716,21 +716,16 @@ impl<'a, 'e> Cx<'a, 'e> {
 
     /// Register each unnamed operand of a pattern as a declared bare identifier.
     fn register_pattern_decls(&mut self, pattern: &Pattern) {
-        let mut places: Vec<Place> = Vec::new();
-        collect_pattern_places(pattern, &mut places);
-        for place in &places {
+        for_each_pattern_place(pattern, |place| {
+            let decl_id = self.decl_id(place);
+            self.declared.insert(decl_id);
             if self.env.identifiers[place.identifier.0 as usize]
                 .name
                 .is_none()
             {
-                let decl_id = self.decl_id(place);
-                self.declared.insert(decl_id);
                 self.temp.insert(decl_id, None);
-            } else {
-                let decl_id = self.decl_id(place);
-                self.declared.insert(decl_id);
             }
-        }
+        });
     }
 
     /// Build a `VariableDeclaration` statement with a destructuring pattern.
@@ -945,7 +940,8 @@ impl<'a, 'e> Cx<'a, 'e> {
                 scope.dependencies.clone(),
                 scope.declarations.clone(),
                 scope.reassignments.clone(),
-                scope.early_return_value.clone(),
+                // Only the early-return value's `value` field is consumed below.
+                scope.early_return_value.as_ref().map(|e| e.value),
             )
         };
 
@@ -1066,8 +1062,8 @@ impl<'a, 'e> Cx<'a, 'e> {
         //   }
         // The early-return value identifier has been promoted to a named
         // variable by the time codegen runs. Mirrors the reference codegen.
-        if let Some(early_return) = &early_return_value {
-            let name = self.ident_name(early_return.value).map_err(|_| {
+        if let Some(early_return_value) = early_return_value {
+            let name = self.ident_name(early_return_value).map_err(|_| {
                 CodegenBail::new("early return value not promoted to a named variable")
             })?;
             let sentinel = self.symbol_for(EARLY_RETURN_SENTINEL);
@@ -2571,13 +2567,17 @@ impl<'a, 'e> Cx<'a, 'e> {
     }
 
     fn jsx_attribute_value(&mut self, place: &Place) -> Bail<oxc::JSXAttributeValue<'a>> {
-        // String-literal shortcut for a primitive string temporary.
+        // String-literal shortcut for a primitive string temporary. Inspect the
+        // temp by reference and clone only the committed string value.
         let decl_id = self.decl_id(place);
-        if let Some(Some(ReactiveValue::Instruction(InstructionValue::Primitive {
-            value: PrimitiveValue::String(s),
-            ..
-        }))) = self.temp.get(&decl_id).cloned()
-        {
+        let primitive_string = match self.temp.get(&decl_id) {
+            Some(Some(ReactiveValue::Instruction(InstructionValue::Primitive {
+                value: PrimitiveValue::String(s),
+                ..
+            }))) => Some(s.clone()),
+            _ => None,
+        };
+        if let Some(s) = primitive_string {
             // A string attribute value that contains characters which cannot
             // be faithfully reproduced inside a bare `"…"` JSX attribute (control
             // codes, the `"` and `\` characters, or any non-basic-Latin /
@@ -2609,10 +2609,15 @@ impl<'a, 'e> Cx<'a, 'e> {
 
     fn jsx_child(&mut self, place: &Place) -> Bail<oxc::JSXChild<'a>> {
         // JSXText children come through as a temporary JSXText instruction.
+        // Inspect the temp by reference and clone only the committed value.
         let decl_id = self.decl_id(place);
-        if let Some(Some(ReactiveValue::Instruction(InstructionValue::JSXText { value, .. }))) =
-            self.temp.get(&decl_id).cloned()
-        {
+        let jsx_text = match self.temp.get(&decl_id) {
+            Some(Some(ReactiveValue::Instruction(InstructionValue::JSXText { value, .. }))) => {
+                Some(value.clone())
+            }
+            _ => None,
+        };
+        if let Some(value) = jsx_text {
             // A JSXText child whose (already entity-decoded) value contains a
             // character that cannot survive being re-emitted as raw JSX text
             // (`< > & { }`) must instead be emitted as an expression container
@@ -2630,10 +2635,14 @@ impl<'a, 'e> Cx<'a, 'e> {
             return Ok(self.b.jsx_child_text(SPAN, self.atom(&value), None));
         }
         // A nested JSX element temporary -> embed directly as a child element.
-        if let Some(Some(ReactiveValue::Instruction(iv))) = self.temp.get(&decl_id).cloned()
-            && let InstructionValue::JsxExpression { .. } | InstructionValue::JsxFragment { .. } =
-                &iv
-        {
+        let jsx_instruction = match self.temp.get(&decl_id) {
+            Some(Some(ReactiveValue::Instruction(
+                iv @ (InstructionValue::JsxExpression { .. }
+                | InstructionValue::JsxFragment { .. }),
+            ))) => Some(iv.clone()),
+            _ => None,
+        };
+        if let Some(iv) = jsx_instruction {
             let expr = self.codegen_instruction_value(&iv)?;
             return Ok(match expr {
                 oxc::Expression::JSXElement(el) => oxc::JSXChild::Element(el),
@@ -2748,8 +2757,7 @@ fn compare_scope_dependency(
         .then_with(|| a.path.len().cmp(&b.path.len()))
         .then_with(|| {
             for (pa, pb) in a.path.iter().zip(b.path.iter()) {
-                let ord =
-                    property_literal_key(&pa.property).cmp(&property_literal_key(&pb.property));
+                let ord = compare_property_literal(&pa.property, &pb.property);
                 if ord != std::cmp::Ordering::Equal {
                     return ord;
                 }
@@ -2758,10 +2766,23 @@ fn compare_scope_dependency(
         })
 }
 
-fn property_literal_key(p: &PropertyLiteral) -> String {
-    match p {
-        PropertyLiteral::String(s) => format!("s:{s}"),
-        PropertyLiteral::Number(n) => format!("n:{}", n.value()),
+/// Order property keys for stable dependency sorting. Equivalent to comparing
+/// the old tagged strings (`"n:<f64>"` / `"s:<str>"`) without allocating in the
+/// common cases: the Number tag (`'n'`) sorts before the String tag (`'s'`),
+/// Strings compare directly, and Numbers preserve the previous lexical ordering
+/// of their plain `f64` Display form.
+fn compare_property_literal(a: &PropertyLiteral, b: &PropertyLiteral) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        // Number tag < String tag (mirrors `'n' < 's'`).
+        (PropertyLiteral::Number(_), PropertyLiteral::String(_)) => Ordering::Less,
+        (PropertyLiteral::String(_), PropertyLiteral::Number(_)) => Ordering::Greater,
+        (PropertyLiteral::String(sa), PropertyLiteral::String(sb)) => sa.cmp(sb),
+        (PropertyLiteral::Number(na), PropertyLiteral::Number(nb)) => {
+            // Preserve the previous lexical comparison of `f64` Display strings
+            // (not a numeric comparison).
+            na.value().to_string().cmp(&nb.value().to_string())
+        }
     }
 }
 
@@ -2889,16 +2910,17 @@ fn is_undefined_identifier(expr: &oxc::Expression) -> bool {
     matches!(expr, oxc::Expression::Identifier(id) if id.name.as_str() == "undefined")
 }
 
-/// Collect all binding Places of a pattern (recursing into nested patterns is
-/// unnecessary here: HIR destructure patterns are one level — nested object/
-/// array patterns are lowered to separate Destructure instructions).
-fn collect_pattern_places(pattern: &Pattern, out: &mut Vec<Place>) {
+/// Invoke `f` for each binding Place of a pattern (recursing into nested
+/// patterns is unnecessary here: HIR destructure patterns are one level —
+/// nested object/array patterns are lowered to separate Destructure
+/// instructions).
+fn for_each_pattern_place(pattern: &Pattern, mut f: impl FnMut(&Place)) {
     match pattern {
         Pattern::Array(arr) => {
             for item in &arr.items {
                 match item {
-                    ArrayPatternElement::Place(p) => out.push(p.clone()),
-                    ArrayPatternElement::Spread(s) => out.push(s.place.clone()),
+                    ArrayPatternElement::Place(p) => f(p),
+                    ArrayPatternElement::Spread(s) => f(&s.place),
                     ArrayPatternElement::Hole => {}
                 }
             }
@@ -2906,8 +2928,8 @@ fn collect_pattern_places(pattern: &Pattern, out: &mut Vec<Place>) {
         Pattern::Object(obj) => {
             for prop in &obj.properties {
                 match prop {
-                    ObjectPropertyOrSpread::Property(p) => out.push(p.place.clone()),
-                    ObjectPropertyOrSpread::Spread(s) => out.push(s.place.clone()),
+                    ObjectPropertyOrSpread::Property(p) => f(&p.place),
+                    ObjectPropertyOrSpread::Spread(s) => f(&s.place),
                 }
             }
         }

@@ -71,7 +71,7 @@ pub fn assemble_and_print(
         match codegen_oxc_function(
             &artifact.reactive_fn,
             &artifact.env,
-            artifact.unique_identifiers.clone(),
+            &artifact.unique_identifiers,
             &builder,
             MEMO_LOCAL_NAME,
         ) {

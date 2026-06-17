@@ -22,12 +22,12 @@ pub fn has_react_like_functions(program: &Program) -> bool {
 
 use react_compiler_hir::environment::is_react_like_name;
 
-struct ReactLikeVisitor {
+struct ReactLikeVisitor<'a> {
     found: bool,
-    current_name: Option<String>,
+    current_name: Option<&'a str>,
 }
 
-impl<'a> Visit<'a> for ReactLikeVisitor {
+impl<'a> Visit<'a> for ReactLikeVisitor<'a> {
     fn visit_variable_declarator(&mut self, decl: &VariableDeclarator<'a>) {
         if self.found {
             return;
@@ -35,7 +35,7 @@ impl<'a> Visit<'a> for ReactLikeVisitor {
 
         // Extract name from the binding identifier
         let name = match &decl.id {
-            oxc_ast::ast::BindingPattern::BindingIdentifier(ident) => Some(ident.name.to_string()),
+            oxc_ast::ast::BindingPattern::BindingIdentifier(ident) => Some(ident.name.as_str()),
             _ => None,
         };
 
@@ -56,7 +56,7 @@ impl<'a> Visit<'a> for ReactLikeVisitor {
         }
 
         let name = match &expr.left {
-            AssignmentTarget::AssignmentTargetIdentifier(ident) => Some(ident.name.to_string()),
+            AssignmentTarget::AssignmentTargetIdentifier(ident) => Some(ident.name.as_str()),
             _ => None,
         };
 
@@ -83,7 +83,7 @@ impl<'a> Visit<'a> for ReactLikeVisitor {
 
         // Check inferred name from parent context
         if func.id.is_none()
-            && let Some(name) = &self.current_name
+            && let Some(name) = self.current_name
             && is_react_like_name(name)
         {
             self.found = true;
@@ -100,7 +100,7 @@ impl<'a> Visit<'a> for ReactLikeVisitor {
             return;
         }
 
-        if let Some(name) = &self.current_name
+        if let Some(name) = self.current_name
             && is_react_like_name(name)
         {
             self.found = true;
