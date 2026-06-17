@@ -2,8 +2,6 @@ pub mod codegen_assembly;
 pub mod diagnostics;
 pub mod prefilter;
 
-use std::collections::HashMap;
-
 use diagnostics::compile_result_to_diagnostics;
 use prefilter::has_react_like_functions;
 use react_compiler::entrypoint::compile_result::LoggerEvent;
@@ -23,11 +21,6 @@ pub struct TransformResult {
     /// `options.debug` (i.e. `__debug`) is enabled. Used by the e2e CLI's
     /// `--dump-hir` flag as a printer-independent oracle.
     pub ordered_log: Vec<OrderedLogItem>,
-    /// Pre-computed rename plan: maps source positions (span.start) to new
-    /// identifier names. Built from the compiler's binding renames and the
-    /// original scope info. Applied during `emit()` to fix references in
-    /// uncompiled sibling functions.
-    pub rename_plan: HashMap<u32, String>,
 }
 
 /// Result of linting a program via the OXC frontend.
@@ -49,7 +42,6 @@ pub fn transform(
             diagnostics: vec![],
             events: vec![],
             ordered_log: vec![],
-            rename_plan: HashMap::new(),
         };
     }
 
@@ -70,18 +62,17 @@ pub fn transform(
     let native_artifacts = compiled.native_artifacts;
 
     let diagnostics = compile_result_to_diagnostics(&result);
-    let (events, ordered_log, _renames) = match result {
+    let (events, ordered_log) = match result {
         react_compiler::entrypoint::compile_result::CompileResult::Success {
             events,
             ordered_log,
-            renames,
             ..
-        } => (events, ordered_log, renames),
-        react_compiler::entrypoint::compile_result::CompileResult::Error {
+        }
+        | react_compiler::entrypoint::compile_result::CompileResult::Error {
             events,
             ordered_log,
             ..
-        } => (events, ordered_log, Vec::new()),
+        } => (events, ordered_log),
     };
 
     // N2.1: native oxc codegen + assembly + print. Runs AFTER the input
@@ -100,8 +91,24 @@ pub fn transform(
         diagnostics,
         events,
         ordered_log,
-        rename_plan: HashMap::new(),
     }
+}
+
+/// Parse `source_text` + build its semantic model, then run `f` with the oxc
+/// AST + semantic. The allocator lives for the duration of `f`; `f`'s return
+/// value is owned, so it safely outlives the parse.
+fn with_parsed_semantic<R>(
+    source_text: &str,
+    source_type: oxc_span::SourceType,
+    f: impl FnOnce(&oxc_ast::ast::Program, &oxc_semantic::Semantic) -> R,
+) -> R {
+    let allocator = oxc_allocator::Allocator::default();
+    let parsed = oxc_parser::Parser::new(&allocator, source_text, source_type).parse();
+    let semantic = oxc_semantic::SemanticBuilder::new()
+        .with_build_nodes(true)
+        .build(&parsed.program)
+        .semantic;
+    f(&parsed.program, &semantic)
 }
 
 /// Convenience wrapper — parses source text, runs semantic analysis, then transforms.
@@ -110,15 +117,9 @@ pub fn transform_source(
     source_type: oxc_span::SourceType,
     options: PluginOptions,
 ) -> TransformResult {
-    let allocator = oxc_allocator::Allocator::default();
-    let parsed = oxc_parser::Parser::new(&allocator, source_text, source_type).parse();
-
-    let semantic = oxc_semantic::SemanticBuilder::new()
-        .with_build_nodes(true)
-        .build(&parsed.program)
-        .semantic;
-
-    transform(&parsed.program, &semantic, source_text, options)
+    with_parsed_semantic(source_text, source_type, |program, semantic| {
+        transform(program, semantic, source_text, options)
+    })
 }
 
 /// Determine the oxc `SourceType` for re-parsing during native codegen
@@ -159,13 +160,7 @@ pub fn lint_source(
     source_type: oxc_span::SourceType,
     options: PluginOptions,
 ) -> LintResult {
-    let allocator = oxc_allocator::Allocator::default();
-    let parsed = oxc_parser::Parser::new(&allocator, source_text, source_type).parse();
-
-    let semantic = oxc_semantic::SemanticBuilder::new()
-        .with_build_nodes(true)
-        .build(&parsed.program)
-        .semantic;
-
-    lint(&parsed.program, &semantic, source_text, options)
+    with_parsed_semantic(source_text, source_type, |program, semantic| {
+        lint(program, semantic, source_text, options)
+    })
 }

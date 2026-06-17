@@ -393,7 +393,6 @@ fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> Comp
     let mut result = react_compiler_oxc::transform(&parsed.program, &semantic, source, options);
     let events = std::mem::take(&mut result.events);
     let ordered_log = std::mem::take(&mut result.ordered_log);
-    let _ = std::mem::take(&mut result.rename_plan);
 
     // Check for error-level diagnostics, similar to SWC path.
     // OxcDiagnostic uses miette's Severity.
