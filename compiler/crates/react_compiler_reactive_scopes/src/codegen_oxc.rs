@@ -149,7 +149,7 @@ pub fn codegen_oxc_function<'a, 'e>(
         env,
         next_cache_index: 0,
         cache_name: synthesize_name("$", &unique_identifiers),
-        memo_local_name: memo_local_name.to_string(),
+        memo_local_name: Atom::from_in(memo_local_name, builder.allocator),
         temp: HashMap::new(),
         declared: HashSet::new(),
         object_methods: HashMap::new(),
@@ -170,7 +170,10 @@ struct Cx<'a, 'e> {
     env: &'e Environment,
     next_cache_index: u32,
     cache_name: String,
-    memo_local_name: String,
+    /// Pre-interned local binding name for the runtime cache import (e.g. `_c`),
+    /// used as the callee of the `const $ = _c(N)` preface. Interned once at
+    /// construction so the `_c(N)` emission does not re-intern it.
+    memo_local_name: Atom<'a>,
     /// declaration_id -> HIR value to inline at use sites (None = bare ident).
     ///
     /// Stores the full `ReactiveValue` (which IS `Clone`), so that compound
@@ -274,7 +277,7 @@ impl<'a, 'e> Cx<'a, 'e> {
 
     /// `const $ = _c(N);`
     fn cache_var_decl(&self, count: u32) -> oxc::Statement<'a> {
-        let callee = self.ident_expr(&self.memo_local_name);
+        let callee = self.b.expression_identifier(SPAN, self.memo_local_name);
         let arg =
             self.b
                 .expression_numeric_literal(SPAN, count as f64, None, oxc::NumberBase::Decimal);
