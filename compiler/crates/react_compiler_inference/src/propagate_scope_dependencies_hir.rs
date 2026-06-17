@@ -1936,6 +1936,16 @@ impl<'a> DependencyCollectionContext<'a> {
     }
 }
 
+/// A snapshot of one inner-function basic block: its id, the instruction ids,
+/// the phi operands (`(predecessor, identifier)`), and the terminal — cloned to
+/// avoid borrow conflicts while mutating `env`.
+type InnerBlockSnapshot = (
+    BlockId,
+    Vec<InstructionId>,
+    Vec<(BlockId, IdentifierId)>,
+    Terminal,
+);
+
 /// Recursively visit an inner function's blocks, processing all instructions
 /// including nested FunctionExpressions. This mirrors the TS pattern of
 /// `context.enterInnerFn(instr, () => handleFunction(innerFn))`.
@@ -1947,12 +1957,7 @@ fn visit_inner_function_blocks(
     // Clone inner function's instructions and block structure to avoid
     // borrow conflicts when mutating env through handle_instruction.
     let inner_instrs: Vec<Instruction> = env.functions[func_id.0 as usize].instructions.clone();
-    let inner_blocks: Vec<(
-        BlockId,
-        Vec<InstructionId>,
-        Vec<(BlockId, IdentifierId)>,
-        Terminal,
-    )> = env.functions[func_id.0 as usize]
+    let inner_blocks: Vec<InnerBlockSnapshot> = env.functions[func_id.0 as usize]
         .body
         .blocks
         .iter()

@@ -31,6 +31,14 @@ use crate::hir_builder::reserved_identifier_diagnostic;
 use crate::hir_builder::todo_diagnostic;
 use crate::semantic_queries as sq;
 
+/// Output of [`lower_inner`]: the lowered function plus the used-name set and
+/// symbol-to-identifier binding map carried out to the caller.
+type LowerInnerResult = (
+    HirFunction,
+    IndexMap<String, SymbolId>,
+    IndexMap<SymbolId, IdentifierId>,
+);
+
 mod expressions;
 mod functions;
 mod hoisting;
@@ -249,14 +257,7 @@ pub(crate) fn lower_inner(
     component_scope: ScopeId,
     context_identifiers: &HashSet<SymbolId>,
     is_top_level: bool,
-) -> Result<
-    (
-        HirFunction,
-        IndexMap<String, SymbolId>,
-        IndexMap<SymbolId, IdentifierId>,
-    ),
-    CompilerError,
-> {
+) -> Result<LowerInnerResult, CompilerError> {
     let _ = ast_id; // reserved for HIR id parity; arrows have none
 
     let mut builder = HirBuilder::new(

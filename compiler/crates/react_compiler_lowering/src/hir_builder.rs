@@ -15,6 +15,15 @@ use react_compiler_hir::*;
 
 use crate::semantic_queries as sq;
 
+/// Output of [`HirBuilder::build`]: the built HIR, its instruction table, the
+/// set of used variable names, and the symbol-to-identifier binding map.
+pub type BuildResult = (
+    HIR,
+    Vec<Instruction>,
+    IndexMap<String, SymbolId>,
+    IndexMap<SymbolId, IdentifierId>,
+);
+
 // ---------------------------------------------------------------------------
 // Reserved word check (matches TS isReservedWord)
 // ---------------------------------------------------------------------------
@@ -705,17 +714,7 @@ impl<'a> HirBuilder<'a> {
     }
 
     /// Construct the final HIR and instruction table from the completed blocks.
-    pub fn build(
-        mut self,
-    ) -> Result<
-        (
-            HIR,
-            Vec<Instruction>,
-            IndexMap<String, SymbolId>,
-            IndexMap<SymbolId, IdentifierId>,
-        ),
-        CompilerError,
-    > {
+    pub fn build(mut self) -> Result<BuildResult, CompilerError> {
         let mut hir = HIR {
             blocks: std::mem::take(&mut self.completed),
             entry: self.entry,

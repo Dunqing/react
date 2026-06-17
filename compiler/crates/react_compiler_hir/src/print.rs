@@ -171,6 +171,10 @@ pub fn format_value_reason(reason: ValueReason) -> &'static str {
 // PrintFormatter — shared stateful formatter
 // =============================================================================
 
+/// Callback that formats an inner `HirFunction` (e.g. for FunctionExpression /
+/// ObjectMethod) into a `PrintFormatter`.
+pub type InnerFuncFormatter<'a> = dyn Fn(&mut PrintFormatter, &HirFunction) + 'a;
+
 /// Shared formatter state used by both HIR and reactive printers.
 ///
 /// Both `DebugPrinter` structs delegate to this for formatting shared constructs
@@ -710,7 +714,7 @@ impl<'a> PrintFormatter<'a> {
     pub fn format_instruction_value(
         &mut self,
         value: &InstructionValue,
-        inner_func_formatter: Option<&dyn Fn(&mut PrintFormatter, &HirFunction)>,
+        inner_func_formatter: Option<&InnerFuncFormatter>,
     ) {
         match value {
             InstructionValue::ArrayExpression { elements, loc } => {

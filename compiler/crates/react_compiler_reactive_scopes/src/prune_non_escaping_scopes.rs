@@ -1048,20 +1048,25 @@ impl<'a> ReactiveFunctionVisitor for CollectDependenciesVisitor<'a> {
 // computeMemoizedIdentifiers
 // =============================================================================
 
+/// Mutable per-identifier memoization node used while computing memoized
+/// identifiers: `(level, memoized, dependencies, scopes, seen)` keyed by
+/// declaration.
+type IdentifierNodes = HashMap<
+    DeclarationId,
+    (
+        MemoizationLevel,
+        bool,
+        IndexSet<DeclarationId>,
+        IndexSet<ScopeId>,
+        bool,
+    ),
+>;
+
 fn compute_memoized_identifiers(state: &CollectState) -> HashSet<DeclarationId> {
     let mut memoized = HashSet::new();
 
     // We need mutable access to the nodes, so we clone the state into mutable structures
-    let mut identifier_nodes: HashMap<
-        DeclarationId,
-        (
-            MemoizationLevel,
-            bool,
-            IndexSet<DeclarationId>,
-            IndexSet<ScopeId>,
-            bool,
-        ),
-    > = state
+    let mut identifier_nodes: IdentifierNodes = state
         .identifiers
         .iter()
         .map(|(id, node)| {
@@ -1087,16 +1092,7 @@ fn compute_memoized_identifiers(state: &CollectState) -> HashSet<DeclarationId> 
     fn visit(
         id: DeclarationId,
         force_memoize: bool,
-        identifier_nodes: &mut HashMap<
-            DeclarationId,
-            (
-                MemoizationLevel,
-                bool,
-                IndexSet<DeclarationId>,
-                IndexSet<ScopeId>,
-                bool,
-            ),
-        >,
+        identifier_nodes: &mut IdentifierNodes,
         scope_nodes: &mut HashMap<ScopeId, (Vec<DeclarationId>, bool)>,
         memoized: &mut HashSet<DeclarationId>,
     ) -> bool {
@@ -1148,16 +1144,7 @@ fn compute_memoized_identifiers(state: &CollectState) -> HashSet<DeclarationId> 
 
     fn force_memoize_scope_dependencies(
         id: ScopeId,
-        identifier_nodes: &mut HashMap<
-            DeclarationId,
-            (
-                MemoizationLevel,
-                bool,
-                IndexSet<DeclarationId>,
-                IndexSet<ScopeId>,
-                bool,
-            ),
-        >,
+        identifier_nodes: &mut IdentifierNodes,
         scope_nodes: &mut HashMap<ScopeId, (Vec<DeclarationId>, bool)>,
         memoized: &mut HashSet<DeclarationId>,
     ) {

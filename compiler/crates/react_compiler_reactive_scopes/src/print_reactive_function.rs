@@ -10,7 +10,7 @@
 //! InstructionValues, Effects, Errors) to `react_compiler_hir::print::PrintFormatter`.
 
 use react_compiler_hir::environment::Environment;
-use react_compiler_hir::print::{self, PrintFormatter};
+use react_compiler_hir::print::{self, InnerFuncFormatter, PrintFormatter};
 use react_compiler_hir::{
     HirFunction, ParamPattern, ReactiveBlock, ReactiveFunction, ReactiveInstruction,
     ReactiveStatement, ReactiveTerminal, ReactiveTerminalStatement, ReactiveValue,
@@ -187,13 +187,11 @@ impl<'a> DebugPrinter<'a> {
             ReactiveValue::Instruction(iv) => {
                 // Build the inner function formatter callback if we have an hir_formatter
                 let hir_formatter = self.hir_formatter;
-                let inner_func_cb: Option<Box<dyn Fn(&mut PrintFormatter, &HirFunction) + '_>> =
-                    hir_formatter.map(|hf| {
-                        Box::new(move |fmt: &mut PrintFormatter, func: &HirFunction| {
-                            hf(fmt, func);
-                        })
-                            as Box<dyn Fn(&mut PrintFormatter, &HirFunction) + '_>
-                    });
+                let inner_func_cb: Option<Box<InnerFuncFormatter>> = hir_formatter.map(|hf| {
+                    Box::new(move |fmt: &mut PrintFormatter, func: &HirFunction| {
+                        hf(fmt, func);
+                    }) as Box<InnerFuncFormatter>
+                });
                 self.fmt.format_instruction_value(
                     iv,
                     inner_func_cb
