@@ -15,7 +15,7 @@
 //! `ReactiveFunction` and its `Environment` — into [`NativeArtifact`]s during
 //! the pipeline, return them out-of-band from `compile_program`, and then build
 //! + splice the oxc AST in `react_compiler_oxc::transform`, AFTER the semantic
-//! borrow ends and against a freshly-parsed *owned* program.
+//!   borrow ends and against a freshly-parsed *owned* program.
 
 use react_compiler_hir::ReactFunctionType;
 use react_compiler_hir::environment::Environment;

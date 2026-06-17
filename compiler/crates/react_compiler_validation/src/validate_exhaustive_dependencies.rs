@@ -31,7 +31,7 @@ pub fn validate_exhaustive_dependencies(
 ) -> Result<(), CompilerDiagnostic> {
     let reactive = collect_reactive_identifiers(func, &env.functions);
     let validate_memo = env.config.validate_exhaustive_memoization_dependencies;
-    let validate_effect = env.config.validate_exhaustive_effect_dependencies.clone();
+    let validate_effect = env.config.validate_exhaustive_effect_dependencies;
 
     let mut temporaries: HashMap<IdentifierId, Temporary> = HashMap::new();
     for param in &func.params {
@@ -56,7 +56,7 @@ pub fn validate_exhaustive_dependencies(
     let mut callbacks = Callbacks {
         start_memo: &mut start_memo,
         validate_memo,
-        validate_effect: validate_effect.clone(),
+        validate_effect,
         reactive: &reactive,
         diagnostics: Vec::new(),
         invalid_memo_ids: HashSet::new(),
@@ -80,11 +80,9 @@ pub fn validate_exhaustive_dependencies(
                 has_invalid_deps,
                 ..
             } = &mut instr.value
-            {
-                if callbacks.invalid_memo_ids.contains(manual_memo_id) {
+                && callbacks.invalid_memo_ids.contains(manual_memo_id) {
                     *has_invalid_deps = true;
                 }
-            }
         }
     }
 
@@ -354,11 +352,9 @@ fn find_optional_places(func: &HirFunction) -> HashMap<IdentifierId, bool> {
                                 let last_instr = &func.instructions[last_id.0 as usize];
                                 if let InstructionValue::StoreLocal { value, .. } =
                                     &last_instr.value
-                                {
-                                    if let Some(opt) = is_optional {
+                                    && let Some(opt) = is_optional {
                                         optionals.insert(value.identifier, opt);
                                     }
-                                }
                             }
                             break 'outer;
                         } else {
@@ -938,8 +934,7 @@ fn collect_dependencies(
                         let callee_ty = get_identifier_type(callee.identifier, identifiers, types);
                         if is_effect_hook(callee_ty)
                             && !matches!(cb.validate_effect, ExhaustiveEffectDepsMode::Off)
-                        {
-                            if args.len() >= 2 {
+                            && args.len() >= 2 {
                                 let fn_arg = match &args[0] {
                                     PlaceOrSpread::Place(p) => Some(p),
                                     _ => None,
@@ -1026,7 +1021,6 @@ fn collect_dependencies(
                                     }
                                 }
                             }
-                        }
                     }
 
                     // Visit all operands except for MethodCall's property
@@ -1053,8 +1047,7 @@ fn collect_dependencies(
                         let prop_ty = get_identifier_type(property.identifier, identifiers, types);
                         if is_effect_hook(prop_ty)
                             && !matches!(cb.validate_effect, ExhaustiveEffectDepsMode::Off)
-                        {
-                            if args.len() >= 2 {
+                            && args.len() >= 2 {
                                 let fn_arg = match &args[0] {
                                     PlaceOrSpread::Place(p) => Some(p),
                                     _ => None,
@@ -1140,7 +1133,6 @@ fn collect_dependencies(
                                     }
                                 }
                             }
-                        }
                     }
 
                     // Visit operands, skipping the method property itself
@@ -1359,12 +1351,11 @@ fn validate_dependencies(
         match inferred_dep {
             InferredDependency::Global { binding } => {
                 for (i, manual_dep) in manual_dependencies.iter().enumerate() {
-                    if let ManualMemoDependencyRoot::Global { identifier_name } = &manual_dep.root {
-                        if identifier_name == binding.name() {
+                    if let ManualMemoDependencyRoot::Global { identifier_name } = &manual_dep.root
+                        && identifier_name == binding.name() {
                             matched.insert(i);
                             extra.push(manual_dep);
                         }
-                    }
                 }
                 continue;
             }
@@ -1382,15 +1373,14 @@ fn validate_dependencies(
 
                 let mut has_matching = false;
                 for (i, manual_dep) in manual_dependencies.iter().enumerate() {
-                    if let ManualMemoDependencyRoot::NamedLocal { value, .. } = &manual_dep.root {
-                        if value.identifier == *identifier
+                    if let ManualMemoDependencyRoot::NamedLocal { value, .. } = &manual_dep.root
+                        && value.identifier == *identifier
                             && (are_equal_paths(&manual_dep.path, path)
                                 || is_sub_path_ignoring_optionals(&manual_dep.path, path))
                         {
                             has_matching = true;
                             matched.insert(i);
                         }
-                    }
                 }
 
                 if has_matching || is_optional_dependency(*identifier, reactive, identifiers, types)
@@ -1411,15 +1401,13 @@ fn validate_dependencies(
         if let ManualMemoDependencyRoot::NamedLocal {
             constant, value, ..
         } = &dep.root
-        {
-            if *constant {
+            && *constant {
                 let dep_ty = get_identifier_type(value.identifier, identifiers, types);
                 // Constant-folded primitives: skip
                 if !value.reactive && is_primitive_type(dep_ty) {
                     continue;
                 }
             }
-        }
         extra.push(dep);
     }
 
@@ -1581,15 +1569,13 @@ fn validate_dependencies(
 
     // Add hint showing inferred dependencies when a suggestion was generated
     // (matches TS: only adds hint when suggestion != null, using suggestion.text)
-    if let Some(ref suggestions) = diagnostic.suggestions {
-        if let Some(suggestion) = suggestions.first() {
-            if let Some(ref text) = suggestion.text {
+    if let Some(ref suggestions) = diagnostic.suggestions
+        && let Some(suggestion) = suggestions.first()
+            && let Some(ref text) = suggestion.text {
                 diagnostic.details.push(CompilerDiagnosticDetail::Hint {
                     message: format!("Inferred dependencies: `{text}`"),
                 });
             }
-        }
-    }
 
     Ok(Some(diagnostic))
 }

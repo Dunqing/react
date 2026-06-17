@@ -51,16 +51,12 @@ pub fn optimize_for_ssr(func: &mut HirFunction, env: &Environment) {
             match &instr.value {
                 InstructionValue::Destructure { value, lvalue, .. } => {
                     if inlined_state.contains_key(&env.identifiers[value.identifier.0 as usize].id)
-                    {
-                        if let react_compiler_hir::Pattern::Array(arr) = &lvalue.pattern {
-                            if !arr.items.is_empty() {
-                                if let ArrayPatternElement::Place(_) = &arr.items[0] {
+                        && let react_compiler_hir::Pattern::Array(arr) = &lvalue.pattern
+                            && !arr.items.is_empty()
+                                && let ArrayPatternElement::Place(_) = &arr.items[0] {
                                     // Allow destructuring of inlined states
                                     continue;
                                 }
-                            }
-                        }
-                    }
                 }
                 InstructionValue::MethodCall { property, args, .. }
                 | InstructionValue::CallExpression {
@@ -87,8 +83,8 @@ pub fn optimize_for_ssr(func: &mut HirFunction, env: &Environment) {
                                         },
                                     );
                                 }
-                            } else if args.len() == 3 {
-                                if let (
+                            } else if args.len() == 3
+                                && let (
                                     PlaceOrSpread::Place(_),
                                     PlaceOrSpread::Place(arg),
                                     PlaceOrSpread::Place(initializer),
@@ -106,11 +102,10 @@ pub fn optimize_for_ssr(func: &mut HirFunction, env: &Environment) {
                                         },
                                     );
                                 }
-                            }
                         }
                         Some(HookKind::UseState) => {
-                            if args.len() == 1 {
-                                if let PlaceOrSpread::Place(arg) = &args[0] {
+                            if args.len() == 1
+                                && let PlaceOrSpread::Place(arg) = &args[0] {
                                     let arg_type = &env.types[env.identifiers
                                         [arg.identifier.0 as usize]
                                         .type_
@@ -131,7 +126,6 @@ pub fn optimize_for_ssr(func: &mut HirFunction, env: &Environment) {
                                         );
                                     }
                                 }
-                            }
                         }
                         _ => {}
                     }
@@ -205,9 +199,9 @@ pub fn optimize_for_ssr(func: &mut HirFunction, env: &Environment) {
                     let value_id = env.identifiers[value.identifier.0 as usize].id;
                     if inlined_state.contains_key(&value_id) {
                         // Invariant: destructuring pattern must be ArrayPattern with at least one Identifier item
-                        if let react_compiler_hir::Pattern::Array(arr) = &lvalue.pattern {
-                            if !arr.items.is_empty() {
-                                if let ArrayPatternElement::Place(first_place) = &arr.items[0] {
+                        if let react_compiler_hir::Pattern::Array(arr) = &lvalue.pattern
+                            && !arr.items.is_empty()
+                                && let ArrayPatternElement::Place(first_place) = &arr.items[0] {
                                     let loc = *loc;
                                     let kind = lvalue.kind;
                                     let store = InstructionValue::StoreLocal {
@@ -221,8 +215,6 @@ pub fn optimize_for_ssr(func: &mut HirFunction, env: &Environment) {
                                     };
                                     instr.value = store;
                                 }
-                            }
-                        }
                     }
                 }
                 InstructionValue::MethodCall {
@@ -241,15 +233,14 @@ pub fn optimize_for_ssr(func: &mut HirFunction, env: &Environment) {
                     let hook_kind = get_hook_kind(env, callee_id);
                     match hook_kind {
                         Some(HookKind::UseEffectEvent) => {
-                            if args.len() == 1 {
-                                if let PlaceOrSpread::Place(arg) = &args[0] {
+                            if args.len() == 1
+                                && let PlaceOrSpread::Place(arg) = &args[0] {
                                     let loc = *loc;
                                     instr.value = InstructionValue::LoadLocal {
                                         place: arg.clone(),
                                         loc,
                                     };
                                 }
-                            }
                         }
                         Some(
                             HookKind::UseEffect

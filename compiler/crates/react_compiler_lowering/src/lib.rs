@@ -92,14 +92,13 @@ pub fn find_directive_disabling_memoization<'a>(
     directives: &'a [oxc_ast::ast::Directive<'a>],
     custom_opt_out_directives: Option<&[String]>,
 ) -> Option<&'a oxc_ast::ast::Directive<'a>> {
-    if let Some(custom) = custom_opt_out_directives {
-        if let Some(found) = directives
+    if let Some(custom) = custom_opt_out_directives
+        && let Some(found) = directives
             .iter()
             .find(|d| custom.iter().any(|c| c == d.expression.value.as_str()))
         {
             return Some(found);
         }
-    }
     directives
         .iter()
         .find(|d| OPT_OUT_DIRECTIVES.contains(&d.expression.value.as_str()))

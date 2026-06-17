@@ -56,11 +56,10 @@ pub fn validate_no_capitalized_calls(
                     }
                 }
                 InstructionValue::PropertyLoad { property, .. } => {
-                    if let PropertyLiteral::String(prop_name) = property {
-                        if prop_name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    if let PropertyLiteral::String(prop_name) = property
+                        && prop_name.starts_with(|c: char| c.is_ascii_uppercase()) {
                             capitalized_properties.insert(lvalue_id, prop_name.clone());
                         }
-                    }
                 }
                 InstructionValue::MethodCall { property, loc, .. } => {
                     let property_id = property.identifier;

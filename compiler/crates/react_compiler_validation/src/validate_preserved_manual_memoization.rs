@@ -139,8 +139,8 @@ fn visit_scope(scope_block: &ReactiveScopeBlock, state: &mut VisitorState) {
     visit_block(&scope_block.instructions, state);
 
     // After traversing, validate scope dependencies against manual memo deps
-    if let Some(ref memo_state) = state.manual_memo_state {
-        if let Some(ref deps_from_source) = memo_state.deps_from_source {
+    if let Some(ref memo_state) = state.manual_memo_state
+        && let Some(ref deps_from_source) = memo_state.deps_from_source {
             let scope = &state.env.scopes[scope_block.scope.0 as usize];
             let deps = scope.dependencies.clone();
             let memo_loc = memo_state.loc;
@@ -159,7 +159,6 @@ fn visit_scope(scope_block: &ReactiveScopeBlock, state: &mut VisitorState) {
                 );
             }
         }
-    }
 
     // Mark scope and merged scopes as completed
     let scope = &state.env.scopes[scope_block.scope.0 as usize];
@@ -214,8 +213,8 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
             let operand_places = start_memoize_operands(deps);
             for place in &operand_places {
                 let ident = &state.env.identifiers[place.identifier.0 as usize];
-                if let Some(scope_id) = ident.scope {
-                    if !state.scopes.contains(&scope_id) && !state.pruned_scopes.contains(&scope_id)
+                if let Some(scope_id) = ident.scope
+                    && !state.scopes.contains(&scope_id) && !state.pruned_scopes.contains(&scope_id)
                     {
                         let diag = CompilerDiagnostic::new(
                             ErrorCategory::PreserveManualMemo,
@@ -234,7 +233,6 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
                         });
                         state.env.record_diagnostic(diag);
                     }
-                }
             }
         }
         ReactiveValue::Instruction(InstructionValue::FinishMemoize {
@@ -252,7 +250,7 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
             if state
                 .manual_memo_state
                 .as_ref()
-                .map_or(true, |s| s.manual_memo_id != *manual_memo_id)
+                .is_none_or(|s| s.manual_memo_id != *manual_memo_id)
             {
                 state.manual_memo_state = None;
                 return;
@@ -343,11 +341,10 @@ fn record_unmemoized_error(loc: Option<SourceLocation>, env: &mut Environment) {
 fn record_temporaries(instr: &ReactiveInstruction, state: &mut VisitorState) {
     let lvalue = &instr.lvalue;
     let lv_id = lvalue.as_ref().map(|lv| lv.identifier);
-    if let Some(id) = lv_id {
-        if state.temporaries.contains_key(&id) {
+    if let Some(id) = lv_id
+        && state.temporaries.contains_key(&id) {
             return;
         }
-    }
 
     if let Some(ref lvalue) = instr.lvalue {
         let lv_ident = &state.env.identifiers[lvalue.identifier.0 as usize];

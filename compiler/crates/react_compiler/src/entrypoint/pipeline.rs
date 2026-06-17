@@ -65,7 +65,7 @@ pub fn compile_fn(
     env.instrument_fn_name = context.instrument_fn_name.clone();
     env.instrument_gating_name = context.instrument_gating_name.clone();
     env.hook_guard_name = context.hook_guard_name.clone();
-    env.seed_uid_known_names(&context.known_referenced_names());
+    env.seed_uid_known_names(context.known_referenced_names());
 
     // N1.2: reference node ids were a bridge-only construct; the oxc path
     // resolves references directly via semantic. Left empty for now.
@@ -1034,7 +1034,7 @@ pub fn compile_fn(
     }
 
     context.timing.start("PruneHoistedContexts");
-    react_compiler_reactive_scopes::prune_hoisted_contexts(&mut reactive_fn, &mut env)?;
+    react_compiler_reactive_scopes::prune_hoisted_contexts(&mut reactive_fn, &env)?;
     context.timing.stop();
 
     if context.debug_enabled {

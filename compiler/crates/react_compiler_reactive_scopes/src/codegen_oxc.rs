@@ -137,9 +137,9 @@ pub struct OxcCodegenOutput<'a> {
 ///
 /// `memo_local_name` is the local binding name for the runtime cache import
 /// (e.g. `_c`), used as the callee of the `const $ = _c(N)` preface.
-pub fn codegen_oxc_function<'a, 'e>(
+pub fn codegen_oxc_function<'a>(
     func: &ReactiveFunction,
-    env: &'e Environment,
+    env: &Environment,
     unique_identifiers: HashSet<String>,
     builder: &AstBuilder<'a>,
     memo_local_name: &str,
@@ -343,11 +343,10 @@ impl<'a, 'e> Cx<'a, 'e> {
         self.codegen_block(&func.body, &mut body_stmts)?;
 
         // Strip a trailing bare `return undefined;` (matches the reference).
-        if let Some(oxc::Statement::ReturnStatement(r)) = body_stmts.last() {
-            if r.argument.is_none() {
+        if let Some(oxc::Statement::ReturnStatement(r)) = body_stmts.last()
+            && r.argument.is_none() {
                 body_stmts.pop();
             }
-        }
 
         // Cache var preface: const $ = _c(N);
         let cache_count = self.next_cache_index;
@@ -939,7 +938,7 @@ impl<'a, 'e> Cx<'a, 'e> {
 
         // --- Dependencies: one slot each (sorted for stable order). ---
         let mut deps = scope.dependencies.clone();
-        deps.sort_by(|a, b| compare_scope_dependency(a, b));
+        deps.sort_by(compare_scope_dependency);
 
         let mut change_exprs: Vec<oxc::Expression<'a>> = Vec::new();
         // (slot index, dependency expression-builder inputs)
@@ -2625,8 +2624,8 @@ impl<'a, 'e> Cx<'a, 'e> {
             return Ok(self.b.jsx_child_text(SPAN, self.atom(&value), None));
         }
         // A nested JSX element temporary -> embed directly as a child element.
-        if let Some(Some(ReactiveValue::Instruction(iv))) = self.temp.get(&decl_id).cloned() {
-            if let InstructionValue::JsxExpression { .. } | InstructionValue::JsxFragment { .. } =
+        if let Some(Some(ReactiveValue::Instruction(iv))) = self.temp.get(&decl_id).cloned()
+            && let InstructionValue::JsxExpression { .. } | InstructionValue::JsxFragment { .. } =
                 &iv
             {
                 let expr = self.codegen_instruction_value(&iv)?;
@@ -2641,7 +2640,6 @@ impl<'a, 'e> Cx<'a, 'e> {
                     }
                 });
             }
-        }
         let expr = self.place_expr(place)?;
         let container = self
             .b
@@ -2655,12 +2653,11 @@ impl<'a, 'e> Cx<'a, 'e> {
     /// temporary, else emit a bare identifier.
     fn place_expr(&mut self, place: &Place) -> Bail<oxc::Expression<'a>> {
         let decl_id = self.decl_id(place);
-        if let Some(entry) = self.temp.get(&decl_id) {
-            if let Some(rv) = entry.clone() {
+        if let Some(entry) = self.temp.get(&decl_id)
+            && let Some(rv) = entry.clone() {
                 return self.codegen_value(&rv);
             }
             // declared but no inline value -> bare identifier below.
-        }
         let name = self.place_name(place)?;
         Ok(self.ident_expr(&name))
     }

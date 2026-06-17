@@ -56,11 +56,10 @@ fn get_kind_for_place(
 ) -> Kind {
     let known_kind = value_kinds.get(&place.identifier).copied();
     let ident = &identifiers[place.identifier.0 as usize];
-    if let Some(ref name) = ident.name {
-        if is_hook_name(name.value()) {
+    if let Some(ref name) = ident.name
+        && is_hook_name(name.value()) {
             return join_kinds(known_kind.unwrap_or(Kind::Local), Kind::PotentialHook);
         }
-    }
     known_kind.unwrap_or(Kind::Local)
 }
 

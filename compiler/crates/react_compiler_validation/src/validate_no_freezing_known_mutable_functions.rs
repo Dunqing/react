@@ -174,8 +174,8 @@ fn check_operand_for_freeze_violation(
     identifiers: &[Identifier],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
-    if operand.effect == Effect::Freeze {
-        if let Some(mutation_info) = context_mutation_effects.get(&operand.identifier) {
+    if operand.effect == Effect::Freeze
+        && let Some(mutation_info) = context_mutation_effects.get(&operand.identifier) {
             let identifier = &identifiers[mutation_info.value_identifier.0 as usize];
             let variable_name = match &identifier.name {
                 Some(IdentifierName::Named(name)) => format!("`{}`", name),
@@ -208,7 +208,6 @@ fn check_operand_for_freeze_violation(
                 }),
             );
         }
-    }
 }
 
 /// Check if an identifier's type is a ref or ref-like mutable type.

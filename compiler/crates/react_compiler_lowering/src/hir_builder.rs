@@ -330,7 +330,7 @@ impl<'a> HirBuilder<'a> {
 
     /// Push an instruction onto the current block.
     pub fn push(&mut self, instruction: Instruction) {
-        let loc = instruction.loc.clone();
+        let loc = instruction.loc;
         let instr_id = InstructionId(self.instruction_table.len() as u32);
         self.instruction_table.push(instruction);
         self.current.instructions.push(instr_id);
@@ -737,7 +737,7 @@ impl<'a> HirBuilder<'a> {
                     let loc = block
                         .instructions
                         .first()
-                        .and_then(|&i| instructions[i.0 as usize].loc.clone())
+                        .and_then(|&i| instructions[i.0 as usize].loc)
                         .or_else(|| block.terminal.loc().copied());
                     self.env.record_error(CompilerErrorDetail {
                         category: ErrorCategory::Todo,
@@ -795,7 +795,7 @@ impl<'a> HirBuilder<'a> {
                 };
             if should_record_fbt_error {
                 let decl_span = sq::declaration_span(self.semantic, symbol_id);
-                let error_loc = Some(self.loc_of_span(decl_span)).or_else(|| loc.clone());
+                let error_loc = Some(self.loc_of_span(decl_span)).or(loc);
                 self.env.record_error(CompilerErrorDetail {
                     category: ErrorCategory::Todo,
                     reason: "Support local variables named `fbt`".to_string(),
@@ -860,7 +860,7 @@ impl<'a> HirBuilder<'a> {
         loc: &Option<SourceLocation>,
     ) {
         if let Some(loc_val) = loc {
-            self.env.identifiers[id.0 as usize].loc = Some(loc_val.clone());
+            self.env.identifiers[id.0 as usize].loc = Some(*loc_val);
         }
     }
 
@@ -1056,13 +1056,11 @@ pub fn get_reverse_postordered_blocks(
 pub fn remove_unreachable_for_updates(hir: &mut HIR) {
     let block_ids: IndexSet<BlockId> = hir.blocks.keys().copied().collect();
     for block in hir.blocks.values_mut() {
-        if let Terminal::For { update, .. } = &mut block.terminal {
-            if let Some(update_id) = *update {
-                if !block_ids.contains(&update_id) {
+        if let Terminal::For { update, .. } = &mut block.terminal
+            && let Some(update_id) = *update
+                && !block_ids.contains(&update_id) {
                     *update = None;
                 }
-            }
-        }
     }
 }
 
@@ -1075,8 +1073,8 @@ pub fn remove_dead_do_while_statements(hir: &mut HIR) {
         } else {
             false
         };
-        if should_replace {
-            if let Terminal::DoWhile {
+        if should_replace
+            && let Terminal::DoWhile {
                 loop_block,
                 id,
                 loc,
@@ -1095,7 +1093,6 @@ pub fn remove_dead_do_while_statements(hir: &mut HIR) {
                     loc,
                 };
             }
-        }
     }
 }
 
@@ -1114,11 +1111,9 @@ pub fn remove_unnecessary_try_catch(hir: &mut HIR) {
                 loc,
                 ..
             } = &block.terminal
-            {
-                if !block_ids.contains(handler) {
-                    return Some((block_id, *try_block, *handler, *fallthrough, loc.clone()));
+                && !block_ids.contains(handler) {
+                    return Some((block_id, *try_block, *handler, *fallthrough, *loc));
                 }
-            }
             None
         })
         .collect();

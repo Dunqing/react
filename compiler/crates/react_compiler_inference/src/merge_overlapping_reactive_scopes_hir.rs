@@ -185,8 +185,8 @@ fn visit_instruction_id(
     env: &Environment,
 ) {
     // Handle all scopes that end at this instruction
-    if let Some(top) = scope_info.scope_ends.last() {
-        if top.id <= id {
+    if let Some(top) = scope_info.scope_ends.last()
+        && top.id <= id {
             let scope_end_entry = scope_info.scope_ends.pop().unwrap();
 
             // Sort scopes by start descending (matching active_scopes order)
@@ -210,11 +210,10 @@ fn visit_instruction_id(
                 }
             }
         }
-    }
 
     // Handle all scopes that begin at this instruction
-    if let Some(top) = scope_info.scope_starts.last() {
-        if top.id <= id {
+    if let Some(top) = scope_info.scope_starts.last()
+        && top.id <= id {
             let scope_start_entry = scope_info.scope_starts.pop().unwrap();
 
             // Sort by end descending
@@ -236,7 +235,6 @@ fn visit_instruction_id(
                 }
             }
         }
-    }
 }
 
 // =============================================================================
@@ -252,18 +250,16 @@ fn visit_place(
     // If an instruction mutates an outer scope, flatten all scopes from top
     // of the stack to the mutated outer scope
     let place_scope = get_place_scope(env, id, identifier_id);
-    if let Some(scope_id) = place_scope {
-        if is_mutable(env, id, identifier_id) {
+    if let Some(scope_id) = place_scope
+        && is_mutable(env, id, identifier_id) {
             let place_scope_idx = state.active_scopes.iter().position(|s| *s == scope_id);
-            if let Some(idx) = place_scope_idx {
-                if idx != state.active_scopes.len() - 1 {
+            if let Some(idx) = place_scope_idx
+                && idx != state.active_scopes.len() - 1 {
                     let mut to_union: Vec<ScopeId> = vec![scope_id];
                     to_union.extend_from_slice(&state.active_scopes[idx + 1..]);
                     state.joined.union(&to_union);
                 }
-            }
         }
-    }
 }
 
 // =============================================================================

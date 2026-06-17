@@ -163,7 +163,7 @@ pub(crate) fn lower_function_declaration(
         id,
         func.generator,
         func.r#async,
-        loc.clone(),
+        loc,
         function_scope,
     )?;
 
@@ -173,7 +173,7 @@ pub(crate) fn lower_function_declaration(
         name_hint: None,
         lowered_func,
         expr_type: FunctionExpressionType::FunctionDeclaration,
-        loc: loc.clone(),
+        loc,
     };
     let fn_place = lower_value_to_temporary(builder, fn_value)?;
 
@@ -192,7 +192,7 @@ pub(crate) fn lower_function_declaration(
                     identifier,
                     reactive: false,
                     effect: Effect::Unknown,
-                    loc: loc.clone(),
+                    loc,
                 };
                 if builder.is_context_symbol(symbol_id) {
                     lower_value_to_temporary(
@@ -285,7 +285,7 @@ pub(crate) fn lower_object_method(
     let lowered_func = lower_function(builder, &form)?;
 
     let method_value = InstructionValue::ObjectMethod {
-        loc: loc.clone(),
+        loc,
         lowered_func,
     };
     let method_place = lower_value_to_temporary(builder, method_value)?;
@@ -437,7 +437,7 @@ fn gather_captured_context(
                 .and_modify(|(min_pos, existing_loc)| {
                     if ref_start < *min_pos {
                         *min_pos = ref_start;
-                        *existing_loc = loc.clone();
+                        *existing_loc = loc;
                     }
                 })
                 .or_insert((ref_start, loc));

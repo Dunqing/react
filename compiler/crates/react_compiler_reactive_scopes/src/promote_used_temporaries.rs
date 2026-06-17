@@ -155,13 +155,11 @@ fn collect_promotable_place(
 ) {
     if !active_scopes.is_empty() {
         let identifier = &env.identifiers[place.identifier.0 as usize];
-        if let Some(pruned) = state.pruned.get_mut(&identifier.declaration_id) {
-            if let Some(last) = active_scopes.last() {
-                if !pruned.active_scopes.contains(last) {
+        if let Some(pruned) = state.pruned.get_mut(&identifier.declaration_id)
+            && let Some(last) = active_scopes.last()
+                && !pruned.active_scopes.contains(last) {
                     pruned.used_outside_scope = true;
                 }
-            }
-        }
     }
 }
 
@@ -360,13 +358,11 @@ fn promote_temporaries_block(block: &ReactiveBlock, state: &mut State, env: &mut
                     .collect();
                 for (id, decl_id) in decls {
                     let identifier = &env.identifiers[id.0 as usize];
-                    if identifier.name.is_none() {
-                        if let Some(pruned) = state.pruned.get(&decl_id) {
-                            if pruned.used_outside_scope {
+                    if identifier.name.is_none()
+                        && let Some(pruned) = state.pruned.get(&decl_id)
+                            && pruned.used_outside_scope {
                                 promote_identifier(id, state, env);
                             }
-                        }
-                    }
                 }
                 promote_temporaries_block(&scope.instructions, state, env);
             }
@@ -649,9 +645,9 @@ fn promote_interposed_instruction(
                         }
                         _ => {}
                     }
-                    if let InstructionValue::Destructure { lvalue, .. } = iv {
-                        if lvalue.kind == InstructionKind::Const
-                            || lvalue.kind == InstructionKind::HoistedConst
+                    if let InstructionValue::Destructure { lvalue, .. } = iv
+                        && (lvalue.kind == InstructionKind::Const
+                            || lvalue.kind == InstructionKind::HoistedConst)
                         {
                             for operand in
                                 react_compiler_hir::visitors::each_pattern_operand(&lvalue.pattern)
@@ -660,7 +656,6 @@ fn promote_interposed_instruction(
                             }
                             const_store = true;
                         }
-                    }
                     if let InstructionValue::MethodCall { property, .. } = iv {
                         consts.insert(property.identifier);
                     }

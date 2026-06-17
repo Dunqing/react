@@ -199,7 +199,7 @@ pub(crate) fn emit_hoists(
             .symbol_name(symbol_id)
             .to_string();
         let binding =
-            builder.resolve_identifier_symbol(&name, Some(symbol_id), Some(loc.clone()))?;
+            builder.resolve_identifier_symbol(&name, Some(symbol_id), Some(loc))?;
         let identifier = match binding {
             VariableBinding::Identifier { identifier, .. } => identifier,
             _ => {
@@ -220,7 +220,7 @@ pub(crate) fn emit_hoists(
             identifier,
             effect: Effect::Unknown,
             reactive: false,
-            loc: Some(loc.clone()),
+            loc: Some(loc),
         };
         lower_value_to_temporary(
             builder,

@@ -197,11 +197,11 @@ pub fn inline_immediately_invoked_function_expressions(
                                 // Replace return with LoadLocal + goto
                                 let load_instr = Instruction {
                                     id: EvaluationOrder(0),
-                                    loc: ret_loc.clone(),
+                                    loc: *ret_loc,
                                     lvalue: call_lvalue.clone(),
                                     value: InstructionValue::LoadLocal {
                                         place: value.clone(),
-                                        loc: ret_loc.clone(),
+                                        loc: *ret_loc,
                                     },
                                     effects: None,
                                 };
@@ -210,7 +210,7 @@ pub fn inline_immediately_invoked_function_expressions(
                                 inner_block.instructions.push(load_instr_id);
 
                                 let ret_id = *ret_id;
-                                let ret_loc = ret_loc.clone();
+                                let ret_loc = *ret_loc;
                                 inner_block.terminal = Terminal::Goto {
                                     block: continuation_block_id,
                                     id: ret_id,
@@ -348,10 +348,10 @@ fn rewrite_block(
         ..
     } = &block.terminal
     {
-        let store_lvalue = create_temporary_place(env, ret_loc.clone());
+        let store_lvalue = create_temporary_place(env, *ret_loc);
         let store_instr = Instruction {
             id: EvaluationOrder(0),
-            loc: ret_loc.clone(),
+            loc: *ret_loc,
             lvalue: store_lvalue,
             value: InstructionValue::StoreLocal {
                 lvalue: LValue {
@@ -360,7 +360,7 @@ fn rewrite_block(
                 },
                 value: value.clone(),
                 type_annotation: None,
-                loc: ret_loc.clone(),
+                loc: *ret_loc,
             },
             effects: None,
         };
@@ -368,7 +368,7 @@ fn rewrite_block(
         instructions.push(store_instr);
         block.instructions.push(store_instr_id);
 
-        let ret_loc = ret_loc.clone();
+        let ret_loc = *ret_loc;
         block.terminal = Terminal::Goto {
             block: return_target,
             id: EvaluationOrder(0),
@@ -385,7 +385,7 @@ fn declare_temporary(
     block_id: BlockId,
     result: &Place,
 ) {
-    let declare_lvalue = create_temporary_place(env, result.loc.clone());
+    let declare_lvalue = create_temporary_place(env, result.loc);
     let declare_instr = Instruction {
         id: EvaluationOrder(0),
         loc: GENERATED_SOURCE,
@@ -396,7 +396,7 @@ fn declare_temporary(
                 kind: InstructionKind::Let,
             },
             type_annotation: None,
-            loc: result.loc.clone(),
+            loc: result.loc,
         },
         effects: None,
     };

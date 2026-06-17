@@ -107,12 +107,11 @@ impl<'a> ReactiveFunctionTransform for MergeTransform<'a> {
         *state = parent_state;
 
         // If parent has deps and they match, flatten the inner scope
-        if let Some(parent_deps) = state.as_ref() {
-            if are_equal_dependencies(parent_deps, &scope_deps, self.env) {
+        if let Some(parent_deps) = state.as_ref()
+            && are_equal_dependencies(parent_deps, &scope_deps, self.env) {
                 let instructions = std::mem::take(&mut scope.instructions);
                 return Ok(Transformed::ReplaceMany(instructions));
             }
-        }
         Ok(Transformed::Keep)
     }
 
@@ -149,19 +148,17 @@ impl<'a> MergeTransform<'a> {
             match &block[i] {
                 ReactiveStatement::Terminal(_) => {
                     // Don't merge across terminals
-                    if let Some(c) = current.take() {
-                        if c.to > c.from + 1 {
+                    if let Some(c) = current.take()
+                        && c.to > c.from + 1 {
                             merged.push(c);
                         }
-                    }
                 }
                 ReactiveStatement::PrunedScope(_) => {
                     // Don't merge across pruned scopes
-                    if let Some(c) = current.take() {
-                        if c.to > c.from + 1 {
+                    if let Some(c) = current.take()
+                        && c.to > c.from + 1 {
                             merged.push(c);
                         }
-                    }
                 }
                 ReactiveStatement::Instruction(instr) => {
                     match &instr.value {
@@ -176,8 +173,8 @@ impl<'a> MergeTransform<'a> {
                                 | InstructionValue::PropertyLoad { .. }
                                 | InstructionValue::TemplateLiteral { .. }
                                 | InstructionValue::UnaryExpression { .. } => {
-                                    if let Some(ref mut c) = current {
-                                        if let Some(lvalue) = &instr.lvalue {
+                                    if let Some(ref mut c) = current
+                                        && let Some(lvalue) = &instr.lvalue {
                                             let decl_id = self.env.identifiers
                                                 [lvalue.identifier.0 as usize]
                                                 .declaration_id;
@@ -189,7 +186,6 @@ impl<'a> MergeTransform<'a> {
                                                 self.temporaries.insert(decl_id, src_decl);
                                             }
                                         }
-                                    }
                                 }
                                 InstructionValue::StoreLocal { lvalue, value, .. } => {
                                     if let Some(ref mut c) = current {
@@ -227,21 +223,19 @@ impl<'a> MergeTransform<'a> {
                                 }
                                 _ => {
                                     // Other instructions prevent merging
-                                    if let Some(c) = current.take() {
-                                        if c.to > c.from + 1 {
+                                    if let Some(c) = current.take()
+                                        && c.to > c.from + 1 {
                                             merged.push(c);
                                         }
-                                    }
                                 }
                             }
                         }
                         _ => {
                             // Non-Instruction reactive values prevent merging
-                            if let Some(c) = current.take() {
-                                if c.to > c.from + 1 {
+                            if let Some(c) = current.take()
+                                && c.to > c.from + 1 {
                                     merged.push(c);
                                 }
-                            }
                         }
                     }
                 }
@@ -327,11 +321,10 @@ impl<'a> MergeTransform<'a> {
             }
         }
         // Flush remaining
-        if let Some(c) = current.take() {
-            if c.to > c.from + 1 {
+        if let Some(c) = current.take()
+            && c.to > c.from + 1 {
                 merged.push(c);
             }
-        }
 
         // Pass 3: apply merges
         if merged.is_empty() {
@@ -423,11 +416,10 @@ fn are_lvalues_last_used_by_scope(
 ) -> bool {
     let range_end = env.scopes[scope_id.0 as usize].range.end;
     for lvalue in lvalues {
-        if let Some(&last_used_at) = last_usage.get(lvalue) {
-            if last_used_at >= range_end {
+        if let Some(&last_used_at) = last_usage.get(lvalue)
+            && last_used_at >= range_end {
                 return false;
             }
-        }
     }
     true
 }

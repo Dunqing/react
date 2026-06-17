@@ -952,8 +952,8 @@ impl<'a> CollectDependenciesVisitor<'a> {
                         }
                     }
                 }
-            } else if let InstructionValue::MethodCall { property, args, .. } = instr_value {
-                if env
+            } else if let InstructionValue::MethodCall { property, args, .. } = instr_value
+                && env
                     .get_hook_kind_for_id(property.identifier)
                     .ok()
                     .flatten()
@@ -971,7 +971,6 @@ impl<'a> CollectDependenciesVisitor<'a> {
                         }
                     }
                 }
-            }
         }
     }
 }
@@ -1263,7 +1262,7 @@ impl<'a> ReactiveFunctionTransform for PruneScopesTransform<'a> {
                 let ids = self
                     .reassignments
                     .entry(decl_id)
-                    .or_insert_with(HashSet::new);
+                    .or_default();
                 ids.insert(store_value.identifier);
             }
             ReactiveValue::Instruction(InstructionValue::LoadLocal { place, .. }) => {
@@ -1279,16 +1278,15 @@ impl<'a> ReactiveFunctionTransform for PruneScopesTransform<'a> {
                             .is_none()
                     })
                     .unwrap_or(false);
-                if has_scope && lvalue_no_scope {
-                    if let Some(lv) = &instruction.lvalue {
+                if has_scope && lvalue_no_scope
+                    && let Some(lv) = &instruction.lvalue {
                         let decl_id = self.env.identifiers[lv.identifier.0 as usize].declaration_id;
                         let ids = self
                             .reassignments
                             .entry(decl_id)
-                            .or_insert_with(HashSet::new);
+                            .or_default();
                         ids.insert(place.identifier);
                     }
-                }
             }
             ReactiveValue::Instruction(InstructionValue::FinishMemoize {
                 decl, pruned, ..
@@ -1314,11 +1312,10 @@ impl<'a> ReactiveFunctionTransform for PruneScopesTransform<'a> {
                     }
                 } else {
                     let scope = self.env.identifiers[decl.identifier.0 as usize].scope;
-                    if let Some(scope_id) = scope {
-                        if self.pruned_scopes.contains(&scope_id) {
+                    if let Some(scope_id) = scope
+                        && self.pruned_scopes.contains(&scope_id) {
                             *pruned = true;
                         }
-                    }
                 }
             }
             _ => {}

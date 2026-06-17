@@ -245,7 +245,7 @@ fn lower_throw_statement(
             reason: "(BuildHIR::lowerStatement) Support ThrowStatement inside of try/catch"
                 .to_string(),
             description: None,
-            loc: loc.clone(),
+            loc,
             suggestions: None,
         })?;
     }
@@ -333,7 +333,7 @@ fn lower_variable_declaration(
     for declarator in &var_decl.declarations {
         if let Some(init) = &declarator.init {
             let value = lower_expression_to_temporary(builder, init)?;
-            lower_declarator_assignment(builder, stmt_loc.clone(), kind, &declarator.id, value)?;
+            lower_declarator_assignment(builder, stmt_loc, kind, &declarator.id, value)?;
         } else {
             // No initializer: emit DeclareLocal (or DeclareContext) for identifier
             // targets; bail on destructuring (it's a syntax error without an init,
@@ -395,7 +395,7 @@ fn lower_declarator_declare(
 
     let id_loc = Some(builder.loc_of_span(id.span));
     let symbol_id = id.symbol_id.get();
-    let binding = builder.resolve_identifier_symbol(&id.name, symbol_id, id_loc.clone())?;
+    let binding = builder.resolve_identifier_symbol(&id.name, symbol_id, id_loc)?;
     match binding {
         VariableBinding::Identifier { identifier, .. } => {
             builder.set_identifier_declaration_loc(identifier, &id_loc);
@@ -403,14 +403,14 @@ fn lower_declarator_declare(
                 identifier,
                 effect: Effect::Unknown,
                 reactive: false,
-                loc: id_loc.clone(),
+                loc: id_loc,
             };
             if builder.is_context_symbol(symbol_id) {
                 if kind == InstructionKind::Const {
                     builder.record_error(CompilerErrorDetail {
                         reason: "Expect `const` declaration not to be reassigned".to_string(),
                         category: ErrorCategory::Syntax,
-                        loc: id_loc.clone(),
+                        loc: id_loc,
                         description: None,
                         suggestions: None,
                     })?;
@@ -468,7 +468,7 @@ fn store_to_identifier(
     }
     let id_loc = Some(builder.loc_of_span(id.span));
     let symbol_id = id.symbol_id.get();
-    let binding = builder.resolve_identifier_symbol(&id.name, symbol_id, id_loc.clone())?;
+    let binding = builder.resolve_identifier_symbol(&id.name, symbol_id, id_loc)?;
     match binding {
         VariableBinding::Identifier { identifier, .. } => {
             builder.set_identifier_declaration_loc(identifier, &id_loc);
@@ -476,7 +476,7 @@ fn store_to_identifier(
                 identifier,
                 effect: Effect::Unknown,
                 reactive: false,
-                loc: loc.clone(),
+                loc,
             };
             if builder.is_context_symbol(symbol_id) {
                 let temp = lower_value_to_temporary(
@@ -598,10 +598,10 @@ fn lower_for_statement(
             None => {
                 let placeholder = InstructionValue::Primitive {
                     value: PrimitiveValue::Undefined,
-                    loc: loc.clone(),
+                    loc,
                 };
                 lower_value_to_temporary(builder, placeholder)?;
-                loc.clone()
+                loc
             }
             Some(oxc::ForStatementInit::VariableDeclaration(var_decl)) => {
                 let init_loc = Some(builder.loc_of_span(var_decl.span));
@@ -619,7 +619,7 @@ fn lower_for_statement(
                     category: ErrorCategory::Todo,
                     reason: "(BuildHIR::lowerStatement) Handle non-variable initialization in ForStatement".to_string(),
                     description: None,
-                    loc: loc.clone(),
+                    loc,
                     suggestions: None,
                 })?;
                 lower_expression_to_temporary(builder, expr)?;
@@ -677,7 +677,7 @@ fn lower_for_statement(
             loop_block: body_block,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         test_block,
     );
@@ -692,7 +692,7 @@ fn lower_for_statement(
                 alternate: continuation_id,
                 fallthrough: continuation_id,
                 id: EvaluationOrder(0),
-                loc: loc.clone(),
+                loc,
             },
             continuation_block,
         );
@@ -701,13 +701,13 @@ fn lower_for_statement(
             category: ErrorCategory::Todo,
             reason: "(BuildHIR::lowerStatement) Handle empty test in ForStatement".to_string(),
             description: None,
-            loc: loc.clone(),
+            loc,
             suggestions: None,
         })?;
         // Treat `for(;;)` as `while(true)` to keep the builder state consistent.
         let true_val = InstructionValue::Primitive {
             value: PrimitiveValue::Boolean(true),
-            loc: loc.clone(),
+            loc,
         };
         let test = lower_value_to_temporary(builder, true_val)?;
         builder.terminate_with_continuation(
@@ -764,7 +764,7 @@ fn lower_while_statement(
             loop_block,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         conditional_block,
     );
@@ -823,7 +823,7 @@ fn lower_do_while_statement(
             test: conditional_id,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         conditional_block,
     );
@@ -883,24 +883,24 @@ fn lower_for_in_statement(
             loop_block,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         init_block,
     );
 
-    let left_loc = for_in_of_left_loc(builder, &for_in.left).or(loc.clone());
+    let left_loc = for_in_of_left_loc(builder, &for_in.left).or(loc);
     let next_property = lower_value_to_temporary(
         builder,
         InstructionValue::NextPropertyOf {
             value,
-            loc: left_loc.clone(),
+            loc: left_loc,
         },
     )?;
 
     let assign_result = lower_for_head_target(
         builder,
         &for_in.left,
-        left_loc.clone(),
+        left_loc,
         next_property.clone(),
     )?;
     let test_value = assign_result.unwrap_or(next_property);
@@ -908,7 +908,7 @@ fn lower_for_in_statement(
         builder,
         InstructionValue::LoadLocal {
             place: test_value,
-            loc: left_loc.clone(),
+            loc: left_loc,
         },
     )?;
     builder.terminate_with_continuation(
@@ -918,7 +918,7 @@ fn lower_for_in_statement(
             alternate: continuation_id,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         continuation_block,
     );
@@ -947,7 +947,7 @@ fn lower_for_of_statement(
             category: ErrorCategory::Todo,
             reason: "(BuildHIR::lowerStatement) Handle for-await loops".to_string(),
             description: None,
-            loc: loc.clone(),
+            loc,
             suggestions: None,
         })?;
         return Ok(());
@@ -979,7 +979,7 @@ fn lower_for_of_statement(
             loop_block,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         init_block,
     );
@@ -989,7 +989,7 @@ fn lower_for_of_statement(
         builder,
         InstructionValue::GetIterator {
             collection: value.clone(),
-            loc: value.loc.clone(),
+            loc: value.loc,
         },
     )?;
     builder.terminate_with_continuation(
@@ -997,26 +997,26 @@ fn lower_for_of_statement(
             block: test_block_id,
             variant: GotoVariant::Break,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         test_block,
     );
 
     // Test block: IteratorNext, assign, branch.
-    let left_loc = for_in_of_left_loc(builder, &for_of.left).or(loc.clone());
+    let left_loc = for_in_of_left_loc(builder, &for_of.left).or(loc);
     let advance_iterator = lower_value_to_temporary(
         builder,
         InstructionValue::IteratorNext {
             iterator: iterator.clone(),
             collection: value.clone(),
-            loc: left_loc.clone(),
+            loc: left_loc,
         },
     )?;
 
     let assign_result = lower_for_head_target(
         builder,
         &for_of.left,
-        left_loc.clone(),
+        left_loc,
         advance_iterator.clone(),
     )?;
     let test_value = assign_result.unwrap_or(advance_iterator);
@@ -1024,7 +1024,7 @@ fn lower_for_of_statement(
         builder,
         InstructionValue::LoadLocal {
             place: test_value,
-            loc: left_loc.clone(),
+            loc: left_loc,
         },
     )?;
     builder.terminate_with_continuation(
@@ -1034,7 +1034,7 @@ fn lower_for_of_statement(
             alternate: continuation_id,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: loc.clone(),
+            loc,
         },
         continuation_block,
     );
@@ -1075,7 +1075,7 @@ fn lower_for_head_target(
                         var_decl.declarations.len()
                     ),
                     description: None,
-                    loc: left_loc.clone(),
+                    loc: left_loc,
                     suggestions: None,
                 })?;
             }
@@ -1123,14 +1123,14 @@ fn lower_for_head_reassign_identifier(
     value: Place,
 ) -> Result<Option<Place>, CompilerError> {
     let symbol_id = sq::resolve_identifier_reference(builder.semantic(), ident);
-    let binding = builder.resolve_identifier_symbol(&ident.name, symbol_id, left_loc.clone())?;
+    let binding = builder.resolve_identifier_symbol(&ident.name, symbol_id, left_loc)?;
     match binding {
         VariableBinding::Identifier { identifier, .. } => {
             let place = Place {
                 identifier,
                 effect: Effect::Unknown,
                 reactive: false,
-                loc: left_loc.clone(),
+                loc: left_loc,
             };
             if builder.is_context_symbol(symbol_id) {
                 let temp = lower_value_to_temporary(
@@ -1204,7 +1204,7 @@ fn lower_switch_statement(
                     reason: "Expected at most one `default` branch in a switch statement"
                         .to_string(),
                     description: None,
-                    loc: case_loc.clone(),
+                    loc: case_loc,
                     suggestions: None,
                 })?;
                 break;
@@ -1222,7 +1222,7 @@ fn lower_switch_statement(
                     block: fallthrough_target,
                     variant: GotoVariant::Break,
                     id: EvaluationOrder(0),
-                    loc: case_loc.clone(),
+                    loc: case_loc,
                 })
             })
         })?;
@@ -1280,7 +1280,7 @@ fn lower_try_statement(
                 reason: "(BuildHIR::lowerStatement) Handle TryStatement without a catch clause"
                     .to_string(),
                 description: None,
-                loc: loc.clone(),
+                loc,
                 suggestions: None,
             })?;
             return Ok(());
@@ -1294,7 +1294,7 @@ fn lower_try_statement(
                 "(BuildHIR::lowerStatement) Handle TryStatement with a finalizer ('finally') clause"
                     .to_string(),
             description: None,
-            loc: loc.clone(),
+            loc,
             suggestions: None,
         })?;
     }
@@ -1306,13 +1306,13 @@ fn lower_try_statement(
             match &param.pattern {
                 oxc::BindingPattern::BindingIdentifier(id) => {
                     let param_loc = Some(builder.loc_of_span(id.span));
-                    let temp_id = builder.make_temporary(param_loc.clone());
+                    let temp_id = builder.make_temporary(param_loc);
                     super::promote_temporary(builder, temp_id);
                     let place = Place {
                         identifier: temp_id,
                         effect: Effect::Unknown,
                         reactive: false,
-                        loc: param_loc.clone(),
+                        loc: param_loc,
                     };
                     lower_value_to_temporary(
                         builder,
@@ -1353,7 +1353,7 @@ fn lower_try_statement(
             let param_loc = Some(builder.loc_of_span(id.span));
             store_to_identifier(
                 builder,
-                param_loc.or_else(|| handler_loc.clone()),
+                param_loc.or(handler_loc),
                 InstructionKind::Catch,
                 id,
                 place.clone(),
@@ -1364,7 +1364,7 @@ fn lower_try_statement(
             block: continuation_id,
             variant: GotoVariant::Break,
             id: EvaluationOrder(0),
-            loc: handler_loc.clone(),
+            loc: handler_loc,
         })
     })?;
 
@@ -1378,7 +1378,7 @@ fn lower_try_statement(
             block: continuation_id,
             variant: GotoVariant::Try,
             id: EvaluationOrder(0),
-            loc: try_body_loc.clone(),
+            loc: try_body_loc,
         })
     })?;
 

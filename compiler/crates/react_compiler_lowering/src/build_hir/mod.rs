@@ -86,7 +86,7 @@ pub(crate) fn build_temporary_place(
     builder: &mut HirBuilder,
     loc: Option<SourceLocation>,
 ) -> Place {
-    let id = builder.make_temporary(loc.clone());
+    let id = builder.make_temporary(loc);
     Place {
         identifier: id,
         reactive: false,
@@ -115,7 +115,7 @@ pub(crate) fn lower_value_to_temporary(
         }
     }
     let loc = value.loc().cloned();
-    let place = build_temporary_place(builder, loc.clone());
+    let place = build_temporary_place(builder, loc);
     builder.push(Instruction {
         id: EvaluationOrder(0),
         lvalue: place.clone(),
@@ -292,7 +292,7 @@ pub(crate) fn lower_inner(
             identifier,
             effect: Effect::Unknown,
             reactive: false,
-            loc: ctx_loc.clone(),
+            loc: *ctx_loc,
         });
     }
 
@@ -355,7 +355,7 @@ pub(crate) fn lower_inner(
 
     let (hir_body, instructions, used_names, child_bindings) = builder.build()?;
 
-    let returns = crate::hir_builder::create_temporary_place(env, loc.clone());
+    let returns = crate::hir_builder::create_temporary_place(env, loc);
 
     Ok((
         HirFunction {
@@ -400,10 +400,10 @@ fn lower_param(
     // pattern — mirroring how the reference treats an AssignmentPattern param.
     if let Some(initializer) = &param.initializer {
         let param_loc = Some(builder.loc_of_span(pattern.span()));
-        let place = build_temporary_place(builder, param_loc.clone());
+        let place = build_temporary_place(builder, param_loc);
         promote_temporary(builder, place.identifier);
         hir_params.push(ParamPattern::Place(place.clone()));
-        let resolved = patterns::lower_default(builder, param_loc.clone(), initializer, place)?;
+        let resolved = patterns::lower_default(builder, param_loc, initializer, place)?;
         patterns::lower_assignment(
             builder,
             param_loc,
@@ -425,7 +425,7 @@ fn lower_param(
             let param_loc = Some(builder.loc_of_span(ident.span));
             let symbol_id = ident.symbol_id.get();
             let binding =
-                builder.resolve_identifier_symbol(&ident.name, symbol_id, param_loc.clone())?;
+                builder.resolve_identifier_symbol(&ident.name, symbol_id, param_loc)?;
             match binding {
                 VariableBinding::Identifier { identifier, .. } => {
                     builder.set_identifier_declaration_loc(identifier, &param_loc);
@@ -450,7 +450,7 @@ fn lower_param(
         // temporary param and destructure it into the pattern.
         oxc::BindingPattern::ObjectPattern(_) | oxc::BindingPattern::ArrayPattern(_) => {
             let param_loc = Some(builder.loc_of_span(pattern.span()));
-            let place = build_temporary_place(builder, param_loc.clone());
+            let place = build_temporary_place(builder, param_loc);
             promote_temporary(builder, place.identifier);
             hir_params.push(ParamPattern::Place(place.clone()));
             patterns::lower_assignment(
@@ -466,7 +466,7 @@ fn lower_param(
             // An AssignmentPattern at the top of a FormalParameter is unusual
             // (defaults come via `initializer`); lower it via lower_assignment.
             let param_loc = Some(builder.loc_of_span(pattern.span()));
-            let place = build_temporary_place(builder, param_loc.clone());
+            let place = build_temporary_place(builder, param_loc);
             promote_temporary(builder, place.identifier);
             hir_params.push(ParamPattern::Place(place.clone()));
             patterns::lower_assignment(
@@ -490,7 +490,7 @@ fn lower_rest_param(
     hir_params: &mut Vec<ParamPattern>,
 ) -> Result<(), CompilerError> {
     let rest_loc = Some(builder.loc_of_span(rest.span));
-    let place = build_temporary_place(builder, rest_loc.clone());
+    let place = build_temporary_place(builder, rest_loc);
     hir_params.push(ParamPattern::Spread(SpreadPattern {
         place: place.clone(),
     }));

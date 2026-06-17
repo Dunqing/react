@@ -473,7 +473,7 @@ fn evaluate_instruction(
                     ..
                 }) = operand
                 {
-                    let negated = n.value() * -1.0;
+                    let negated = -n.value();
                     let loc = *loc;
                     let result = Constant::Primitive {
                         value: PrimitiveValue::Number(FloatValue::new(negated)),
@@ -530,9 +530,8 @@ fn evaluate_instruction(
                 value: PrimitiveValue::String(ref s),
                 ..
             }) = object_value
-            {
-                if let PropertyLiteral::String(prop_name) = property {
-                    if prop_name == "length" {
+                && let PropertyLiteral::String(prop_name) = property
+                    && prop_name == "length" {
                         // Use UTF-16 code unit count to match JS .length semantics
                         let len = s.encode_utf16().count() as f64;
                         let loc = *loc;
@@ -547,8 +546,6 @@ fn evaluate_instruction(
                             };
                         return Some(result);
                     }
-                }
-            }
             None
         }
         InstructionValue::TemplateLiteral {
@@ -678,15 +675,13 @@ fn evaluate_instruction(
                         deps: Some(ref mut deps),
                         ..
                     } = func.instructions[instr_id.0 as usize].value
-                    {
-                        if let react_compiler_hir::ManualMemoDependencyRoot::NamedLocal {
+                        && let react_compiler_hir::ManualMemoDependencyRoot::NamedLocal {
                             constant,
                             ..
                         } = &mut deps[idx].root
                         {
                             *constant = true;
                         }
-                    }
                 }
             }
             None

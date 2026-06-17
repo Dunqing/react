@@ -65,7 +65,7 @@ pub(crate) fn lower_identifier_for_assignment(
     name: &str,
     symbol_id: Option<oxc_syntax::symbol::SymbolId>,
 ) -> Result<Option<IdentifierForAssignment>, CompilerError> {
-    let binding = builder.resolve_identifier_symbol(name, symbol_id, ident_loc.clone())?;
+    let binding = builder.resolve_identifier_symbol(name, symbol_id, ident_loc)?;
     match binding {
         VariableBinding::Identifier {
             identifier,
@@ -81,7 +81,7 @@ pub(crate) fn lower_identifier_for_assignment(
                 builder.record_error(CompilerErrorDetail {
                     reason: "Cannot reassign a `const` variable".to_string(),
                     category: ErrorCategory::Syntax,
-                    loc: loc.clone(),
+                    loc,
                     description: Some(format!("`{}` is declared as const", name)),
                     suggestions: None,
                 })?;
@@ -155,7 +155,7 @@ pub(crate) fn lower_assignment(
         oxc::BindingPattern::AssignmentPattern(pattern) => {
             // Default value: if value === undefined use the default, else value.
             let pat_loc = Some(builder.loc_of_span(pattern.span));
-            let resolved = lower_default(builder, pat_loc.clone(), &pattern.right, value)?;
+            let resolved = lower_default(builder, pat_loc, &pattern.right, value)?;
             lower_assignment(builder, pat_loc, kind, &pattern.left, resolved, style)
         }
     }
@@ -178,7 +178,7 @@ fn lower_binding_identifier(
     let id_loc = Some(builder.loc_of_span(id.span));
     let symbol_id = id.symbol_id.get();
     let result =
-        lower_identifier_for_assignment(builder, loc.clone(), id_loc, kind, &id.name, symbol_id)?;
+        lower_identifier_for_assignment(builder, loc, id_loc, kind, &id.name, symbol_id)?;
     match result {
         None => Ok(None),
         Some(IdentifierForAssignment::Global { name }) => {
@@ -250,7 +250,7 @@ fn lower_array_binding(
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
                         builder,
-                        id_loc.clone(),
+                        id_loc,
                         id_loc,
                         kind,
                         &id.name,
@@ -294,7 +294,7 @@ fn lower_array_binding(
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
                         builder,
-                        rest_loc.clone(),
+                        rest_loc,
                         id_loc,
                         kind,
                         &id.name,
@@ -345,12 +345,12 @@ fn lower_array_binding(
                 kind,
             },
             value: value.clone(),
-            loc: loc.clone(),
+            loc,
         },
     )?;
 
     for (place, path) in followups {
-        let followup_loc = Some(builder.loc_of_span(path.span())).or(loc.clone());
+        let followup_loc = Some(builder.loc_of_span(path.span())).or(loc);
         lower_assignment(builder, followup_loc, kind, path, place, style)?;
     }
     Ok(Some(temporary))
@@ -381,7 +381,7 @@ fn lower_object_binding(
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
                         builder,
-                        id_loc.clone(),
+                        id_loc,
                         id_loc,
                         kind,
                         &id.name,
@@ -441,7 +441,7 @@ fn lower_object_binding(
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
                         builder,
-                        rest_loc.clone(),
+                        rest_loc,
                         id_loc,
                         kind,
                         &id.name,
@@ -497,12 +497,12 @@ fn lower_object_binding(
                 kind,
             },
             value: value.clone(),
-            loc: loc.clone(),
+            loc,
         },
     )?;
 
     for (place, path) in followups {
-        let followup_loc = Some(builder.loc_of_span(path.span())).or(loc.clone());
+        let followup_loc = Some(builder.loc_of_span(path.span())).or(loc);
         lower_assignment(builder, followup_loc, kind, path, place, style)?;
     }
     Ok(Some(temporary))
@@ -576,7 +576,7 @@ pub(crate) fn lower_default(
     default_expr: &oxc::Expression,
     value: Place,
 ) -> Result<Place, CompilerError> {
-    let temp = build_temporary_place(builder, pat_loc.clone());
+    let temp = build_temporary_place(builder, pat_loc);
 
     let test_block = builder.reserve(BlockKind::Value);
     let continuation_block = builder.reserve(builder.current_block_kind());
@@ -585,7 +585,6 @@ pub(crate) fn lower_default(
     // Consequent: use the default value.
     let consequent = {
         let temp = temp.clone();
-        let pat_loc = pat_loc.clone();
         builder.try_enter(BlockKind::Value, move |builder, _| {
             let default_value = lower_expression_to_temporary(builder, default_expr)?;
             lower_value_to_temporary(
@@ -597,7 +596,7 @@ pub(crate) fn lower_default(
                     },
                     value: default_value,
                     type_annotation: None,
-                    loc: pat_loc.clone(),
+                    loc: pat_loc,
                 },
             )?;
             Ok(Terminal::Goto {
@@ -612,7 +611,6 @@ pub(crate) fn lower_default(
     // Alternate: use the original value.
     let alternate = {
         let temp = temp.clone();
-        let pat_loc = pat_loc.clone();
         let value = value.clone();
         builder.try_enter(BlockKind::Value, move |builder, _| {
             lower_value_to_temporary(
@@ -624,7 +622,7 @@ pub(crate) fn lower_default(
                     },
                     value: value.clone(),
                     type_annotation: None,
-                    loc: pat_loc.clone(),
+                    loc: pat_loc,
                 },
             )?;
             Ok(Terminal::Goto {
@@ -642,7 +640,7 @@ pub(crate) fn lower_default(
             test: test_block.id,
             fallthrough: continuation_id,
             id: EvaluationOrder(0),
-            loc: pat_loc.clone(),
+            loc: pat_loc,
         },
         test_block,
     );
@@ -652,7 +650,7 @@ pub(crate) fn lower_default(
         builder,
         InstructionValue::Primitive {
             value: PrimitiveValue::Undefined,
-            loc: pat_loc.clone(),
+            loc: pat_loc,
         },
     )?;
     let test = lower_value_to_temporary(
@@ -661,7 +659,7 @@ pub(crate) fn lower_default(
             left: value,
             operator: BinaryOperator::StrictEqual,
             right: undef,
-            loc: pat_loc.clone(),
+            loc: pat_loc,
         },
     )?;
     builder.terminate_with_continuation(
@@ -738,7 +736,7 @@ fn lower_assignment_target_identifier(
     let symbol_id = sq::resolve_identifier_reference(builder.semantic(), ident);
     let result = lower_identifier_for_assignment(
         builder,
-        loc.clone(),
+        loc,
         ident_loc,
         InstructionKind::Reassign,
         &ident.name,
@@ -849,7 +847,7 @@ fn lower_maybe_default_target(
     match maybe {
         M::AssignmentTargetWithDefault(with_default) => {
             let pat_loc = Some(builder.loc_of_span(with_default.span));
-            let resolved = lower_default(builder, pat_loc.clone(), &with_default.init, value)?;
+            let resolved = lower_default(builder, pat_loc, &with_default.init, value)?;
             lower_assignment_target(builder, pat_loc, &with_default.binding, resolved)
         }
         // Otherwise it inherits the `AssignmentTarget` variants directly.
@@ -918,7 +916,7 @@ fn lower_array_assignment_target(
                 kind: InstructionKind::Reassign,
             },
             value: value.clone(),
-            loc: loc.clone(),
+            loc,
         },
     )?;
 
@@ -972,7 +970,7 @@ fn lower_object_assignment_target(
                     }));
                 } else {
                     let id_loc = Some(builder.loc_of_span(shorthand.binding.span));
-                    let temp = build_temporary_place(builder, id_loc.clone());
+                    let temp = build_temporary_place(builder, id_loc);
                     promote_temporary(builder, temp.identifier);
                     properties.push(ObjectPropertyOrSpread::Property(ObjectProperty {
                         key,
@@ -1042,7 +1040,7 @@ fn lower_object_assignment_target(
                 kind: InstructionKind::Reassign,
             },
             value: value.clone(),
-            loc: loc.clone(),
+            loc,
         },
     )?;
 
@@ -1068,17 +1066,17 @@ fn run_target_followups(
     for (place, target) in followups {
         match target {
             FollowupTarget::MaybeDefault(maybe) => {
-                let followup_loc = Some(builder.loc_of_span(maybe.span())).or(loc.clone());
+                let followup_loc = Some(builder.loc_of_span(maybe.span())).or(loc);
                 lower_maybe_default_target(builder, followup_loc, maybe, place)?;
             }
             FollowupTarget::Target(target) => {
-                let followup_loc = Some(builder.loc_of_span(target.span())).or(loc.clone());
+                let followup_loc = Some(builder.loc_of_span(target.span())).or(loc);
                 lower_assignment_target(builder, followup_loc, target, place)?;
             }
             FollowupTarget::ShorthandIdentifier(shorthand) => {
-                let followup_loc = Some(builder.loc_of_span(shorthand.span)).or(loc.clone());
+                let followup_loc = Some(builder.loc_of_span(shorthand.span)).or(loc);
                 let value = if let Some(default) = &shorthand.init {
-                    lower_default(builder, followup_loc.clone(), default, place)?
+                    lower_default(builder, followup_loc, default, place)?
                 } else {
                     place
                 };
@@ -1131,7 +1129,7 @@ fn direct_simple_assignment_target_place(
                 return Ok(None);
             }
             let ident_loc = Some(builder.loc_of_span(ident.span));
-            match builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc.clone())? {
+            match builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc)? {
                 VariableBinding::Identifier { identifier, .. } => Ok(Some(Place {
                     identifier,
                     effect: Effect::Unknown,
@@ -1159,7 +1157,7 @@ fn direct_simple_identifier_reference_place(
         return Ok(None);
     }
     let ident_loc = Some(builder.loc_of_span(ident.span));
-    match builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc.clone())? {
+    match builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc)? {
         VariableBinding::Identifier { identifier, .. } => Ok(Some(Place {
             identifier,
             effect: Effect::Unknown,

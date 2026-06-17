@@ -109,9 +109,9 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
         place: &Place,
         state: &mut VisitorState,
     ) -> Result<(), CompilerError> {
-        if let Some(kind) = state.uninitialized.get(&place.identifier) {
-            if let UninitializedKind::Func { definition } = kind {
-                if *definition != Some(place.identifier) {
+        if let Some(kind) = state.uninitialized.get(&place.identifier)
+            && let UninitializedKind::Func { definition } = kind
+                && *definition != Some(place.identifier) {
                     let mut err = CompilerError::new();
                     err.push_error_detail(
                         CompilerErrorDetail::new(
@@ -123,8 +123,6 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
                     );
                     return Err(err);
                 }
-            }
-        }
         Ok(())
     }
 
@@ -153,8 +151,7 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
 
         if let ReactiveValue::Instruction(InstructionValue::StoreContext { lvalue, .. }) =
             &mut instruction.value
-        {
-            if lvalue.kind != InstructionKind::Reassign {
+            && lvalue.kind != InstructionKind::Reassign {
                 let lvalue_id = lvalue.place.identifier;
                 let is_declared_by_scope = state.find_in_active_scopes(lvalue_id);
                 if is_declared_by_scope {
@@ -192,7 +189,6 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
                     }
                 }
             }
-        }
 
         self.visit_instruction(instruction, state)?;
         Ok(Transformed::Keep)

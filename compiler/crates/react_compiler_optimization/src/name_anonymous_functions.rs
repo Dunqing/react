@@ -32,9 +32,11 @@ pub fn name_anonymous_functions(func: &mut HirFunction, env: &mut Environment) {
     let nodes = name_anonymous_functions_impl(func, env);
 
     fn visit(node: &Node, prefix: &str, updates: &mut Vec<(FunctionId, String)>) {
-        if node.generated_name.is_some() && node.existing_name_hint.is_none() {
+        if let Some(generated_name) = &node.generated_name
+            && node.existing_name_hint.is_none()
+        {
             // Only add the prefix to anonymous functions regardless of nesting depth
-            let name = format!("{}{}]", prefix, node.generated_name.as_ref().unwrap());
+            let name = format!("{}{}]", prefix, generated_name);
             updates.push((node.function_id, name));
         }
         // Whether or not we generated a name for the function at this node,
@@ -94,11 +96,9 @@ fn apply_name_hints_to_instructions(
             name_hint,
             ..
         } = &mut instr.value
-        {
-            if let Some(new_name) = update_map.get(&lowered_func.func) {
+            && let Some(new_name) = update_map.get(&lowered_func.func) {
                 *name_hint = Some((*new_name).clone());
             }
-        }
     }
 }
 
@@ -181,12 +181,11 @@ fn name_anonymous_functions_impl(func: &HirFunction, env: &Environment) -> Vec<N
                     if let Some(&node_idx) = functions.get(&value.identifier) {
                         let node = &mut nodes[node_idx];
                         let var_ident = &env.identifiers[store_lvalue.place.identifier.0 as usize];
-                        if node.generated_name.is_none() {
-                            if let Some(IdentifierName::Named(ref var_name)) = var_ident.name {
+                        if node.generated_name.is_none()
+                            && let Some(IdentifierName::Named(ref var_name)) = var_ident.name {
                                 node.generated_name = Some(var_name.clone());
                                 functions.remove(&value.identifier);
                             }
-                        }
                     }
                 }
                 InstructionValue::CallExpression { callee, args, .. } => {

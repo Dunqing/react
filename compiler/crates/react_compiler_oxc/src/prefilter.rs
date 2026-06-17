@@ -83,22 +83,18 @@ impl<'a> Visit<'a> for ReactLikeVisitor {
         }
 
         // Check explicit function name
-        if let Some(id) = &func.id {
-            if is_react_like_name(&id.name) {
+        if let Some(id) = &func.id
+            && is_react_like_name(&id.name) {
                 self.found = true;
                 return;
             }
-        }
 
         // Check inferred name from parent context
-        if func.id.is_none() {
-            if let Some(name) = &self.current_name {
-                if is_react_like_name(name) {
+        if func.id.is_none()
+            && let Some(name) = &self.current_name
+                && is_react_like_name(name) {
                     self.found = true;
-                    return;
                 }
-            }
-        }
 
         // Don't traverse into the function body
     }
@@ -111,12 +107,10 @@ impl<'a> Visit<'a> for ReactLikeVisitor {
             return;
         }
 
-        if let Some(name) = &self.current_name {
-            if is_react_like_name(name) {
+        if let Some(name) = &self.current_name
+            && is_react_like_name(name) {
                 self.found = true;
-                return;
             }
-        }
 
         // Don't traverse into the function body
     }

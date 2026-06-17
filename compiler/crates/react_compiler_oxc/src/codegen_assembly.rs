@@ -198,13 +198,12 @@ fn splice_functions<'a>(
         // Match on the function-declaration span. For bare `function F` this is
         // the statement span; for `export [default] function F` the function
         // span is nested inside the export wrapper, so look there too.
-        if let Some(start) = function_declaration_start(&stmt) {
-            if let Some(node) = by_start.remove(&start) {
+        if let Some(start) = function_declaration_start(&stmt)
+            && let Some(node) = by_start.remove(&start) {
                 emit_top_level(builder, &mut program.body, stmt, node, gating_imports);
                 emit_outlined_children(builder, &mut program.body, start, outlined_by_parent);
                 continue;
             }
-        }
         // For variable declarations / exports / assignments / object props the
         // function span starts at the init expression, not the statement. Record
         // which nested span(s) were spliced so any outlined children can be
@@ -854,11 +853,10 @@ fn rewrap_function_declaration<'a>(
     function.r#type = oxc::FunctionType::FunctionDeclaration;
     // Preserve the original function name (codegen keeps it, but be safe for
     // anonymous default exports).
-    if function.id.is_none() {
-        if let Some(id) = &orig_fn.id {
+    if function.id.is_none()
+        && let Some(id) = &orig_fn.id {
             function.id = Some(builder.binding_identifier(SPAN, builder.str(id.name.as_str())));
         }
-    }
     let func_box = builder.alloc(function);
     match wrapper {
         Wrapper::None => oxc::Statement::FunctionDeclaration(func_box),

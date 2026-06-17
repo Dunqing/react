@@ -221,7 +221,7 @@ fn process_manual_memo_call(
     let loc = func.instructions[instr_id.0 as usize].value.loc().cloned();
 
     // Replace the instruction value with the memoization replacement
-    let replacement = get_manual_memoization_replacement(&fn_place, loc.clone(), manual_memo.kind);
+    let replacement = get_manual_memoization_replacement(&fn_place, loc, manual_memo.kind);
     func.instructions[instr_id.0 as usize].value = replacement;
 
     if is_validation_enabled {
@@ -233,7 +233,7 @@ fn process_manual_memo_call(
                 Some("Expected the first argument to be an inline function expression".to_string()),
             )
             .with_detail(CompilerDiagnosticDetail::Error {
-                loc: fn_place.loc.clone(),
+                loc: fn_place.loc,
                 message: Some(
                     "Expected the first argument to be an inline function expression".to_string(),
                 ),
@@ -252,7 +252,7 @@ fn process_manual_memo_call(
                 identifier: fn_place.identifier,
                 effect: Effect::Unknown,
                 reactive: false,
-                loc: fn_place.loc.clone(),
+                loc: fn_place.loc,
             }
         };
 
@@ -317,8 +317,8 @@ fn collect_temporaries(
         InstructionValue::PropertyLoad {
             object, property, ..
         } => {
-            if sidemap.react.contains(&object.identifier) {
-                if let PropertyLiteral::String(prop_name) = property {
+            if sidemap.react.contains(&object.identifier)
+                && let PropertyLiteral::String(prop_name) = property {
                     if prop_name == "useMemo" {
                         sidemap.manual_memos.insert(
                             lvalue_id,
@@ -337,7 +337,6 @@ fn collect_temporaries(
                         );
                     }
                 }
-            }
         }
         InstructionValue::ArrayExpression { elements, .. } => {
             // Check if all elements are Identifier (Place) - no spreads or holes
@@ -396,7 +395,7 @@ pub fn collect_maybe_memo_dependencies(
                 identifier_name: binding.name().to_string(),
             },
             path: vec![],
-            loc: loc.clone(),
+            loc: *loc,
         }),
         InstructionValue::PropertyLoad {
             object,
@@ -404,23 +403,19 @@ pub fn collect_maybe_memo_dependencies(
             loc,
             ..
         } => {
-            if let Some(object_dep) = maybe_deps.get(&object.identifier) {
-                Some(ManualMemoDependency {
+            maybe_deps.get(&object.identifier).map(|object_dep| ManualMemoDependency {
                     root: object_dep.root.clone(),
                     path: {
                         let mut path = object_dep.path.clone();
                         path.push(DependencyPathEntry {
                             property: property.clone(),
                             optional,
-                            loc: loc.clone(),
+                            loc: *loc,
                         });
                         path
                     },
-                    loc: loc.clone(),
+                    loc: *loc,
                 })
-            } else {
-                None
-            }
         }
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
             if let Some(source) = maybe_deps.get(&place.identifier) {
@@ -435,7 +430,7 @@ pub fn collect_maybe_memo_dependencies(
                         constant: false,
                     },
                     path: vec![],
-                    loc: place.loc.clone(),
+                    loc: place.loc,
                 })
             } else {
                 None
@@ -486,7 +481,7 @@ fn get_manual_memoization_replacement(
                 identifier: fn_place.identifier,
                 effect: Effect::Unknown,
                 reactive: false,
-                loc: loc.clone(),
+                loc,
             },
             loc,
         }
@@ -503,27 +498,27 @@ fn make_manual_memoization_markers(
 ) -> (Instruction, Instruction) {
     let start = Instruction {
         id: EvaluationOrder(0),
-        lvalue: create_temporary_place(env, fn_expr.loc.clone()),
+        lvalue: create_temporary_place(env, fn_expr.loc),
         value: InstructionValue::StartMemoize {
             manual_memo_id,
             deps: deps_list,
             deps_loc: Some(deps_loc),
             has_invalid_deps: false,
-            loc: fn_expr.loc.clone(),
+            loc: fn_expr.loc,
         },
-        loc: fn_expr.loc.clone(),
+        loc: fn_expr.loc,
         effects: None,
     };
     let finish = Instruction {
         id: EvaluationOrder(0),
-        lvalue: create_temporary_place(env, fn_expr.loc.clone()),
+        lvalue: create_temporary_place(env, fn_expr.loc),
         value: InstructionValue::FinishMemoize {
             manual_memo_id,
             decl: memo_decl.clone(),
             pruned: false,
-            loc: fn_expr.loc.clone(),
+            loc: fn_expr.loc,
         },
-        loc: fn_expr.loc.clone(),
+        loc: fn_expr.loc,
         effects: None,
     };
     (start, finish)
@@ -594,8 +589,8 @@ fn extract_manual_memoization_args(
 
     if maybe_deps_list.is_none() {
         let loc = match deps_list_place {
-            Some(PlaceOrSpread::Place(p)) => p.loc.clone(),
-            _ => instr.loc.clone(),
+            Some(PlaceOrSpread::Place(p)) => p.loc,
+            _ => instr.loc,
         };
         env.record_diagnostic(
             CompilerDiagnostic::new(
@@ -630,7 +625,7 @@ fn extract_manual_memoization_args(
                     Some("Expected the dependency list to be an array of simple expressions (e.g. `x`, `x.y.z`, `x?.y?.z`)".to_string()),
                 )
                 .with_detail(CompilerDiagnosticDetail::Error {
-                    loc: dep.loc.clone(),
+                    loc: dep.loc,
                     message: Some("Expected the dependency list to be an array of simple expressions (e.g. `x`, `x.y.z`, `x?.y?.z`)".to_string()),
                     identifier_name: None,
                 }),
@@ -641,7 +636,7 @@ fn extract_manual_memoization_args(
     Some(ExtractedMemoArgs {
         fn_place,
         deps_list: Some(deps_list),
-        deps_loc: deps_info.loc.clone(),
+        deps_loc: deps_info.loc,
     })
 }
 

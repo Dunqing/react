@@ -74,7 +74,7 @@ pub(crate) fn lower_jsx_element_name(
                     reason: "Expected JSXNamespacedName to have no colons in the namespace or name"
                         .to_string(),
                     description: Some(format!("Got `{}` : `{}`", namespace, local)),
-                    loc: loc.clone(),
+                    loc,
                     suggestions: None,
                 })?;
             }
@@ -82,7 +82,7 @@ pub(crate) fn lower_jsx_element_name(
                 builder,
                 InstructionValue::Primitive {
                     value: PrimitiveValue::String(tag),
-                    loc: loc.clone(),
+                    loc,
                 },
             )?;
             Ok(JsxTag::Place(place))
@@ -92,7 +92,7 @@ pub(crate) fn lower_jsx_element_name(
             let loc = Some(builder.loc_of_span(this_expr.span));
             builder.record_diagnostic(CompilerDiagnostic::todo(
                 "(BuildHIR::lowerJsxElementName) Handle ThisExpression tags",
-                loc.clone(),
+                loc,
             ));
             let place = lower_value_to_temporary(
                 builder,
@@ -124,15 +124,15 @@ pub(crate) fn lower_jsx_member_expression(
             let load_value = match load_value {
                 InstructionValue::LoadLocal { place, .. } => InstructionValue::LoadLocal {
                     place,
-                    loc: expr_loc.clone(),
+                    loc: expr_loc,
                 },
                 InstructionValue::LoadContext { place, .. } => InstructionValue::LoadContext {
                     place,
-                    loc: expr_loc.clone(),
+                    loc: expr_loc,
                 },
                 InstructionValue::LoadGlobal { binding, .. } => InstructionValue::LoadGlobal {
                     binding,
-                    loc: expr_loc.clone(),
+                    loc: expr_loc,
                 },
                 other => other,
             };
@@ -145,7 +145,7 @@ pub(crate) fn lower_jsx_member_expression(
             let loc = Some(builder.loc_of_span(this_expr.span));
             builder.record_diagnostic(CompilerDiagnostic::todo(
                 "(BuildHIR::lowerJsxMemberExpression) Handle ThisExpression objects",
-                loc.clone(),
+                loc,
             ));
             lower_value_to_temporary(
                 builder,
@@ -388,7 +388,7 @@ pub(crate) fn lower_jsx_element_value(
                     .iter()
                     .map(|loc| CompilerDiagnosticDetail::Error {
                         message: Some(format!("Multiple `<{}:{}>` tags found", tag_name, name)),
-                        loc: loc.clone(),
+                        loc: *loc,
                         identifier_name: None,
                     })
                     .collect();
@@ -680,8 +680,8 @@ pub(crate) fn collect_fbt_sub_tags_from_element(
     plural_locs: &mut Vec<Option<SourceLocation>>,
     pronoun_locs: &mut Vec<Option<SourceLocation>>,
 ) {
-    if let oxc::JSXElementName::NamespacedName(ns) = &el.opening_element.name {
-        if ns.namespace.name == tag_name {
+    if let oxc::JSXElementName::NamespacedName(ns) = &el.opening_element.name
+        && ns.namespace.name == tag_name {
             let loc = Some(builder.loc_of_span(ns.span));
             match ns.name.name.as_str() {
                 "enum" => enum_locs.push(loc),
@@ -690,7 +690,6 @@ pub(crate) fn collect_fbt_sub_tags_from_element(
                 _ => {}
             }
         }
-    }
     collect_fbt_sub_tags(
         builder,
         &el.children,

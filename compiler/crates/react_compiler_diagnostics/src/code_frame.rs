@@ -76,11 +76,7 @@ fn get_marker_lines(
     let end_column = end_column as usize;
 
     // Compute display range
-    let start = if start_line > (lines_above as usize + 1) {
-        start_line - (lines_above as usize + 1)
-    } else {
-        0
-    };
+    let start = start_line.saturating_sub(lines_above as usize + 1);
     let end = std::cmp::min(source_line_count, end_line + lines_below as usize);
 
     let line_diff = end_line - start_line;

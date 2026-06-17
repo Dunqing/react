@@ -226,11 +226,10 @@ impl<'a> Context<'a> {
                 // (ownsBlock is boolean, so `!== null` is always true)
                 self.scheduled.remove(block);
                 self.scheduled.remove(continue_block);
-                if *owns_loop {
-                    if let Some(lb) = loop_block {
+                if *owns_loop
+                    && let Some(lb) = loop_block {
                         self.scheduled.remove(lb);
                     }
-                }
             }
             _ => {
                 self.scheduled.remove(&last.block());
@@ -289,8 +288,7 @@ impl<'a> Context<'a> {
                 continue_block,
                 ..
             } = target
-            {
-                if *continue_block == block {
+                && *continue_block == block {
                     let kind = if has_preceding_loop {
                         ReactiveTerminalTargetKind::Labeled
                     } else if i == self.control_flow_stack.len() - 1 {
@@ -300,7 +298,6 @@ impl<'a> Context<'a> {
                     };
                     return Some((*fallthrough_block, kind));
                 }
-            }
             has_preceding_loop = has_preceding_loop || target.is_loop();
         }
         None
@@ -1107,8 +1104,8 @@ impl<'a, 'b> Driver<'a, 'b> {
         let instructions: Vec<_> = block.instructions.clone();
 
         // If we've reached the fallthrough, stop
-        if let Some(ft) = fallthrough {
-            if block_id == ft {
+        if let Some(ft) = fallthrough
+            && block_id == ft {
                 return Err(CompilerDiagnostic::new(
                     ErrorCategory::Invariant,
                     format!(
@@ -1118,7 +1115,6 @@ impl<'a, 'b> Driver<'a, 'b> {
                     None,
                 ));
             }
-        }
 
         match &terminal {
             Terminal::Branch {

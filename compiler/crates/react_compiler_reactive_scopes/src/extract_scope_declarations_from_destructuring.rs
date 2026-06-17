@@ -112,8 +112,8 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
             } else if !reassigned.is_empty() {
                 // Mixed: replace reassigned items with temporaries and emit separate assignments
                 let mut renamed: Vec<(Place, Place)> = Vec::new();
-                let instr_loc = instruction.loc.clone();
-                let destr_loc = loc.clone();
+                let instr_loc = instruction.loc;
+                let destr_loc = *loc;
 
                 let env = &mut *self.env; // reborrow
                 visitors::map_pattern_operands(&mut lvalue.pattern, &mut |place: Place| {
@@ -128,7 +128,7 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
                     env.identifiers[temp_id.0 as usize].type_ = original_type;
                     // Set identifier loc to the place's source location
                     // (matches TS makeTemporaryIdentifier which receives place.loc)
-                    env.identifiers[temp_id.0 as usize].loc = place.loc.clone();
+                    env.identifiers[temp_id.0 as usize].loc = place.loc;
                     // Promote the temporary
                     env.identifiers[temp_id.0 as usize].name =
                         Some(IdentifierName::Promoted(format!("#t{}", decl_id.0)));
@@ -156,10 +156,10 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
                             },
                             value: temporary,
                             type_annotation: None,
-                            loc: destr_loc.clone(),
+                            loc: destr_loc,
                         }),
                         effects: None,
-                        loc: instr_loc.clone(),
+                        loc: instr_loc,
                     });
                 }
                 extra_instructions = Some(extra);
@@ -169,13 +169,13 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
         // Update state.declared with declarations from the instruction(s)
         if let Some(ref extras) = extra_instructions {
             // Process the original instruction
-            update_declared_from_instruction(instruction, &self.env, state);
+            update_declared_from_instruction(instruction, self.env, state);
             // Process extra instructions
             for extra_instr in extras {
-                update_declared_from_instruction(extra_instr, &self.env, state);
+                update_declared_from_instruction(extra_instr, self.env, state);
             }
         } else {
-            update_declared_from_instruction(instruction, &self.env, state);
+            update_declared_from_instruction(instruction, self.env, state);
         }
 
         if let Some(extras) = extra_instructions {

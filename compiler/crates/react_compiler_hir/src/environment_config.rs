@@ -49,8 +49,10 @@ pub struct HookConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ExhaustiveEffectDepsMode {
     #[serde(rename = "off")]
+    #[default]
     Off,
     #[serde(rename = "all")]
     All,
@@ -60,11 +62,6 @@ pub enum ExhaustiveEffectDepsMode {
     ExtraOnly,
 }
 
-impl Default for ExhaustiveEffectDepsMode {
-    fn default() -> Self {
-        Self::Off
-    }
-}
 
 fn default_true() -> bool {
     true

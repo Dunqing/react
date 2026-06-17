@@ -271,11 +271,10 @@ impl AliasingState {
         while let Some(entry) = queue.pop() {
             let current = entry.place;
             let previous_kind = seen.get(&current).copied();
-            if let Some(prev) = previous_kind {
-                if prev >= entry.kind {
+            if let Some(prev) = previous_kind
+                && prev >= entry.kind {
                     continue;
                 }
-            }
             seen.insert(current, entry.kind);
 
             let node = match self.nodes.get_mut(&current) {
@@ -293,13 +292,11 @@ impl AliasingState {
                 ident.mutable_range.end = EvaluationOrder(ident.mutable_range.end.0.max(end_val.0));
             }
 
-            if let NodeValue::Function { function_id } = &node.value {
-                if node.transitive.is_none() && node.local.is_none() {
-                    if should_record_errors {
+            if let NodeValue::Function { function_id } = &node.value
+                && node.transitive.is_none() && node.local.is_none()
+                    && should_record_errors {
                         append_function_errors(env, *function_id);
                     }
-                }
-            }
 
             if entry.transitive {
                 match &node.transitive {
@@ -525,11 +522,11 @@ pub fn infer_mutation_aliasing_ranges(
                 if !seen_blocks.contains(&pred) {
                     pending_phis
                         .entry(pred)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(PendingPhiOperand {
                             from: operand.clone(),
                             into: phi.place.clone(),
-                            index: index,
+                            index,
                         });
                     index += 1;
                 } else {
@@ -592,7 +589,7 @@ pub fn infer_mutation_aliasing_ranges(
                         let is_transitive_conditional =
                             matches!(effect, AliasingEffect::MutateTransitiveConditionally { .. });
                         mutations.push(PendingMutation {
-                            index: index,
+                            index,
                             id: instr_eval_order,
                             transitive: true,
                             kind: if is_transitive_conditional {
@@ -607,7 +604,7 @@ pub fn infer_mutation_aliasing_ranges(
                     }
                     AliasingEffect::Mutate { value, reason } => {
                         mutations.push(PendingMutation {
-                            index: index,
+                            index,
                             id: instr_eval_order,
                             transitive: false,
                             kind: MutationKind::Definite,
@@ -618,7 +615,7 @@ pub fn infer_mutation_aliasing_ranges(
                     }
                     AliasingEffect::MutateConditionally { value } => {
                         mutations.push(PendingMutation {
-                            index: index,
+                            index,
                             id: instr_eval_order,
                             transitive: false,
                             kind: MutationKind::Conditional,
@@ -644,7 +641,7 @@ pub fn infer_mutation_aliasing_ranges(
                     }
                     AliasingEffect::Render { place } => {
                         renders.push(PendingRender {
-                            index: index,
+                            index,
                             place: place.clone(),
                         });
                         index += 1;
@@ -740,18 +737,16 @@ pub fn infer_mutation_aliasing_ranges(
             react_compiler_hir::ParamPattern::Place(p) => p,
             react_compiler_hir::ParamPattern::Spread(s) => &s.place,
         };
-        if let Some(node) = state.nodes.get(&place.identifier) {
-            if node.local.is_some() || node.transitive.is_some() {
+        if let Some(node) = state.nodes.get(&place.identifier)
+            && (node.local.is_some() || node.transitive.is_some()) {
                 captured_params.insert(place.identifier);
             }
-        }
     }
     for ctx in &func.context {
-        if let Some(node) = state.nodes.get(&ctx.identifier) {
-            if node.local.is_some() || node.transitive.is_some() {
+        if let Some(node) = state.nodes.get(&ctx.identifier)
+            && (node.local.is_some() || node.transitive.is_some()) {
                 captured_params.insert(ctx.identifier);
             }
-        }
     }
 
     // Now mutate the effects on params/context in place

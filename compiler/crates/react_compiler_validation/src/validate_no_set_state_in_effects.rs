@@ -85,51 +85,39 @@ pub fn validate_no_set_state_in_effects(
                     let prop_type =
                         &types[identifiers[property.identifier.0 as usize].type_.0 as usize];
                     if is_use_effect_event_type(prop_type) {
-                        if let Some(first_arg) = args.first() {
-                            if let PlaceOrSpread::Place(arg_place) = first_arg {
-                                if let Some(info) = set_state_functions.get(&arg_place.identifier) {
+                        if let Some(first_arg) = args.first()
+                            && let PlaceOrSpread::Place(arg_place) = first_arg
+                                && let Some(info) = set_state_functions.get(&arg_place.identifier) {
                                     set_state_functions
                                         .insert(instr.lvalue.identifier, info.clone());
                                 }
-                            }
-                        }
-                    } else if is_use_effect_hook_type(prop_type)
+                    } else if (is_use_effect_hook_type(prop_type)
                         || is_use_layout_effect_hook_type(prop_type)
-                        || is_use_insertion_effect_hook_type(prop_type)
-                    {
-                        if let Some(first_arg) = args.first() {
-                            if let PlaceOrSpread::Place(arg_place) = first_arg {
-                                if let Some(info) = set_state_functions.get(&arg_place.identifier) {
+                        || is_use_insertion_effect_hook_type(prop_type))
+                        && let Some(first_arg) = args.first()
+                            && let PlaceOrSpread::Place(arg_place) = first_arg
+                                && let Some(info) = set_state_functions.get(&arg_place.identifier) {
                                     push_error(&mut errors, info, enable_verbose);
                                 }
-                            }
-                        }
-                    }
                 }
                 InstructionValue::CallExpression { callee, args, .. } => {
                     let callee_type =
                         &types[identifiers[callee.identifier.0 as usize].type_.0 as usize];
                     if is_use_effect_event_type(callee_type) {
-                        if let Some(first_arg) = args.first() {
-                            if let PlaceOrSpread::Place(arg_place) = first_arg {
-                                if let Some(info) = set_state_functions.get(&arg_place.identifier) {
+                        if let Some(first_arg) = args.first()
+                            && let PlaceOrSpread::Place(arg_place) = first_arg
+                                && let Some(info) = set_state_functions.get(&arg_place.identifier) {
                                     set_state_functions
                                         .insert(instr.lvalue.identifier, info.clone());
                                 }
-                            }
-                        }
-                    } else if is_use_effect_hook_type(callee_type)
+                    } else if (is_use_effect_hook_type(callee_type)
                         || is_use_layout_effect_hook_type(callee_type)
-                        || is_use_insertion_effect_hook_type(callee_type)
-                    {
-                        if let Some(first_arg) = args.first() {
-                            if let PlaceOrSpread::Place(arg_place) = first_arg {
-                                if let Some(info) = set_state_functions.get(&arg_place.identifier) {
+                        || is_use_insertion_effect_hook_type(callee_type))
+                        && let Some(first_arg) = args.first()
+                            && let PlaceOrSpread::Place(arg_place) = first_arg
+                                && let Some(info) = set_state_functions.get(&arg_place.identifier) {
                                     push_error(&mut errors, info, enable_verbose);
                                 }
-                            }
-                        }
-                    }
                 }
                 _ => {}
             }
@@ -334,8 +322,8 @@ fn create_ref_controlled_block_checker(
                         break;
                     }
                     for case in cases {
-                        if let Some(case_test) = &case.test {
-                            if is_derived_from_ref(
+                        if let Some(case_test) = &case.test
+                            && is_derived_from_ref(
                                 case_test.identifier,
                                 ref_derived_values,
                                 identifiers,
@@ -344,7 +332,6 @@ fn create_ref_controlled_block_checker(
                                 is_controlled = true;
                                 break;
                             }
-                        }
                     }
                     if is_controlled {
                         break;
@@ -409,15 +396,13 @@ fn get_set_state_call(
                 if let InstructionValue::PropertyLoad {
                     object, property, ..
                 } = &instr.value
-                {
-                    if *property == PropertyLiteral::String("current".to_string()) {
+                    && *property == PropertyLiteral::String("current".to_string()) {
                         let obj_ident = &identifiers[object.identifier.0 as usize];
                         let obj_ty = &types[obj_ident.type_.0 as usize];
                         if is_use_ref_type(obj_ty) || is_ref_value_type(obj_ty) {
                             ref_derived_values.insert(instr.lvalue.identifier);
                         }
                     }
-                }
             }
         }
     }
@@ -505,15 +490,13 @@ fn get_set_state_call(
                 if let InstructionValue::PropertyLoad {
                     object, property, ..
                 } = &instr.value
-                {
-                    if *property == PropertyLiteral::String("current".to_string()) {
+                    && *property == PropertyLiteral::String("current".to_string()) {
                         let obj_ident = &identifiers[object.identifier.0 as usize];
                         let obj_ty = &types[obj_ident.type_.0 as usize];
                         if is_use_ref_type(obj_ty) || is_ref_value_type(obj_ty) {
                             ref_derived_values.insert(instr.lvalue.identifier);
                         }
                     }
-                }
             }
 
             match &instr.value {
@@ -536,9 +519,9 @@ fn get_set_state_call(
                     {
                         if enable_allow_set_state_from_refs {
                             // Check if the first argument is ref-derived
-                            if let Some(first_arg) = args.first() {
-                                if let PlaceOrSpread::Place(arg_place) = first_arg {
-                                    if is_derived_from_ref(
+                            if let Some(first_arg) = args.first()
+                                && let PlaceOrSpread::Place(arg_place) = first_arg
+                                    && is_derived_from_ref(
                                         arg_place.identifier,
                                         &ref_derived_values,
                                         identifiers,
@@ -547,8 +530,6 @@ fn get_set_state_call(
                                         // Allow setState when value is derived from ref
                                         return Ok(None);
                                     }
-                                }
-                            }
                             // Check if the current block is controlled by a ref-derived condition
                             if is_ref_controlled_block(block.id) {
                                 continue;

@@ -500,12 +500,11 @@ fn emit_load_globals(
     let mut instructions = Vec::new();
     for info in jsx_group {
         let instr = &func.instructions[info.instr_idx];
-        if let InstructionValue::JsxExpression { tag, .. } = &instr.value {
-            if let JsxTag::Place(tag_place) = tag {
+        if let InstructionValue::JsxExpression { tag, .. } = &instr.value
+            && let JsxTag::Place(tag_place) = tag {
                 let global_instr_idx = globals.get(&tag_place.identifier)?;
                 instructions.push(func.instructions[*global_instr_idx].clone());
             }
-        }
     }
     Some(instructions)
 }

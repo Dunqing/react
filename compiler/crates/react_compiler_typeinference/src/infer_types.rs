@@ -52,7 +52,7 @@ pub fn infer_types(
         &env.functions,
         &mut env.identifiers,
         &mut env.types,
-        &mut unifier,
+        &unifier,
     );
     Ok(())
 }
@@ -83,11 +83,10 @@ fn pre_resolve_globals(
 ) {
     for &instr_id in func.body.blocks.values().flat_map(|b| &b.instructions) {
         let instr = &func.instructions[instr_id.0 as usize];
-        if let InstructionValue::LoadGlobal { binding, loc, .. } = &instr.value {
-            if let Some(global_type) = env.get_global_declaration(binding, *loc).ok().flatten() {
+        if let InstructionValue::LoadGlobal { binding, loc, .. } = &instr.value
+            && let Some(global_type) = env.get_global_declaration(binding, *loc).ok().flatten() {
                 global_types.insert((function_key, instr_id), global_type);
             }
-        }
     }
 }
 
@@ -175,16 +174,13 @@ fn resolve_property_type(
         Type::Object { shape_id } | Type::Function { shape_id, .. } => shape_id.as_deref(),
         _ => {
             // No shape, but if property name is hook-like, return hook type
-            if let Some(hook_type) = custom_hook_type {
-                if let PropertyNameKind::Literal {
+            if let Some(hook_type) = custom_hook_type
+                && let PropertyNameKind::Literal {
                     value: PropertyLiteral::String(s),
                 } = property_name
-                {
-                    if is_hook_name(s) {
+                    && is_hook_name(s) {
                         return Some(hook_type.clone());
                     }
-                }
-            }
             return None;
         }
     };
@@ -196,11 +192,9 @@ fn resolve_property_type(
             if let PropertyNameKind::Literal {
                 value: PropertyLiteral::String(s),
             } = property_name
-            {
-                if is_hook_name(s) {
+                && is_hook_name(s) {
                     return custom_hook_type.cloned();
                 }
-            }
             return None;
         }
     };
@@ -304,8 +298,8 @@ fn generate(
 ) -> Result<(), CompilerDiagnostic> {
     // Component params
     if func.fn_type == ReactFunctionType::Component {
-        if let Some(first) = func.params.first() {
-            if let ParamPattern::Place(place) = first {
+        if let Some(first) = func.params.first()
+            && let ParamPattern::Place(place) = first {
                 let ty = get_type(place.identifier, &env.identifiers);
                 unifier.unify(
                     ty,
@@ -315,9 +309,8 @@ fn generate(
                     &env.shapes,
                 )?;
             }
-        }
-        if let Some(second) = func.params.get(1) {
-            if let ParamPattern::Place(place) = second {
+        if let Some(second) = func.params.get(1)
+            && let ParamPattern::Place(place) = second {
                 let ty = get_type(place.identifier, &env.identifiers);
                 unifier.unify(
                     ty,
@@ -327,7 +320,6 @@ fn generate(
                     &env.shapes,
                 )?;
             }
-        }
     }
 
     // Pre-resolve LoadGlobal types for all functions (outer + inner). We do
@@ -429,8 +421,8 @@ fn generate_for_function_id(
 
     // Process params for component inner functions
     if inner.fn_type == ReactFunctionType::Component {
-        if let Some(first) = inner.params.first() {
-            if let ParamPattern::Place(place) = first {
+        if let Some(first) = inner.params.first()
+            && let ParamPattern::Place(place) = first {
                 let ty = get_type(place.identifier, identifiers);
                 unifier.unify(
                     ty,
@@ -440,9 +432,8 @@ fn generate_for_function_id(
                     shapes,
                 )?;
             }
-        }
-        if let Some(second) = inner.params.get(1) {
-            if let ParamPattern::Place(place) = second {
+        if let Some(second) = inner.params.get(1)
+            && let ParamPattern::Place(place) = second {
                 let ty = get_type(place.identifier, identifiers);
                 unifier.unify(
                     ty,
@@ -452,7 +443,6 @@ fn generate_for_function_id(
                     shapes,
                 )?;
             }
-        }
     }
 
     // TS creates a fresh `names` Map per recursive `generate` call, so inner
@@ -643,12 +633,11 @@ fn generate_instruction_types(
 
         InstructionValue::ObjectExpression { properties, .. } => {
             for prop in properties {
-                if let ObjectPropertyOrSpread::Property(obj_prop) = prop {
-                    if let ObjectPropertyKey::Computed { name } = &obj_prop.key {
+                if let ObjectPropertyOrSpread::Property(obj_prop) = prop
+                    && let ObjectPropertyKey::Computed { name } = &obj_prop.key {
                         let name_type = get_type(name.identifier, identifiers);
                         unifier.unify(name_type, Type::Primitive, shapes)?;
                     }
-                }
             }
             unifier.unify(
                 left,
@@ -846,8 +835,8 @@ fn generate_instruction_types(
         InstructionValue::JsxExpression { props, .. } => {
             if unifier.enable_treat_ref_like_identifiers_as_refs {
                 for prop in props {
-                    if let JsxAttribute::Attribute { name, place } = prop {
-                        if name == "ref" {
+                    if let JsxAttribute::Attribute { name, place } = prop
+                        && name == "ref" {
                             let ref_type = get_type(place.identifier, identifiers);
                             unifier.unify(
                                 ref_type,
@@ -857,7 +846,6 @@ fn generate_instruction_types(
                                 shapes,
                             )?;
                         }
-                    }
                 }
             }
             unifier.unify(
@@ -1407,11 +1395,9 @@ impl Unifier {
                 ..
             },
         ) = (&t_a, &t_b)
-        {
-            if con_a == con_b {
+            && con_a == con_b {
                 self.unify_impl(*ret_a.clone(), *ret_b.clone(), shapes)?;
             }
-        }
         Ok(())
     }
 
@@ -1436,12 +1422,11 @@ impl Unifier {
             return Ok(());
         }
 
-        if let Type::TypeVar { id: ty_id } = &ty {
-            if let Some(existing) = self.substitutions.get(ty_id).cloned() {
+        if let Type::TypeVar { id: ty_id } = &ty
+            && let Some(existing) = self.substitutions.get(ty_id).cloned() {
                 self.unify_impl(v, existing, shapes)?;
                 return Ok(());
             }
-        }
 
         if let Type::Phi { ref operands } = ty {
             if operands.is_empty() {
@@ -1506,13 +1491,11 @@ impl Unifier {
             Type::Phi { operands } => {
                 let mut new_operands = Vec::new();
                 for operand in operands {
-                    if let Type::TypeVar { id } = operand {
-                        if let Type::TypeVar { id: v_id } = v {
-                            if id == v_id {
+                    if let Type::TypeVar { id } = operand
+                        && let Type::TypeVar { id: v_id } = v
+                            && id == v_id {
                                 continue; // skip self-reference
                             }
-                        }
-                    }
                     let resolved = self.try_resolve_type(v, operand)?;
                     new_operands.push(resolved);
                 }
@@ -1567,11 +1550,10 @@ impl Unifier {
             return true;
         }
 
-        if let Type::TypeVar { id } = ty {
-            if let Some(sub) = self.substitutions.get(id) {
+        if let Type::TypeVar { id } = ty
+            && let Some(sub) = self.substitutions.get(id) {
                 return self.occurs_check(v, sub);
             }
-        }
 
         if let Type::Phi { operands } = ty {
             return operands.iter().any(|o| self.occurs_check(v, o));
@@ -1585,11 +1567,10 @@ impl Unifier {
     }
 
     fn get(&self, ty: &Type) -> Type {
-        if let Type::TypeVar { id } = ty {
-            if let Some(sub) = self.substitutions.get(id) {
+        if let Type::TypeVar { id } = ty
+            && let Some(sub) = self.substitutions.get(id) {
                 return self.get(sub);
             }
-        }
 
         if let Type::Phi { operands } = ty {
             return Type::Phi {

@@ -366,11 +366,10 @@ fn is_valid_component_params(params: &oxc::FormalParameters) -> bool {
 
     // The first param: if there is at least one non-rest item, it is `items[0]`;
     // otherwise the only param is the rest element.
-    if let Some(first) = items.first() {
-        if !is_valid_props_annotation(first) {
+    if let Some(first) = items.first()
+        && !is_valid_props_annotation(first) {
             return false;
         }
-    }
 
     if total == 1 {
         // A single rest param (`...props`) is not valid.
@@ -1167,14 +1166,13 @@ fn resolve_function_gating(
     context: &ProgramContext,
     directives: &[oxc::Directive],
 ) -> Option<ResolvedGating> {
-    if let Some(dynamic) = &context.opts.dynamic_gating {
-        if let Some(import_specifier_name) = find_dynamic_gating_match(directives) {
+    if let Some(dynamic) = &context.opts.dynamic_gating
+        && let Some(import_specifier_name) = find_dynamic_gating_match(directives) {
             return Some(ResolvedGating {
                 source: dynamic.source.clone(),
                 import_specifier_name,
             });
         }
-    }
     context.opts.gating.as_ref().map(|g| ResolvedGating {
         source: g.source.clone(),
         import_specifier_name: g.import_specifier_name.clone(),
@@ -1315,8 +1313,8 @@ fn handle_error(
             error_info.raw_message = Some("unexpected error".to_string());
         }
 
-        if error_info.raw_message.is_none() {
-            if let Some(ref source) = context.code {
+        if error_info.raw_message.is_none()
+            && let Some(ref source) = context.code {
                 error_info.formatted_message = Some(
                     react_compiler_diagnostics::code_frame::format_compiler_error(
                         err,
@@ -1325,7 +1323,6 @@ fn handle_error(
                     ),
                 );
             }
-        }
 
         Some(CompileResult::Error {
             error: error_info,

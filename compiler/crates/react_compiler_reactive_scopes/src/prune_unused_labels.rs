@@ -67,10 +67,10 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
         let is_reachable_label = stmt
             .label
             .as_ref()
-            .map_or(false, |label| state.contains(&label.id));
+            .is_some_and(|label| state.contains(&label.id));
 
-        if let ReactiveTerminal::Label { block, .. } = &mut stmt.terminal {
-            if !is_reachable_label {
+        if let ReactiveTerminal::Label { block, .. } = &mut stmt.terminal
+            && !is_reachable_label {
                 // Flatten labeled terminals where the label isn't necessary.
                 // Note: In TS, there's a check for `last.terminal.target === null`
                 // to pop a trailing break, but since target is always a BlockId (number),
@@ -78,13 +78,11 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
                 let flattened = std::mem::take(block);
                 return Ok(Transformed::ReplaceMany(flattened));
             }
-        }
 
-        if !is_reachable_label {
-            if let Some(label) = &mut stmt.label {
+        if !is_reachable_label
+            && let Some(label) = &mut stmt.label {
                 label.implicit = true;
             }
-        }
 
         Ok(Transformed::Keep)
     }

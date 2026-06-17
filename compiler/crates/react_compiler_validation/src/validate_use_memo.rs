@@ -69,13 +69,11 @@ fn validate_use_memo_impl(
                 InstructionValue::PropertyLoad {
                     object, property, ..
                 } => {
-                    if react.contains(&object.identifier) {
-                        if let react_compiler_hir::PropertyLiteral::String(prop_name) = property {
-                            if prop_name == "useMemo" {
+                    if react.contains(&object.identifier)
+                        && let react_compiler_hir::PropertyLiteral::String(prop_name) = property
+                            && prop_name == "useMemo" {
                                 use_memos.insert(lvalue.identifier);
                             }
-                        }
-                    }
                 }
                 InstructionValue::FunctionExpression {
                     lowered_func, loc, ..
@@ -244,13 +242,12 @@ fn handle_possible_use_memo_call(
                 identifier_name: None,
             }),
         );
-    } else if validate_no_void_use_memo {
-        if let Some(callee_loc) = callee.loc {
+    } else if validate_no_void_use_memo
+        && let Some(callee_loc) = callee.loc {
             // The callee is always useMemo/React.useMemo since we checked is_use_memo above.
             // The identifierName in Babel's AST SourceLocation is "useMemo".
             unused_use_memos.insert(lvalue.identifier, (callee_loc, Some("useMemo".to_string())));
         }
-    }
 }
 
 fn validate_no_context_variable_assignment(func: &HirFunction, errors: &mut CompilerError) {
@@ -260,8 +257,8 @@ fn validate_no_context_variable_assignment(func: &HirFunction, errors: &mut Comp
     for (_block_id, block) in &func.body.blocks {
         for &instr_id in &block.instructions {
             let instr = &func.instructions[instr_id.0 as usize];
-            if let InstructionValue::StoreContext { lvalue, .. } = &instr.value {
-                if context.contains(&lvalue.place.identifier) {
+            if let InstructionValue::StoreContext { lvalue, .. } = &instr.value
+                && context.contains(&lvalue.place.identifier) {
                     errors.push_diagnostic(
                         CompilerDiagnostic::new(
                             ErrorCategory::UseMemo,
@@ -278,21 +275,19 @@ fn validate_no_context_variable_assignment(func: &HirFunction, errors: &mut Comp
                         }),
                     );
                 }
-            }
         }
     }
 }
 
 fn has_non_void_return(func: &HirFunction) -> bool {
     for (_block_id, block) in &func.body.blocks {
-        if let Terminal::Return { return_variant, .. } = &block.terminal {
-            if matches!(
+        if let Terminal::Return { return_variant, .. } = &block.terminal
+            && matches!(
                 return_variant,
                 ReturnVariant::Explicit | ReturnVariant::Implicit
             ) {
                 return true;
             }
-        }
     }
     false
 }

@@ -197,7 +197,7 @@ pub fn infer_mutation_aliasing_effects(
                 let name = ident_info
                     .and_then(|ident| ident.name.as_ref())
                     .map(|n| n.value().to_string())
-                    .unwrap_or_else(|| "".to_string());
+                    .unwrap_or_default();
                 // Use usage_loc if available, otherwise fall back to identifier's own loc
                 let error_loc = usage_loc.or_else(|| ident_info.and_then(|i| i.loc));
                 // Match TS printPlace format: "<unknown> name$id:type"
@@ -356,15 +356,10 @@ impl InferenceState {
                 let vid = ValueId(from.0 | 0x80000000);
                 let mut set = HashSet::new();
                 set.insert(vid);
-                if !self.values.contains_key(&vid) {
-                    self.values.insert(
-                        vid,
-                        AbstractValue {
+                self.values.entry(vid).or_insert_with(|| AbstractValue {
                             kind: ValueKind::Mutable,
                             reason: hashset_of(ValueReason::Other),
-                        },
-                    );
-                }
+                        });
                 set
             }
         };
@@ -810,11 +805,10 @@ fn find_non_mutated_destructure_spreads(
 ) -> HashSet<IdentifierId> {
     let mut known_frozen: HashSet<IdentifierId> = HashSet::new();
     if func.fn_type == ReactFunctionType::Component {
-        if let Some(param) = func.params.first() {
-            if let ParamPattern::Place(p) = param {
+        if let Some(param) = func.params.first()
+            && let ParamPattern::Place(p) = param {
                 known_frozen.insert(p.identifier);
             }
-        }
     } else {
         for param in &func.params {
             if let ParamPattern::Place(p) = param {
@@ -1039,8 +1033,8 @@ fn infer_block(
             context.catch_handlers.insert(handler, binding);
         }
         TerminalAction::MaybeThrow { handler_id } => {
-            if let Some(handler_param) = context.catch_handlers.get(&handler_id).cloned() {
-                if state.is_defined(handler_param.identifier) {
+            if let Some(handler_param) = context.catch_handlers.get(&handler_id).cloned()
+                && state.is_defined(handler_param.identifier) {
                     let mut terminal_effects: Vec<AliasingEffect> = Vec::new();
                     for instr_idx in &instr_ids {
                         let instr = &func.instructions[*instr_idx as usize];
@@ -1077,7 +1071,6 @@ fn infer_block(
                         };
                     }
                 }
-            }
         }
         TerminalAction::Return => {
             if !context.is_function_expression {
@@ -1156,8 +1149,8 @@ fn apply_signature(
                                 identifier_name: None,
                             },
                         );
-                        if is_mutate {
-                            if let AliasingEffect::Mutate {
+                        if is_mutate
+                            && let AliasingEffect::Mutate {
                                 reason: Some(MutationReason::AssignCurrentProperty),
                                 ..
                             } = effect
@@ -1166,7 +1159,6 @@ fn apply_signature(
                                     message: "Hint: If this value is a Ref (value returned by `useRef()`), rename the variable to end in \"Ref\".".to_string()
                                 });
                             }
-                        }
                         effects.push(AliasingEffect::MutateFrozen {
                             place: mutate_value.clone(),
                             error: diagnostic,
@@ -1618,10 +1610,10 @@ fn apply_effect(
                         let inner_func = &env.functions[func_id.0 as usize];
                         if inner_func.aliasing_effects.is_some() {
                             // Build or retrieve the signature from the function expression
-                            if !context.function_signature_cache.contains_key(&func_id) {
-                                let sig = build_signature_from_function_expression(env, func_id);
-                                context.function_signature_cache.insert(func_id, sig);
-                            }
+                            context.function_signature_cache.entry(func_id).or_insert_with(|| {
+                                
+                                build_signature_from_function_expression(env, func_id)
+                            });
                             let sig = context
                                 .function_signature_cache
                                 .get(&func_id)
@@ -1670,8 +1662,8 @@ fn apply_effect(
             }
             if let Some(sig) = signature {
                 // Check known_incompatible (TS line 2351-2370)
-                if let Some(ref incompatible_msg) = sig.known_incompatible {
-                    if env.enable_validations() {
+                if let Some(ref incompatible_msg) = sig.known_incompatible
+                    && env.enable_validations() {
                         let mut diagnostic = CompilerDiagnostic::new(
                             ErrorCategory::IncompatibleLibrary,
                             "Use of incompatible library",
@@ -1690,7 +1682,6 @@ fn apply_effect(
                         // TS throws here, aborting compilation for this function
                         return Err(diagnostic);
                     }
-                }
 
                 if let Some(ref aliasing) = sig.aliasing {
                     let sig_effects = compute_effects_for_aliasing_signature_config(
@@ -1881,8 +1872,8 @@ fn apply_effect(
                             variable.as_deref().unwrap_or("This variable")
                         )),
                     );
-                    if let Some(ref access) = hoisted_access {
-                        if access.loc != value.loc {
+                    if let Some(ref access) = hoisted_access
+                        && access.loc != value.loc {
                             diagnostic.details.push(
                                 react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
                                     loc: access.loc,
@@ -1894,7 +1885,6 @@ fn apply_effect(
                                 },
                             );
                         }
-                    }
                     diagnostic.details.push(
                         react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
                             loc: value.loc,
@@ -2278,15 +2268,14 @@ fn compute_signature_for_instruction(
                 {
                     let prop_ty = &env.types
                         [env.identifiers[prop_place.identifier.0 as usize].type_.0 as usize];
-                    if let Type::Function { return_type, .. } = prop_ty {
-                        if react_compiler_hir::is_jsx_type(return_type)
-                            || is_phi_with_jsx(return_type)
+                    if let Type::Function { return_type, .. } = prop_ty
+                        && (react_compiler_hir::is_jsx_type(return_type)
+                            || is_phi_with_jsx(return_type))
                         {
                             effects.push(AliasingEffect::Render {
                                 place: prop_place.clone(),
                             });
                         }
-                    }
                 }
             }
         }
@@ -2783,7 +2772,7 @@ fn are_arguments_immutable_and_non_mutating(
                                 .any(|e| is_known_mutable_effect(*e));
                             let has_mutable_rest = fn_sig
                                 .rest_param
-                                .map_or(false, |e| is_known_mutable_effect(e));
+                                .is_some_and(is_known_mutable_effect);
                             return !has_mutable_param && !has_mutable_rest;
                         }
                     }
@@ -3000,18 +2989,16 @@ fn compute_effects_for_aliasing_signature_config(
                                 apply_args.push(PlaceOrSpreadOrHole::Hole);
                             }
                             react_compiler_hir::type_config::ApplyArgConfig::Place(name) => {
-                                if let Some(places) = substitutions.get(name) {
-                                    if let Some(p) = places.first() {
+                                if let Some(places) = substitutions.get(name)
+                                    && let Some(p) = places.first() {
                                         apply_args.push(PlaceOrSpreadOrHole::Place(p.clone()));
                                     }
-                                }
                             }
                             react_compiler_hir::type_config::ApplyArgConfig::Spread { place: name, .. } => {
-                                if let Some(places) = substitutions.get(name) {
-                                    if let Some(p) = places.first() {
+                                if let Some(places) = substitutions.get(name)
+                                    && let Some(p) = places.first() {
                                         apply_args.push(PlaceOrSpreadOrHole::Spread(react_compiler_hir::SpreadPattern { place: p.clone() }));
                                     }
-                                }
                             }
                         }
                     }
@@ -3332,22 +3319,20 @@ fn compute_effects_for_aliasing_signature(
                         match arg {
                             PlaceOrSpreadOrHole::Hole => apply_args.push(PlaceOrSpreadOrHole::Hole),
                             PlaceOrSpreadOrHole::Place(p) => {
-                                if let Some(places) = substitutions.get(&p.identifier) {
-                                    if let Some(place) = places.first() {
+                                if let Some(places) = substitutions.get(&p.identifier)
+                                    && let Some(place) = places.first() {
                                         apply_args.push(PlaceOrSpreadOrHole::Place(place.clone()));
                                     }
-                                }
                             }
                             PlaceOrSpreadOrHole::Spread(sp) => {
-                                if let Some(places) = substitutions.get(&sp.place.identifier) {
-                                    if let Some(place) = places.first() {
+                                if let Some(places) = substitutions.get(&sp.place.identifier)
+                                    && let Some(place) = places.first() {
                                         apply_args.push(PlaceOrSpreadOrHole::Spread(
                                             react_compiler_hir::SpreadPattern {
                                                 place: place.clone(),
                                             },
                                         ));
                                     }
-                                }
                             }
                         }
                     }
@@ -3500,7 +3485,7 @@ fn is_phi_with_jsx(ty: &Type) -> bool {
     if let Type::Phi { operands } = ty {
         operands
             .iter()
-            .any(|op| react_compiler_hir::is_jsx_type(op))
+            .any(react_compiler_hir::is_jsx_type)
     } else {
         false
     }

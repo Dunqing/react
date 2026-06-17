@@ -109,15 +109,13 @@ pub fn align_method_call_scopes(func: &mut HirFunction, env: &mut Environment) {
     // Sync identifier mutable_ranges that shared the old scope range.
     // Uses MutableRangeId for exact identity matching instead of value comparison.
     for ident in &mut env.identifiers {
-        if let Some(scope_id) = ident.scope {
-            if let Some(&orig_range_id) = original_range_ids.get(&scope_id) {
-                if ident.mutable_range.id == orig_range_id {
+        if let Some(scope_id) = ident.scope
+            && let Some(&orig_range_id) = original_range_ids.get(&scope_id)
+                && ident.mutable_range.id == orig_range_id {
                     let new_range = &env.scopes[scope_id.0 as usize].range;
                     ident.mutable_range.start = new_range.start;
                     ident.mutable_range.end = new_range.end;
                 }
-            }
-        }
     }
 
     // Phase 3: Apply scope mappings and merged scope reassignments

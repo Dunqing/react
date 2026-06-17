@@ -51,15 +51,13 @@ pub fn propagate_scope_dependencies_hir(func: &mut HirFunction, env: &mut Enviro
                 block: inner_block,
                 ..
             } = &block.terminal
-            {
-                if let Some(node_indices) = working.get(inner_block) {
+                && let Some(node_indices) = working.get(inner_block) {
                     let deps: Vec<ReactiveScopeDependency> = node_indices
                         .iter()
                         .map(|&idx| registry.nodes[idx].full_path.clone())
                         .collect();
                     keyed.insert(*scope, deps);
                 }
-            }
         }
         keyed
     };
@@ -140,13 +138,12 @@ fn find_temporaries_used_outside_declaring_scope(
                         used_outside: &mut HashSet<DeclarationId>,
                         env: &Environment| {
         let decl_id = env.identifiers[place_id.0 as usize].declaration_id;
-        if let Some(&declaring_scope) = declarations.get(&decl_id) {
-            if !traversal.is_scope_active(declaring_scope)
+        if let Some(&declaring_scope) = declarations.get(&decl_id)
+            && !traversal.is_scope_active(declaring_scope)
                 && !pruned_scopes.contains(&declaring_scope)
             {
                 used_outside.insert(decl_id);
             }
-        }
     };
 
     for (block_id, block) in &func.body.blocks {
@@ -182,8 +179,8 @@ fn find_temporaries_used_outside_declaring_scope(
             }
             // Handle instruction (track declarations)
             let current_scope = traversal.current_scope();
-            if let Some(scope) = current_scope {
-                if !pruned_scopes.contains(&scope) {
+            if let Some(scope) = current_scope
+                && !pruned_scopes.contains(&scope) {
                     match &instr.value {
                         InstructionValue::LoadLocal { .. }
                         | InstructionValue::LoadContext { .. }
@@ -195,7 +192,6 @@ fn find_temporaries_used_outside_declaring_scope(
                         _ => {}
                     }
                 }
-            }
         }
 
         // Terminal operands
@@ -245,12 +241,11 @@ fn is_load_context_mutable(
     id: EvaluationOrder,
     env: &Environment,
 ) -> bool {
-    if let InstructionValue::LoadContext { place, .. } = value {
-        if let Some(scope_id) = env.identifiers[place.identifier.0 as usize].scope {
+    if let InstructionValue::LoadContext { place, .. } = value
+        && let Some(scope_id) = env.identifiers[place.identifier.0 as usize].scope {
             let scope_range = &env.scopes[scope_id.0 as usize].range;
             return id >= scope_range.end;
         }
-    }
     false
 }
 
@@ -461,11 +456,10 @@ fn traverse_function_optional(
                 _ => {}
             }
         }
-        if let Terminal::Optional { .. } = &block.terminal {
-            if !ctx.seen_optionals.contains(&block.id) {
+        if let Terminal::Optional { .. } = &block.terminal
+            && !ctx.seen_optionals.contains(&block.id) {
                 traverse_optional_block(block, func, env, ctx, None);
             }
-        }
     }
 }
 
@@ -1064,11 +1058,10 @@ fn get_assumed_invoked_functions_impl(
                     } else if maybe_hook.is_some() {
                         // Assume arguments to all hooks are safe to invoke
                         for arg in args {
-                            if let PlaceOrSpread::Place(p) = arg {
-                                if let Some(entry) = temporaries.get(&p.identifier) {
+                            if let PlaceOrSpread::Place(p) = arg
+                                && let Some(entry) = temporaries.get(&p.identifier) {
                                     hoistable.insert(entry.0);
                                 }
-                            }
                         }
                     }
                 }
@@ -1077,11 +1070,10 @@ fn get_assumed_invoked_functions_impl(
                 } => {
                     // Assume JSX attributes and children are safe to invoke
                     for prop in props {
-                        if let react_compiler_hir::JsxAttribute::Attribute { place, .. } = prop {
-                            if let Some(entry) = temporaries.get(&place.identifier) {
+                        if let react_compiler_hir::JsxAttribute::Attribute { place, .. } = prop
+                            && let Some(entry) = temporaries.get(&place.identifier) {
                                 hoistable.insert(entry.0);
                             }
-                        }
                     }
                     if let Some(children) = children {
                         for child in children {
@@ -1115,11 +1107,10 @@ fn get_assumed_invoked_functions_impl(
         }
 
         // Assume directly returned functions are safe to call
-        if let Terminal::Return { value, .. } = &block.terminal {
-            if let Some(entry) = temporaries.get(&value.identifier) {
+        if let Terminal::Return { value, .. } = &block.terminal
+            && let Some(entry) = temporaries.get(&value.identifier) {
                 hoistable.insert(entry.0);
             }
-        }
     }
 
     // Step 3: Propagate assumed-invoked status through mayInvoke chains
@@ -1157,12 +1148,11 @@ fn collect_non_nulls_in_blocks(
 ) -> HashMap<BlockId, BlockInfo> {
     // Known non-null identifiers (e.g. component props)
     let mut known_non_null: BTreeSet<usize> = BTreeSet::new();
-    if func.fn_type == ReactFunctionType::Component && !func.params.is_empty() {
-        if let ParamPattern::Place(place) = &func.params[0] {
+    if func.fn_type == ReactFunctionType::Component && !func.params.is_empty()
+        && let ParamPattern::Place(place) = &func.params[0] {
             let node_idx = registry.get_or_create_identifier(place.identifier, true, place.loc);
             known_non_null.insert(node_idx);
         }
-    }
 
     let mut nodes: HashMap<BlockId, BlockInfo> = HashMap::new();
 
@@ -1186,8 +1176,8 @@ fn collect_non_nulls_in_blocks(
             }
 
             // Handle StartMemoize deps for enablePreserveExistingMemoizationGuarantees
-            if env.enable_preserve_existing_memoization_guarantees {
-                if let InstructionValue::StartMemoize {
+            if env.enable_preserve_existing_memoization_guarantees
+                && let InstructionValue::StartMemoize {
                     deps: Some(deps), ..
                 } = &instr.value
                 {
@@ -1216,11 +1206,10 @@ fn collect_non_nulls_in_blocks(
                         }
                     }
                 }
-            }
 
             // Handle assumed-invoked inner functions
-            if let InstructionValue::FunctionExpression { lowered_func, .. } = &instr.value {
-                if ctx.assumed_invoked_fns.contains(&lowered_func.func) {
+            if let InstructionValue::FunctionExpression { lowered_func, .. } = &instr.value
+                && ctx.assumed_invoked_fns.contains(&lowered_func.func) {
                     let inner_func = &env.functions[lowered_func.func.0 as usize];
                     // Build nested fn immutable context
                     let nested_fn_immutable_context: HashSet<IdentifierId> =
@@ -1257,7 +1246,6 @@ fn collect_non_nulls_in_blocks(
                         }
                     }
                 }
-            }
         }
 
         nodes.insert(
@@ -1761,11 +1749,10 @@ impl<'a> DependencyCollectionContext<'a> {
 
         // Propagate dependencies upward
         for dep in &scoped_deps {
-            if self.check_valid_dependency(dep, env) {
-                if let Some(top) = self.dep_stack.last_mut() {
+            if self.check_valid_dependency(dep, env)
+                && let Some(top) = self.dep_stack.last_mut() {
                     top.push(dep.clone());
                 }
-            }
         }
 
         if !pruned {
@@ -1782,9 +1769,7 @@ impl<'a> DependencyCollectionContext<'a> {
             return;
         }
         let decl_id = env.identifiers[identifier_id.0 as usize].declaration_id;
-        if !self.declarations.contains_key(&decl_id) {
-            self.declarations.insert(decl_id, decl.clone());
-        }
+        self.declarations.entry(decl_id).or_insert_with(|| decl.clone());
         self.reassignments.insert(identifier_id, decl);
     }
 
@@ -1810,12 +1795,11 @@ impl<'a> DependencyCollectionContext<'a> {
             .get(&dep.identifier)
             .or_else(|| self.declarations.get(&ident.declaration_id));
 
-        if let Some(current_scope) = self.current_scope() {
-            if let Some(decl) = current_declaration {
+        if let Some(current_scope) = self.current_scope()
+            && let Some(decl) = current_declaration {
                 let scope_range_start = env.scopes[current_scope.0 as usize].range.start;
                 return decl.id < scope_range_start;
             }
-        }
         false
     }
 
@@ -1850,8 +1834,8 @@ impl<'a> DependencyCollectionContext<'a> {
         let decl_id = ident.declaration_id;
 
         // Record scope declarations for values used outside their declaring scope
-        if let Some(original_decl) = self.declarations.get(&decl_id) {
-            if !original_decl.scope_stack.is_empty() {
+        if let Some(original_decl) = self.declarations.get(&decl_id)
+            && !original_decl.scope_stack.is_empty() {
                 let orig_scope_stack = original_decl.scope_stack.clone();
                 for &scope_id in &orig_scope_stack {
                     if !self.scope_stack.contains(&scope_id) {
@@ -1873,7 +1857,6 @@ impl<'a> DependencyCollectionContext<'a> {
                     }
                 }
             }
-        }
 
         // Handle ref.current access
         let dep = if react_compiler_hir::is_use_ref_type(
@@ -1894,11 +1877,10 @@ impl<'a> DependencyCollectionContext<'a> {
             dep
         };
 
-        if self.check_valid_dependency(&dep, env) {
-            if let Some(top) = self.dep_stack.last_mut() {
+        if self.check_valid_dependency(&dep, env)
+            && let Some(top) = self.dep_stack.last_mut() {
                 top.push(dep);
             }
-        }
     }
 
     fn visit_reassignment(&mut self, place: &Place, env: &mut Environment) {

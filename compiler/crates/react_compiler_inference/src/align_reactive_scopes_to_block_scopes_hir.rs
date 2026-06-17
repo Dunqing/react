@@ -112,8 +112,8 @@ pub fn align_reactive_scopes_to_block_scopes_hir(func: &mut HirFunction, env: &m
         active_scopes.retain(|&scope_id| env.scopes[scope_id.0 as usize].range.end > starting_id);
 
         // Check if we've reached a fallthrough block
-        if let Some(top) = active_block_fallthrough_ranges.last().cloned() {
-            if top.fallthrough == block_id {
+        if let Some(top) = active_block_fallthrough_ranges.last().cloned()
+            && top.fallthrough == block_id {
                 active_block_fallthrough_ranges.pop();
                 // All active scopes overlap this block-fallthrough range;
                 // extend their start to include the range start.
@@ -122,14 +122,13 @@ pub fn align_reactive_scopes_to_block_scopes_hir(func: &mut HirFunction, env: &m
                     scope.range.start = std::cmp::min(scope.range.start, top.range.start);
                 }
             }
-        }
 
         let node = value_block_nodes.get(&block_id).cloned();
 
         // Visit instruction lvalues and operands
         let block = func.body.blocks.get(&block_id).unwrap();
         let instr_ids: Vec<react_compiler_hir::InstructionId> =
-            block.instructions.iter().copied().collect();
+            block.instructions.to_vec();
         for &instr_id in &instr_ids {
             let instr = &func.instructions[instr_id.0 as usize];
             let eval_order = instr.id;
@@ -223,8 +222,8 @@ pub fn align_reactive_scopes_to_block_scopes_hir(func: &mut HirFunction, env: &m
             } else {
                 Some(active_block_fallthrough_ranges.len() - 1)
             };
-            if let Some(pos) = start_pos {
-                if top_idx != Some(pos) {
+            if let Some(pos) = start_pos
+                && top_idx != Some(pos) {
                     let start_range = active_block_fallthrough_ranges[pos].clone();
                     let first_id = block_first_id(func, start_range.fallthrough);
 
@@ -238,7 +237,6 @@ pub fn align_reactive_scopes_to_block_scopes_hir(func: &mut HirFunction, env: &m
                         scope.range.end = std::cmp::max(first_id, scope.range.end);
                     }
                 }
-            }
         }
 
         // Visit all successors to set up value block nodes

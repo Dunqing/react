@@ -64,8 +64,8 @@ pub fn validate_static_components(func: &HirFunction) -> CompilerError {
                     }
                 }
                 InstructionValue::JsxExpression { tag, .. } => {
-                    if let JsxTag::Place(tag_place) = tag {
-                        if let Some(location) = known_dynamic_components.get(&tag_place.identifier)
+                    if let JsxTag::Place(tag_place) = tag
+                        && let Some(location) = known_dynamic_components.get(&tag_place.identifier)
                         {
                             let location = *location;
                             let diagnostic = CompilerDiagnostic::new(
@@ -89,7 +89,6 @@ pub fn validate_static_components(func: &HirFunction) -> CompilerError {
                             });
                             error.push_diagnostic(diagnostic);
                         }
-                    }
                 }
                 _ => {}
             }

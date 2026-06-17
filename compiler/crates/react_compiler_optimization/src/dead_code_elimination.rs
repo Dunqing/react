@@ -332,13 +332,11 @@ fn pruneable_value(value: &InstructionValue, state: &State, env: &Environment) -
             if env.output_mode == OutputMode::Ssr {
                 let callee_ty =
                     &env.types[env.identifiers[callee.identifier.0 as usize].type_.0 as usize];
-                if let Some(hook_kind) = env.get_hook_kind_for_type(callee_ty).ok().flatten() {
-                    match hook_kind {
-                        HookKind::UseState | HookKind::UseReducer | HookKind::UseRef => {
-                            return true;
-                        }
-                        _ => {}
-                    }
+                if let Some(
+                    HookKind::UseState | HookKind::UseReducer | HookKind::UseRef,
+                ) = env.get_hook_kind_for_type(callee_ty).ok().flatten()
+                {
+                    return true;
                 }
             }
             false
@@ -347,13 +345,11 @@ fn pruneable_value(value: &InstructionValue, state: &State, env: &Environment) -
             if env.output_mode == OutputMode::Ssr {
                 let callee_ty =
                     &env.types[env.identifiers[property.identifier.0 as usize].type_.0 as usize];
-                if let Some(hook_kind) = env.get_hook_kind_for_type(callee_ty).ok().flatten() {
-                    match hook_kind {
-                        HookKind::UseState | HookKind::UseReducer | HookKind::UseRef => {
-                            return true;
-                        }
-                        _ => {}
-                    }
+                if let Some(
+                    HookKind::UseState | HookKind::UseReducer | HookKind::UseRef,
+                ) = env.get_hook_kind_for_type(callee_ty).ok().flatten()
+                {
+                    return true;
                 }
             }
             false

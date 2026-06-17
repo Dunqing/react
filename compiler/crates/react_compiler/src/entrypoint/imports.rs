@@ -56,7 +56,7 @@ pub struct ProgramContext {
     /// N2.1: native oxc codegen artifacts collected during the pipeline.
     /// Each successfully-compiled function pushes its owned `ReactiveFunction`
     /// + `Environment` here; the oxc AST is built/spliced after compilation in
-    /// `react_compiler_oxc::transform`.
+    ///   `react_compiler_oxc::transform`.
     pub native_artifacts: Vec<crate::entrypoint::native_codegen::NativeArtifact>,
 
     // Internal state
@@ -194,11 +194,10 @@ impl ProgramContext {
         name_hint: Option<&str>,
     ) -> NonLocalImportSpecifier {
         // Check if already imported
-        if let Some(module_imports) = self.imports.get(module) {
-            if let Some(existing) = module_imports.get(specifier) {
+        if let Some(module_imports) = self.imports.get(module)
+            && let Some(existing) = module_imports.get(specifier) {
                 return existing.clone();
             }
-        }
 
         let name = self.new_uid(name_hint.unwrap_or(specifier));
         let binding = NonLocalImportSpecifier {
@@ -264,7 +263,7 @@ fn is_hook_name(name: &str) -> bool {
         && bytes[2] == b'e'
         && bytes
             .get(3)
-            .map_or(false, |c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            .is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
 /// Get the runtime module name based on the compiler target.

@@ -134,15 +134,13 @@ pub fn align_object_method_scopes(func: &mut HirFunction, env: &mut Environment)
     // Sync identifier mutable_ranges that shared the old scope range.
     // Uses MutableRangeId for exact identity matching instead of value comparison.
     for ident in &mut env.identifiers {
-        if let Some(scope_id) = ident.scope {
-            if let Some(&orig_range_id) = original_range_ids.get(&scope_id) {
-                if ident.mutable_range.id == orig_range_id {
+        if let Some(scope_id) = ident.scope
+            && let Some(&orig_range_id) = original_range_ids.get(&scope_id)
+                && ident.mutable_range.id == orig_range_id {
                     let new_range = &env.scopes[scope_id.0 as usize].range;
                     ident.mutable_range.start = new_range.start;
                     ident.mutable_range.end = new_range.end;
                 }
-            }
-        }
     }
 
     // Step 2: Repoint identifiers whose scopes were merged
@@ -158,11 +156,10 @@ pub fn align_object_method_scopes(func: &mut HirFunction, env: &mut Environment)
         for &instr_id in &block.instructions {
             let lvalue_id = func.instructions[instr_id.0 as usize].lvalue.identifier;
 
-            if let Some(current_scope) = env.identifiers[lvalue_id.0 as usize].scope {
-                if let Some(&root) = scope_remap.get(&current_scope) {
+            if let Some(current_scope) = env.identifiers[lvalue_id.0 as usize].scope
+                && let Some(&root) = scope_remap.get(&current_scope) {
                     env.identifiers[lvalue_id.0 as usize].scope = Some(root);
                 }
-            }
         }
     }
 }

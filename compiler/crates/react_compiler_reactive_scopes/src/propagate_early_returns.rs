@@ -113,8 +113,8 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
         stmt: &mut ReactiveTerminalStatement,
         state: &mut State,
     ) -> Result<Transformed<ReactiveStatement>, react_compiler_diagnostics::CompilerError> {
-        if state.within_reactive_scope {
-            if let ReactiveTerminal::Return { value, .. } = &stmt.terminal {
+        if state.within_reactive_scope
+            && let ReactiveTerminal::Return { value, .. } = &stmt.terminal {
                 let loc = value.loc;
 
                 let early_return_value = if let Some(ref existing) = state.early_return_value {
@@ -169,7 +169,6 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
                     }),
                 ]));
             }
-        }
 
         // Default: traverse into the terminal's sub-blocks
         self.visit_terminal(stmt, state)?;
