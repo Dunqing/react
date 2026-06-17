@@ -108,6 +108,29 @@ pub struct Position {
     pub index: Option<u32>,
 }
 
+/// Compute a 1-based line and 0-based column for a byte `offset` within
+/// `source`. The column is the byte distance from the start of the line.
+///
+/// This is the shared O(n) scan used wherever an oxc `Span` offset must be
+/// turned into a Babel-style line/column position (suppression diagnostics,
+/// logger source locations, and HIR lowering). Each caller maps the result
+/// into whatever position type it contractually needs.
+pub fn offset_to_line_column(source: &str, offset: u32) -> (u32, u32) {
+    let off = offset as usize;
+    let mut line: u32 = 1;
+    let mut line_start: usize = 0;
+    for (i, b) in source.as_bytes().iter().enumerate() {
+        if i >= off {
+            break;
+        }
+        if *b == b'\n' {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+    (line, (off.saturating_sub(line_start)) as u32)
+}
+
 /// Sentinel value for generated/synthetic source locations
 pub const GENERATED_SOURCE: Option<SourceLocation> = None;
 

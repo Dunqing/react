@@ -91,21 +91,10 @@ pub fn oxc_comments_to_ast_comments(
 
 /// Compute a 1-based line / 0-based column `Position` from a byte offset.
 fn position_of_offset(source: &str, offset: u32) -> Position {
-    let off = offset as usize;
-    let mut line: u32 = 1;
-    let mut line_start: usize = 0;
-    for (i, b) in source.as_bytes().iter().enumerate() {
-        if i >= off {
-            break;
-        }
-        if *b == b'\n' {
-            line += 1;
-            line_start = i + 1;
-        }
-    }
+    let (line, column) = react_compiler_diagnostics::offset_to_line_column(source, offset);
     Position {
         line,
-        column: (off.saturating_sub(line_start)) as u32,
+        column,
         index: Some(offset),
     }
 }

@@ -1242,21 +1242,10 @@ fn is_top_level_scope(
 // =============================================================================
 
 fn position_of_offset(source: &str, offset: u32) -> LoggerPosition {
-    let off = offset as usize;
-    let mut line: u32 = 1;
-    let mut line_start: usize = 0;
-    for (i, b) in source.as_bytes().iter().enumerate() {
-        if i >= off {
-            break;
-        }
-        if *b == b'\n' {
-            line += 1;
-            line_start = i + 1;
-        }
-    }
+    let (line, column) = react_compiler_diagnostics::offset_to_line_column(source, offset);
     LoggerPosition {
         line,
-        column: (off.saturating_sub(line_start)) as u32,
+        column,
         index: Some(offset),
     }
 }
