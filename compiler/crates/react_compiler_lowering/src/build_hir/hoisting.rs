@@ -68,11 +68,32 @@ pub(crate) fn compute_block_hoists(
     let semantic = builder.semantic();
     let mut out: HashMap<usize, Vec<PendingHoistRaw>> = HashMap::new();
 
+    // Top-level statement spans are non-overlapping siblings in source order, so
+    // the statement *containing* a span is the one with the greatest `start` not
+    // exceeding the query's `start`. Pre-sort `(start, end, index)` by `start`
+    // once so each containment lookup is O(log n) (binary search) instead of an
+    // O(n) linear scan — turning the per-reference lookup loop from O(n*r) into
+    // O(r log n).
+    let mut sorted_spans: Vec<(u32, u32, usize)> = statement_spans
+        .iter()
+        .enumerate()
+        .map(|(index, s)| (s.start, s.end, index))
+        .collect();
+    sorted_spans.sort_by_key(|&(start, _, _)| start);
+
     // The top-level statement index that contains a given span, by containment.
     let stmt_index_of = |span: Span| -> Option<usize> {
-        statement_spans
-            .iter()
-            .position(|s| s.start <= span.start && span.end <= s.end)
+        // Rightmost entry whose `start <= span.start`.
+        let pos = sorted_spans.partition_point(|&(start, _, _)| start <= span.start);
+        if pos == 0 {
+            return None;
+        }
+        let (start, end, index) = sorted_spans[pos - 1];
+        if start <= span.start && span.end <= end {
+            Some(index)
+        } else {
+            None
+        }
     };
 
     // Candidate bindings: every non-param binding declared directly in this
