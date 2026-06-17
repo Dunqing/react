@@ -190,10 +190,26 @@ pub(crate) fn lower_statement_labeled(
         | oxc::Statement::TSExportAssignment(_)
         | oxc::Statement::TSNamespaceExportDeclaration(_) => Ok(()),
 
-        // ---- TS enum: bail gracefully (not yet transcribed) ----
+        // ---- TS enum: lower as an UnsupportedNode that carries the original
+        // source text so codegen can re-emit the `enum` declaration verbatim.
+        // Mirrors the reference (`BuildHIR.ts`), which lowers a `TSEnumDeclaration`
+        // to a temporary holding `{kind: 'UnsupportedNode', node: …}` and re-emits
+        // the node in codegen. The enum binding is a runtime value, so it is not
+        // pruned as type-only. ----
         oxc::Statement::TSEnumDeclaration(e) => {
             let loc = Some(builder.loc_of_span(e.span));
-            builder.record_diagnostic(todo_diagnostic("statement: TSEnumDeclaration", loc));
+            let source = builder
+                .source_text()
+                .get(e.span.start as usize..e.span.end as usize)
+                .map(|s| serde_json::Value::String(s.to_string()));
+            lower_value_to_temporary(
+                builder,
+                InstructionValue::UnsupportedNode {
+                    node_type: Some("TSEnumDeclaration".to_string()),
+                    original_node: source,
+                    loc,
+                },
+            )?;
             Ok(())
         }
     }

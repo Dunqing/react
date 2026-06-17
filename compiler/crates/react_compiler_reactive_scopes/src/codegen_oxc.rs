@@ -517,6 +517,18 @@ impl<'a, 'e> Cx<'a, 'e> {
                 {
                     invariant_bail!("Const declaration cannot be referenced as an expression");
                 }
+                // A `StoreContext` Reassign referenced as an expression by a
+                // *named*/promoted outer temp: TS re-dispatches to
+                // `codegenInstruction`, which (because the outer identifier is
+                // named) emits `const <name> = (x = …)` rather than inlining
+                // (only unnamed outer temps are stashed/inlined, handled above).
+                // Skip the statement-level store path and fall through to the
+                // generic expression path below, which builds the `const <name>
+                // = …` declaration around the `(x = …)` assignment expression
+                // produced by `codegen_value`.
+                InstructionValue::StoreContext { lvalue, .. }
+                    if matches!(lvalue.kind, InstructionKind::Reassign)
+                        && instr.lvalue.is_some() => {}
                 InstructionValue::StoreLocal { lvalue, value, .. }
                 | InstructionValue::StoreContext { lvalue, value, .. } => {
                     return self.codegen_store(lvalue, value, out);
@@ -578,6 +590,29 @@ impl<'a, 'e> Cx<'a, 'e> {
                         self.object_methods
                             .insert(lvalue.identifier, lowered_func.clone());
                     }
+                    return Ok(());
+                }
+                // An UnsupportedNode that is itself a statement (e.g. a TS
+                // `enum` declaration) is re-emitted verbatim. The lowering
+                // carried the original source text in `original_node`; re-parse
+                // it into an oxc statement and emit it directly, ignoring the
+                // temp lvalue. Mirrors the reference `UnsupportedNode` codegen,
+                // which returns a non-expression node as the statement itself.
+                InstructionValue::UnsupportedNode {
+                    node_type,
+                    original_node,
+                    ..
+                } if node_type.as_deref() == Some("TSEnumDeclaration") => {
+                    let src = original_node
+                        .as_ref()
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            CodegenBail::new(
+                                "UnsupportedNode TSEnumDeclaration missing source text",
+                            )
+                        })?;
+                    let stmt = self.parse_statement(src)?;
+                    out.push(stmt);
                     return Ok(());
                 }
                 _ => {}
@@ -1963,6 +1998,32 @@ impl<'a, 'e> Cx<'a, 'e> {
         ))
     }
 
+    /// Re-parse a statement's source text into a `Statement` node in the codegen
+    /// allocator. Used to re-emit declarations whose syntax is carried verbatim
+    /// through the HIR as an `UnsupportedNode` (e.g. a TS `enum` declaration),
+    /// mirroring the reference codegen which returns the original AST node.
+    fn parse_statement(&self, src: &str) -> Bail<oxc::Statement<'a>> {
+        // The source string is allocated into the codegen arena so the parsed
+        // atoms (which slice into the source) remain valid for lifetime `'a`.
+        let allocator = self.b.allocator;
+        let source: &'a str = allocator.alloc_str(src);
+        let source_type = oxc_span::SourceType::default()
+            .with_typescript(true)
+            .with_module(true);
+        let parsed = oxc_parser::Parser::new(allocator, source, source_type).parse();
+        if parsed.panicked {
+            return Err(CodegenBail::new(
+                "failed to parse UnsupportedNode statement",
+            ));
+        }
+        parsed
+            .program
+            .body
+            .into_iter()
+            .next()
+            .ok_or_else(|| CodegenBail::new("UnsupportedNode statement parsed to no statements"))
+    }
+
     /// Codegen a nested function expression / arrow. Builds the lowered HIR
     /// function into a reactive function, prunes it, then recursively codegens
     /// it (inheriting the outer inline-temporary table so captured temporaries
@@ -2456,7 +2517,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         for attr in props {
             match attr {
                 JsxAttribute::Attribute { name, place } => {
-                    let attr_name = self.b.jsx_attribute_name_identifier(SPAN, self.atom(name));
+                    let attr_name = self.jsx_attribute_name(name);
                     let value = self.jsx_attribute_value(place)?;
                     attrs.push(
                         self.b
@@ -2516,8 +2577,12 @@ impl<'a, 'e> Cx<'a, 'e> {
         }
     }
 
-    /// Convert an inlined tag expression (identifier or member chain) into a
-    /// `JSXElementName`. Mirrors the reference `expression_to_jsx_tag`.
+    /// Convert an inlined tag expression (identifier, member chain, or
+    /// namespaced string) into a `JSXElementName`. Mirrors the reference
+    /// `JsxExpression` codegen (`CodegenReactiveFunction.ts`): a namespaced tag
+    /// (`<xml:http>`) is lowered to a `Primitive` string `"xml:http"`, which
+    /// `place_expr` rebuilds as a `StringLiteral`; codegen then splits on the
+    /// first `:` and emits a `JSXNamespacedName`.
     fn expr_to_jsx_element_name(&self, expr: oxc::Expression<'a>) -> Bail<oxc::JSXElementName<'a>> {
         match expr {
             oxc::Expression::Identifier(ident) => Ok(self
@@ -2531,7 +2596,37 @@ impl<'a, 'e> Cx<'a, 'e> {
                     .b
                     .jsx_element_name_member_expression(SPAN, object, property))
             }
+            // Namespaced tag (`<xml:http>`): the lowered string literal is split
+            // on the first `:` into namespace + name. A string without `:` is a
+            // bare builtin tag name (`<div>` produced as a string).
+            oxc::Expression::StringLiteral(s) => {
+                let value = s.unbox().value;
+                let value = value.as_str();
+                if let Some((namespace, name)) = value.split_once(':') {
+                    let namespace = self.b.jsx_identifier(SPAN, self.atom(namespace));
+                    let name = self.b.jsx_identifier(SPAN, self.atom(name));
+                    Ok(self
+                        .b
+                        .jsx_element_name_namespaced_name(SPAN, namespace, name))
+                } else {
+                    Ok(self.b.jsx_element_name_identifier(SPAN, self.atom(value)))
+                }
+            }
             _ => bail!("jsx tag expression is not an identifier or member chain"),
+        }
+    }
+
+    /// Build a `JSXAttributeName`, splitting a namespaced attribute name
+    /// (`protocol:version`) on the first `:` into a `JSXNamespacedName`.
+    /// Mirrors the reference `codegenJsxAttribute`.
+    fn jsx_attribute_name(&self, name: &str) -> oxc::JSXAttributeName<'a> {
+        if let Some((namespace, local)) = name.split_once(':') {
+            let namespace = self.b.jsx_identifier(SPAN, self.atom(namespace));
+            let local = self.b.jsx_identifier(SPAN, self.atom(local));
+            self.b
+                .jsx_attribute_name_namespaced_name(SPAN, namespace, local)
+        } else {
+            self.b.jsx_attribute_name_identifier(SPAN, self.atom(name))
         }
     }
 

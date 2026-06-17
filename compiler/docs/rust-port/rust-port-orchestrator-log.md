@@ -677,3 +677,14 @@ hoisted-function-declaration, recursive-function-expression.
 - hasMemoCacheFunctionImport module guard: skip compile when `import {c}` from runtime present (program.rs).
 Cleared: error.todo-object-expression-{get,set}-syntax, error.invalid-eval-unsupported,
 error.default-param-accesses-local, skip-useMemoCache. compare-code.ts 1741→1746.
+
+## 20260617 Fix IIFE named-temp + jsx-namespaced + ts-enum (+24, → 1770)
+- StoreContext Reassign with a named/promoted outer temp now emits `const t = (x = e)` instead
+  of collapsing to `x = e` (codegen_oxc.rs). This is a common reassign-in-expression pattern —
+  cleared ~21 fixtures beyond the named target.
+- JSX namespaced name/attribute codegen: split a `:`-bearing tag/attr string into
+  `JSXNamespacedName` (codegen_oxc.rs).
+- TSEnumDeclaration: lower as an `UnsupportedNode` carrying the source text, re-emit verbatim via
+  a new `parse_statement` helper (statements.rs + codegen_oxc.rs; +serde_json dep).
+Independently verified compare-code.ts 1746→1770, **0 regressions** (32 newly passing vs the
+1738 baseline cumulative across the three fix batches).

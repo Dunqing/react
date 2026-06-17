@@ -726,6 +726,7 @@ dependencies = [
  "oxc_syntax",
  "react_compiler_diagnostics",
  "react_compiler_hir",
+ "serde_json",
 ]
 
 [[package]]
