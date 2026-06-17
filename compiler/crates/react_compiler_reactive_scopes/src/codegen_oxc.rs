@@ -1024,7 +1024,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         }
 
         // --- Else block: `name = $[i];` for each output. ---
-        let mut else_stmts: Vec<oxc::Statement<'a>> = Vec::new();
+        let mut else_stmts = self.b.vec();
         for (name, index) in &outputs {
             let target = oxc::AssignmentTarget::AssignmentTargetIdentifier(
                 self.b
@@ -1045,10 +1045,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         let alternate = if else_stmts.is_empty() {
             None
         } else {
-            Some(
-                self.b
-                    .statement_block(SPAN, self.b.vec_from_iter(else_stmts)),
-            )
+            Some(self.b.statement_block(SPAN, else_stmts))
         };
         out.push(self.b.statement_if(SPAN, test, consequent, alternate));
 
@@ -1414,7 +1411,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         &self,
         stmts: Vec<oxc::Statement<'a>>,
     ) -> Bail<oxc::VariableDeclaration<'a>> {
-        let mut declarators: Vec<oxc::VariableDeclarator<'a>> = Vec::new();
+        let mut declarators = self.b.vec();
         let mut any_let = false;
         for stmt in stmts {
             match stmt {
@@ -1462,7 +1459,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         };
         Ok(self
             .b
-            .variable_declaration(SPAN, kind, self.b.vec_from_iter(declarators), false))
+            .variable_declaration(SPAN, kind, declarators, false))
     }
 
     /// Get the instructions of a sequence ReactiveValue (for for-in/of inits).
@@ -1568,7 +1565,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                 // Emit the sequence's instructions; most resolve to inline
                 // temporaries (emitting no statement). Any statement-producing
                 // instruction becomes a comma-expression operand.
-                let mut exprs: Vec<oxc::Expression<'a>> = Vec::new();
+                let mut exprs = self.b.vec();
                 for instr in instructions {
                     let mut stmts = Vec::new();
                     self.codegen_instruction(instr, &mut stmts)?;
@@ -1586,9 +1583,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                     Ok(final_expr)
                 } else {
                     exprs.push(final_expr);
-                    Ok(self
-                        .b
-                        .expression_sequence(SPAN, self.b.vec_from_iter(exprs)))
+                    Ok(self.b.expression_sequence(SPAN, exprs))
                 }
             }
             ReactiveValue::OptionalExpression {
