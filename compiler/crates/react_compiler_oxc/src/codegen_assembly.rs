@@ -71,8 +71,20 @@ pub fn assemble_and_print(
 
     // Compile each artifact into an oxc function, keyed by its source span.
     // Bail (skip) on artifacts whose codegen returns an error.
+    //
+    // Outlined functions (sentinel span `(0, 0)`, `insert_after_span` set to the
+    // parent's span) are emitted as separate top-level declarations and are
+    // referenced by name from their parent's compiled body. If an outlined
+    // function fails codegen we cannot just drop it — the parent would then
+    // reference an undefined name. Mirror TS, which fails the whole compile in
+    // this case: record the parent spans whose outlined children failed, and
+    // drop those parents (and their other outlined children) below, so the whole
+    // enclosing function falls back to uncompiled source. This catches the
+    // `convertIdentifier` invariant ("Expected temporaries to be promoted to
+    // named identifiers"), which native surfaces as a codegen bail rather than
+    // emitting a dangling reference.
     let mut compiled: Vec<CompiledNode<'_>> = Vec::new();
-    let mut any_memo = false;
+    let mut failed_parent_spans: HashSet<u32> = HashSet::new();
     for artifact in artifacts {
         match codegen_oxc_function(
             &artifact.reactive_fn,
@@ -83,15 +95,13 @@ pub fn assemble_and_print(
             MEMO_LOCAL_NAME,
         ) {
             Ok(output) => {
-                if output.memo_slots_used > 0 {
-                    any_memo = true;
-                }
                 compiled.push(CompiledNode {
                     span: artifact.fn_span,
                     is_arrow: artifact.is_arrow,
                     function: output.function,
                     gating: artifact.gating.clone(),
                     insert_after: artifact.insert_after_span,
+                    memo_slots_used: output.memo_slots_used,
                 });
             }
             Err(_bail) => {
@@ -100,13 +110,43 @@ pub fn assemble_and_print(
                 if std::env::var("REACT_COMPILER_CODEGEN_BAIL_DEBUG").is_ok() {
                     eprintln!("CODEGEN_BAIL: {}", _bail.reason);
                 }
+                // An outlined function that fails codegen forces its parent (and
+                // siblings) to bail too: the parent's body holds a now-undefined
+                // reference to this outlined function's name.
+                if let Some(parent_span) = artifact.insert_after_span {
+                    failed_parent_spans.insert(parent_span.0);
+                }
             }
         }
+    }
+
+    // Drop any parent function whose outlined child failed codegen, along with
+    // that parent's other outlined children (which would otherwise dangle as
+    // unreferenced declarations). Both the parent (a spanned node) and its
+    // children (sentinel-span nodes with `insert_after` pointing at the parent)
+    // are identified by the parent's span start.
+    if !failed_parent_spans.is_empty() {
+        compiled.retain(|node| {
+            let owner = if node.span == (0, 0) {
+                node.insert_after.map(|s| s.0)
+            } else {
+                Some(node.span.0)
+            };
+            match owner {
+                Some(start) => !failed_parent_spans.contains(&start),
+                None => true,
+            }
+        });
     }
 
     if compiled.is_empty() {
         return None;
     }
+
+    // The `_c` runtime import is only needed if a *retained* function memoizes.
+    // Computed after the bail-propagation retain above so a dropped function does
+    // not leave a spurious import.
+    let any_memo = compiled.iter().any(|node| node.memo_slots_used > 0);
 
     // Partition outlined functions (sentinel span (0, 0)) from spanned ones.
     // Outlined functions have no source location, so they cannot be spliced by
@@ -185,6 +225,10 @@ struct CompiledNode<'a> {
     /// For outlined functions, the parent function's source span. The outlined
     /// declaration is inserted directly after the parent's spliced statement.
     insert_after: Option<(u32, u32)>,
+    /// Memo cache slots used by this function. Used to decide whether the `_c`
+    /// runtime import is needed, after bail propagation may have dropped some
+    /// functions.
+    memo_slots_used: u32,
 }
 
 /// A gating import to inject: `import { <imported> [as <local>] } from "<source>"`.

@@ -782,3 +782,18 @@ SOUND memoization (not just non-empty). Findings:
 Added a `KNOWN_DIVERGENCES` allowlist + `EXPECTED` verdict to compare-code.ts (raw SEMANTIC-pass stays
 1790/1797; reports `+3 expected divergences => 1793/1797 accounted`). Real failures now 4: the
 unnamed-temporary native bug, ValidateSourceLocations, and the 2 oxc_codegen printer issues.
+
+## 20260618 Fix dangling outlined-fn reference (+1, → 1791/1797 raw, 1794 accounted)
+codegen_assembly.rs: outlined children are codegen'd as separate artifacts; when an outlined child
+failed (`unnamed identifier with no declaration name`) the bail was swallowed (child dropped) but the
+parent still emitted `renderer={_temp}` → dangling reference / runtime ReferenceError. Fix: track
+`failed_parent_spans`, and after the codegen loop drop BOTH the parent and all its outlined children
+so the parent falls back to uncompiled source (no dangling ref); recompute `any_memo` from retained
+nodes (new `memo_slots_used` on CompiledNode) so a dropped memo fn doesn't leave a spurious `_c` import.
+Precise: only genuine outlined-child failures trigger it. error.bug-invariant-unnamed-temporary now
+IDENTICAL (native emits uncompiled Foo, matching TS's bail via the passthrough rule). 0 regressions.
+
+## FINAL STATUS: 1791/1797 raw SEMANTIC-pass + 3 EXPECTED = 1794/1797 accounted (99.8%)
+3 genuine remaining, all infra/upstream (not native bugs):
+- error.todo-missing-source-locations — `@validateSourceLocations`; needs native codegen source-location tracking.
+- fbt/fbt-param-with-quotes, lone-surrogate-string-values — vendored oxc_codegen 0.136 printer limitations (double-quoted JSX attr containing `"`; lone-surrogate escape). Need an oxc patch/bump.
