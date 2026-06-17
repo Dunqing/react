@@ -1,10 +1,12 @@
 # React Compiler — Native Oxc Migration: Status & Handoff
 
 **TL;DR.** The React Compiler's Rust port now runs **fully natively on Oxc** (no Babel, no hand-written
-AST): **96.4% semantic parity** (1738/1803 fixtures) with the TypeScript compiler, **~5.8× faster than
-TS/Babel** and **~4.4× faster than the prior Babel-AST Rust port** (apples-to-apples on verified-equivalent output, reproducible — see Performance),
-**~22% smaller binary**, on **oxc 0.136 / rustc 1.94**, clippy-clean, and synced with upstream `main`. The remaining ~65 fixtures are
-deferred opt-in features (fbt, SSR, JSX-outlining, instrumentation) plus a scattered single-cause tail.
+AST): **99.8% semantic parity** (1791/1797 SEMANTIC-pass + 3 verified expected-divergences = 1794/1797
+accounted) with the TypeScript compiler, **~5.7× faster than TS/Babel** and **~4.4× faster than the prior
+Babel-AST Rust port** (apples-to-apples on verified-equivalent output, reproducible — see Performance),
+**~22% smaller binary**, on **oxc 0.136 / rustc 1.94**, clippy-clean, and synced with upstream `main`. The
+remaining 3 fixtures are not native bugs: 1 needs codegen source-location tracking
+(`@validateSourceLocations`), 2 are vendored `oxc_codegen` printer limits.
 
 **Branch:** `oxc-migration` — a **deliberate fork** that diverges from upstream React #36743 (which removed
 in-repo OXC/SWC integration, intending those to live in the OXC project and consume `react_compiler` as a
@@ -30,15 +32,19 @@ source → oxc_parser → oxc_semantic → native lowering (build_hir) → analy
 ## Current correctness (oracles)
 
 Two oracles, both comparing the native Oxc compiler against the in-process TS compiler over the
-~1,803-fixture corpus (`compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/compiler/`):
+~1,797-fixture corpus (`compiler/packages/babel-plugin-react-compiler/src/__tests__/fixtures/compiler/`;
+6 port-debugging scratch fixtures were removed — they tested no React semantics):
 
 - **`compiler/scripts/compare-code.ts`** — SEMANTIC equivalence of compiled output (structural: alpha-
   renames temporaries, masks `$[N]`/`_c(N)` slot indices, normalizes JSX self-close / decl-kind /
   comments / numeric-literal form). This is the PRIMARY metric. `tsx compiler/scripts/compare-code.ts --limit 0` (corpus),
   `tsx compiler/scripts/compare-code.ts <fixture>` (single, prints diff), `--list BAIL|OTHER|N-VAL`.
-  **SEMANTIC-pass ≈ 1738/1803 (96.4%)** (after @gating + scattered-tail + jsx-outlining + React.memo/forwardRef
-  discovery; was 1673 at migration-complete). Remaining 65: N-VAL 9, BAIL 36 (~23 fbt), OTHER 20.
-- **`compiler/scripts/compare-hir.ts`** — per-pass HIR diff (printer-independent). **HIR-MATCH ≈ 1447/1803**
+  **SEMANTIC-pass 1791/1797**, plus **3 verified expected-divergences** (`KNOWN_DIVERGENCES` — native
+  compiles valid code correctly where TS hits a documented invariant bug) = **1794/1797 accounted (99.8%)**
+  (was 1738/1803 / 96.4% at migration-complete). Remaining **3, none native bugs**:
+  `error.todo-missing-source-locations` (needs codegen source-location tracking), and 2 vendored
+  `oxc_codegen` printer limits (`fbt/fbt-param-with-quotes`, `lone-surrogate-string-values`).
+- **`compiler/scripts/compare-hir.ts`** — per-pass HIR diff (printer-independent). **HIR-MATCH ≈ 1450/1797**
   byte-identical to the TS compiler. (Many semantically-correct fixtures differ only in HIR temp/block
   ID *numbering*, which compiles identically — so HIR-MATCH < SEMANTIC-pass by design.)
 
@@ -51,36 +57,38 @@ scripts run via `tsx`. The CLI is `react_compiler_e2e_cli` (`--frontend oxc`, `-
 **Reproducible apples-to-apples.** All three pipelines are measured with the SAME
 methodology — sources read up front (IO excluded), warmup discarded, median-of-8,
 single-threaded, `compilationMode: 'all'`, `panicThreshold: 'all_errors'` (the config
-the `compare-code.ts` oracle uses) — over the SAME corpus. Native bails on ~320
-deferred-feature fixtures (it compiles 1134/1505 to code vs 1185/1505 for the other
-two), so the headline figure is taken over the **intersection of the 1123 fixtures
-all three fully compile** (identical, verified-equivalent work — see below); the
-full-corpus throughput is shown alongside. Per-fixture median:
+the `compare-code.ts` oracle uses) — over the SAME corpus (current 1499 non-flow `.js`).
+Native compiles 1157/1499 to code; the two JS engines compile an identical 1179/1499; the
+headline figure is taken over the **intersection of the 1151 fixtures all three fully
+compile** (identical work — equivalence verified, see below); the full-corpus throughput is
+shown alongside. Per-fixture median:
 
-| pipeline | intersection (1123) | full corpus (1505) | vs native |
+| pipeline | intersection (1151) | full corpus (1499) | vs native |
 |---|---|---|---|
-| **Native-Oxc** (oxc parse→semantic→passes→native codegen) | **0.26 ms** | 0.24 ms | 1× |
+| **Native-Oxc** (oxc parse→semantic→passes→native codegen) | **0.26 ms** | 0.23 ms | 1× |
 | **Pre-Oxc Rust port** (Babel parse→scope→JSON→NAPI→Rust→Babel codegen) | 1.14 ms | 0.99 ms | **~4.4× slower** |
-| **TS/Babel reference** (in-process parse→plugin→codegen) | 1.47 ms | 1.30 ms | **~5.8× slower** |
+| **TS/Babel reference** (in-process parse→plugin→codegen) | 1.46 ms | 1.34 ms | **~5.7× slower** |
 
-Native-side phase split (from `--bench-parse-only` / `--bench-core-only`):
-frontend (oxc parse+semantic) **1.2%**, compiler core **98%**, output codegen
-**0.7%** — natively the core is essentially the whole cost.
+Native-side phase split (from `--bench-parse-only` / `--bench-core-only`): frontend (oxc
+parse+semantic) **1.2%**, compiler core **~96%**, output assembly+print **~2.4%** — natively the
+core is essentially the whole cost. (Re-measured after the parity work: full-pipeline per-fixture
+median held at ~0.23 ms despite native now compiling +23 more fixtures; only the assembly phase ticked
+up from ~0.7%, absorbing the recursive splice + the rename-application pass.)
 
-**Output is semantically equivalent (verified, not assumed).** Over the 1123
-intersection fixtures, normalized with the project's `structuralNormalize`
-(alpha-renames temporaries, masks `$[N]`/`_c(N)` slot indices): **pre-Oxc Rust ≡ TS
-on 100%**, **native ≡ TS on 98.3%** (a conservative floor — spot-checking the 19
-diffs, several are cosmetic `structuralNormalize` artifacts like a stray empty
-statement or a dropped comment with byte-identical logic, one is a benchmark `@script`
-parse quirk, and the genuine remainder is the documented parity tail: fbt lambdas,
-lone-surrogate codegen). All three emit memoized output on the SAME 953 fixtures. So
-the timing compares equivalent work — not a faster engine doing less.
+**Output is semantically equivalent (verified, not assumed).** Verified at the 1123-fixture
+intersection checkpoint during the parity work, normalized with the project's `structuralNormalize`
+(alpha-renames temporaries, masks `$[N]`/`_c(N)` slot indices): **pre-Oxc Rust ≡ TS on 100%**,
+**native ≡ TS on 98.3%** (a conservative floor — spot-checking the 19 diffs, several were cosmetic
+`structuralNormalize` artifacts like a stray empty statement or a dropped comment with byte-identical
+logic, one a benchmark `@script` parse quirk, the rest the documented parity tail). All three emitted
+memoized output on the same fixtures. The parity fixes since then only moved fixtures from
+divergent→matching (e.g. `props-method-dependency`, `try-catch-optional-call` now pass), so native≡TS is
+at least as high now — the timing compares equivalent work, not a faster engine doing less.
 
 > **Correction (the previous numbers were ad-hoc).** Earlier revisions recorded
 > 1.38 ms / 6.1× (pre-Oxc) and 1.895 ms / 8.1× (TS) from one-off measurements with
 > no committed harness. Re-measured apples-to-apples they are ~1.14 ms / ~4.4× and
-> ~1.47 ms / ~5.8×: the old pre-Oxc figure had thinner V8 warmup and the old TS
+> ~1.46 ms / ~5.7×: the old pre-Oxc figure had thinner V8 warmup and the old TS
 > figure included snap's prettier/sprout extras. Magnitudes are smaller and now
 > reproducible; the qualitative story is unchanged. Recipe + drivers:
 > `docs/rust-port/bench/`.
@@ -90,7 +98,7 @@ dead-code polish shrank it ~9%) vs pre-Oxc NAPI cdylib **5.92 MB** → native is
 JS parser+semantic (deleting `react_compiler_ast` + serde + the NAPI glue more than offsets oxc). CLI-vs-cdylib caveat applies.
 
 **Where the migration's win comes from.** The pre-Oxc Rust port was only **~1.3× faster than pure TS/Babel**
-(1.14 vs 1.47 ms) *despite* a Rust core — because it KEPT the JS frontend (Babel parse+scope) and Babel codegen
+(1.14 vs 1.46 ms) *despite* a Rust core — because it KEPT the JS frontend (Babel parse+scope) and Babel codegen
 and ADDED a JSON/NAPI marshalling round-trip to feed the Rust core. Sub-phase split of the pre-Oxc pipeline
 (reproducible via `bench-rust.mjs --profile`; carries profiling overhead, so treat as proportions): JS frontend ~1/5,
 JSON/NAPI boundary ~1/4 (dominated by the *Rust-side* JSON deserialize), Rust core ~2/5, Babel codegen ~1/8. So

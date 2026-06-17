@@ -797,3 +797,13 @@ IDENTICAL (native emits uncompiled Foo, matching TS's bail via the passthrough r
 3 genuine remaining, all infra/upstream (not native bugs):
 - error.todo-missing-source-locations — `@validateSourceLocations`; needs native codegen source-location tracking.
 - fbt/fbt-param-with-quotes, lone-surrogate-string-values — vendored oxc_codegen 0.136 printer limitations (double-quoted JSX attr containing `"`; lone-surrogate escape). Need an oxc patch/bump.
+
+## 20260618 Re-benchmark after the parity work (native perf held; 3-way refreshed)
+Native re-bench (current compiler, 1499 corpus): full-pipeline per-fixture median **~0.23 ms (0.2303)** —
+unchanged despite native now compiling **+23 more** fixtures (1157/1499 vs 1134). Phase split: frontend
+1.2% / core ~96% / assembly+print ~2.4% (assembly up from ~0.7%, absorbing the recursive splice_expr +
+rename-application pass). Full 3-way refresh (rebuilt pre-Oxc worktree at b49e04151e, all three over the
+identical current 1499 corpus): full-corpus native 0.230 / pre-Oxc 0.986 / TS 1.338; **intersection 1151**
+→ native 0.257 / pre-Oxc 1.135 / TS 1.455 → **native 4.41× vs pre-Oxc, 5.66× vs TS; pre-Oxc 1.28× vs TS**
+(ratios unchanged from the pre-parity-work run). Synced the handoff doc Performance table + correctness
+headline (96.4% / 1738/1803 → 99.8% / 1794/1797).
