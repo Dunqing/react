@@ -14,8 +14,8 @@
 //! The enums mirror the old `react_compiler_ast::scope` enums so that the
 //! lowering rewrite (stage N1.2) can keep its existing `match` arms unchanged.
 //!
-//! ## oxc 0.121 API notes
-//! - In 0.121 there is a single unified `Scoping` struct (accessed via
+//! ## oxc 0.136 API notes
+//! - In 0.136 there is a single unified `Scoping` struct (accessed via
 //!   `semantic.scoping()`), not separate `SymbolTable` / `ScopeTree`.
 //! - References are resolved to symbols during `SemanticBuilder`. An
 //!   `IdentifierReference` carries a `Cell<Option<ReferenceId>>`; the resolved

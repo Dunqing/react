@@ -1016,7 +1016,7 @@ fn lower_optional_call_expression(
             }
         } else if matches!(callee, oxc::Expression::CallExpression(c) if c.optional || chain_subtree_has_optional(&c.callee))
         {
-            // Nested optional call in the callee position. In oxc 0.121 a chain
+            // Nested optional call in the callee position. In oxc 0.136 a chain
             // like `a?.()?.()` is a *single* `ChainExpression` whose inner calls
             // are bare `CallExpression` nodes carrying `optional: true` (not each
             // wrapped in their own chain). Babel instead nests an
@@ -1176,7 +1176,7 @@ fn lower_optional_object(
     }
     // Every member/call access *within* an optional chain becomes its own
     // `Optional` terminal — including the non-`?.` links *trailing* the first
-    // `?.`. In oxc 0.121 a chain like `a?.b.c` is a *single* `ChainExpression`
+    // `?.`. In oxc 0.136 a chain like `a?.b.c` is a *single* `ChainExpression`
     // wrapping nested plain member structs (`StaticMemberExpression(.c,
     // object=StaticMemberExpression(.b, optional=true))`), so the trailing `.c`
     // arrives here as a bare member with `optional == false`. Babel instead
