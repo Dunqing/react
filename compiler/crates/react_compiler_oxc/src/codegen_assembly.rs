@@ -29,7 +29,7 @@ use oxc_allocator::Allocator;
 use oxc_allocator::Box as ArenaBox;
 use oxc_ast::AstBuilder;
 use oxc_ast::ast as oxc;
-use oxc_span::Atom;
+use oxc_ast::ast::Str;
 use oxc_span::GetSpan;
 use oxc_span::SPAN;
 use oxc_span::SourceType;
@@ -336,7 +336,7 @@ fn emit_dispatcher<'a>(
     // function <orig>_optimized(...) { <compiled body> }
     let mut compiled_fn = node.function;
     compiled_fn.r#type = oxc::FunctionType::FunctionDeclaration;
-    compiled_fn.id = Some(builder.binding_identifier(SPAN, builder.atom(optimized_name)));
+    compiled_fn.id = Some(builder.binding_identifier(SPAN, builder.str(optimized_name)));
     body.push(oxc::Statement::FunctionDeclaration(
         builder.alloc(compiled_fn),
     ));
@@ -345,7 +345,7 @@ fn emit_dispatcher<'a>(
     let orig_param_count = orig_fn.params.items.len();
     let orig_has_rest = orig_fn.params.rest.is_some();
     orig_fn.r#type = oxc::FunctionType::FunctionDeclaration;
-    orig_fn.id = Some(builder.binding_identifier(SPAN, builder.atom(unoptimized_name)));
+    orig_fn.id = Some(builder.binding_identifier(SPAN, builder.str(unoptimized_name)));
     body.push(oxc::Statement::FunctionDeclaration(orig_fn));
 
     // function <orig>(arg0, ...) { if (<result>) return <opt>(args); else return <unopt>(args); }
@@ -375,9 +375,9 @@ fn build_dispatcher<'a>(
 ) -> oxc::Statement<'a> {
     // Intern the `arg0..argN` names once; each is reused for the param pattern
     // here and for both the optimized/unoptimized dispatcher call argument lists
-    // (Atom is Copy, so reuse avoids re-formatting + re-interning the same name).
-    let arg_atoms: Vec<Atom<'a>> = (0..param_count)
-        .map(|i| builder.atom(&format!("arg{i}")))
+    // (Str is Copy, so reuse avoids re-formatting + re-interning the same name).
+    let arg_atoms: Vec<Str<'a>> = (0..param_count)
+        .map(|i| builder.str(&format!("arg{i}")))
         .collect();
 
     // Build params arg0..argN. If the original had a rest parameter, the last
@@ -419,10 +419,10 @@ fn build_dispatcher<'a>(
     );
 
     // if (<result>) return <optimized>(args); else return <unoptimized>(args);
-    let test = builder.expression_identifier(SPAN, builder.atom(result_name));
+    let test = builder.expression_identifier(SPAN, builder.str(result_name));
     let opt_call = builder.expression_call(
         SPAN,
-        builder.expression_identifier(SPAN, builder.atom(optimized_name)),
+        builder.expression_identifier(SPAN, builder.str(optimized_name)),
         None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
         dispatcher_args(builder, &arg_atoms, has_rest),
         false,
@@ -430,7 +430,7 @@ fn build_dispatcher<'a>(
     let consequent = builder.statement_return(SPAN, Some(opt_call));
     let unopt_call = builder.expression_call(
         SPAN,
-        builder.expression_identifier(SPAN, builder.atom(unoptimized_name)),
+        builder.expression_identifier(SPAN, builder.str(unoptimized_name)),
         None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
         dispatcher_args(builder, &arg_atoms, has_rest),
         false,
@@ -442,7 +442,7 @@ fn build_dispatcher<'a>(
     stmts.push(if_stmt);
     let fn_body = builder.function_body(SPAN, builder.vec(), stmts);
 
-    let id = builder.binding_identifier(SPAN, builder.atom(name));
+    let id = builder.binding_identifier(SPAN, builder.str(name));
     let function = builder.function(
         SPAN,
         oxc::FunctionType::FunctionDeclaration,
@@ -463,7 +463,7 @@ fn build_dispatcher<'a>(
 /// the already-interned `arg0..argN` atoms.
 fn dispatcher_args<'a>(
     builder: &AstBuilder<'a>,
-    arg_atoms: &[Atom<'a>],
+    arg_atoms: &[Str<'a>],
     has_rest: bool,
 ) -> oxc_allocator::Vec<'a, oxc::Argument<'a>> {
     let last = arg_atoms.len().wrapping_sub(1);
@@ -666,7 +666,7 @@ fn gating_conditional<'a>(
 fn call_no_args<'a>(builder: &AstBuilder<'a>, name: &str) -> oxc::Expression<'a> {
     builder.expression_call(
         SPAN,
-        builder.expression_identifier(SPAN, builder.atom(name)),
+        builder.expression_identifier(SPAN, builder.str(name)),
         None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
         builder.vec(),
         false,
@@ -679,7 +679,7 @@ fn const_decl<'a>(
     name: &str,
     init: oxc::Expression<'a>,
 ) -> oxc::Statement<'a> {
-    let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(name));
+    let pat = builder.binding_pattern_binding_identifier(SPAN, builder.str(name));
     let declarator = builder.variable_declarator(
         SPAN,
         oxc::VariableDeclarationKind::Const,
@@ -701,7 +701,7 @@ fn export_const_decl<'a>(
     name: &str,
     init: oxc::Expression<'a>,
 ) -> oxc::Statement<'a> {
-    let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(name));
+    let pat = builder.binding_pattern_binding_identifier(SPAN, builder.str(name));
     let declarator = builder.variable_declarator(
         SPAN,
         oxc::VariableDeclarationKind::Const,
@@ -729,7 +729,7 @@ fn export_const_decl<'a>(
 
 /// `export default <name>;`.
 fn export_default_ident<'a>(builder: &AstBuilder<'a>, name: &str) -> oxc::Statement<'a> {
-    let ident = builder.expression_identifier(SPAN, builder.atom(name));
+    let ident = builder.expression_identifier(SPAN, builder.str(name));
     export_default_expr(builder, ident)
 }
 
@@ -856,7 +856,7 @@ fn rewrap_function_declaration<'a>(
     // anonymous default exports).
     if function.id.is_none() {
         if let Some(id) = &orig_fn.id {
-            function.id = Some(builder.binding_identifier(SPAN, builder.atom(id.name.as_str())));
+            function.id = Some(builder.binding_identifier(SPAN, builder.str(id.name.as_str())));
         }
     }
     let func_box = builder.alloc(function);
@@ -940,14 +940,14 @@ fn inject_memo_import<'a>(
         return;
     }
     let imported =
-        oxc::ModuleExportName::IdentifierName(builder.identifier_name(SPAN, builder.atom("c")));
-    let local = builder.binding_identifier(SPAN, builder.atom(MEMO_LOCAL_NAME));
+        oxc::ModuleExportName::IdentifierName(builder.identifier_name(SPAN, builder.str("c")));
+    let local = builder.binding_identifier(SPAN, builder.str(MEMO_LOCAL_NAME));
     let specifier = builder.import_specifier(SPAN, imported, local, oxc::ImportOrExportKind::Value);
     let mut specifiers = builder.vec();
     specifiers.push(oxc::ImportDeclarationSpecifier::ImportSpecifier(
         builder.alloc(specifier),
     ));
-    let source = builder.string_literal(SPAN, builder.atom(runtime_module), None);
+    let source = builder.string_literal(SPAN, builder.str(runtime_module), None);
     let import_decl = builder.import_declaration(
         SPAN,
         Some(specifiers),
@@ -970,9 +970,9 @@ fn build_require_destructure<'a>(
 ) -> oxc::Statement<'a> {
     // Object pattern `{ <imported>: <local> }`.
     let key = oxc::PropertyKey::StaticIdentifier(
-        builder.alloc(builder.identifier_name(SPAN, builder.atom(imported))),
+        builder.alloc(builder.identifier_name(SPAN, builder.str(imported))),
     );
-    let value = builder.binding_pattern_binding_identifier(SPAN, builder.atom(local));
+    let value = builder.binding_pattern_binding_identifier(SPAN, builder.str(local));
     let shorthand = imported == local;
     let prop = builder.binding_property(SPAN, key, value, shorthand, false);
     let mut properties = builder.vec();
@@ -985,10 +985,10 @@ fn build_require_destructure<'a>(
 
     // `require("<module>")`.
     let callee = oxc::Expression::Identifier(
-        builder.alloc(builder.identifier_reference(SPAN, builder.atom("require"))),
+        builder.alloc(builder.identifier_reference(SPAN, builder.str("require"))),
     );
     let module_arg = oxc::Argument::StringLiteral(
-        builder.alloc(builder.string_literal(SPAN, builder.atom(module), None)),
+        builder.alloc(builder.string_literal(SPAN, builder.str(module), None)),
     );
     let mut args = builder.vec();
     args.push(module_arg);
@@ -1047,16 +1047,16 @@ fn inject_gating_imports<'a>(
 
     for gi in seen {
         let imported = oxc::ModuleExportName::IdentifierName(
-            builder.identifier_name(SPAN, builder.atom(&gi.imported)),
+            builder.identifier_name(SPAN, builder.str(&gi.imported)),
         );
-        let local = builder.binding_identifier(SPAN, builder.atom(&gi.local));
+        let local = builder.binding_identifier(SPAN, builder.str(&gi.local));
         let specifier =
             builder.import_specifier(SPAN, imported, local, oxc::ImportOrExportKind::Value);
         let mut specifiers = builder.vec();
         specifiers.push(oxc::ImportDeclarationSpecifier::ImportSpecifier(
             builder.alloc(specifier),
         ));
-        let source = builder.string_literal(SPAN, builder.atom(&gi.source), None);
+        let source = builder.string_literal(SPAN, builder.str(&gi.source), None);
         let import_decl = builder.import_declaration(
             SPAN,
             Some(specifiers),

@@ -22,13 +22,19 @@ fn unknown_statement_in_function_body_records_todo_bailout() {
     let allocator = Allocator::default();
     let source_type = SourceType::tsx();
     let parsed = Parser::new(&allocator, source, source_type).parse();
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-
-    let semantic_ret = SemanticBuilder::new().build(&parsed.program);
     assert!(
-        semantic_ret.errors.is_empty(),
+        parsed.diagnostics.is_empty(),
+        "parse errors: {:?}",
+        parsed.diagnostics
+    );
+
+    let semantic_ret = SemanticBuilder::new()
+        .with_build_nodes(true)
+        .build(&parsed.program);
+    assert!(
+        semantic_ret.diagnostics.is_empty(),
         "semantic errors: {:?}",
-        semantic_ret.errors
+        semantic_ret.diagnostics
     );
     let semantic = semantic_ret.semantic;
 

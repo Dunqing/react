@@ -13,11 +13,11 @@ react_compiler_reactive_scopes = { path = "../react_compiler_reactive_scopes" }
 react_compiler_ssa = { path = "../react_compiler_ssa" }
 react_compiler_typeinference = { path = "../react_compiler_typeinference" }
 react_compiler_validation = { path = "../react_compiler_validation" }
-oxc_allocator = "0.121"
-oxc_ast = "0.121"
-oxc_ast_visit = "0.121"
-oxc_semantic = "0.121"
-oxc_span = "0.121"
-oxc_syntax = "0.121"
+oxc_allocator = "0.136.0"
+oxc_ast = "0.136.0"
+oxc_ast_visit = "0.136.0"
+oxc_semantic = "0.136.0"
+oxc_span = "0.136.0"
+oxc_syntax = "0.136.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

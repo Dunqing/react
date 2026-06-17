@@ -30,7 +30,7 @@ use oxc_allocator::FromIn;
 use oxc_allocator::Vec as ArenaVec;
 use oxc_ast::AstBuilder;
 use oxc_ast::ast as oxc;
-use oxc_span::Atom;
+use oxc_ast::ast::Str;
 use oxc_span::SPAN;
 use oxc_syntax::operator::BinaryOperator as OxcBinOp;
 use oxc_syntax::operator::LogicalOperator as OxcLogOp;
@@ -149,7 +149,7 @@ pub fn codegen_oxc_function<'a, 'e>(
         env,
         next_cache_index: 0,
         cache_name: synthesize_name("$", &unique_identifiers),
-        memo_local_name: Atom::from_in(memo_local_name, builder.allocator),
+        memo_local_name: Str::from_in(memo_local_name, builder.allocator),
         temp: HashMap::new(),
         declared: HashSet::new(),
         object_methods: HashMap::new(),
@@ -173,7 +173,7 @@ struct Cx<'a, 'e> {
     /// Pre-interned local binding name for the runtime cache import (e.g. `_c`),
     /// used as the callee of the `const $ = _c(N)` preface. Interned once at
     /// construction so the `_c(N)` emission does not re-intern it.
-    memo_local_name: Atom<'a>,
+    memo_local_name: Str<'a>,
     /// declaration_id -> HIR value to inline at use sites (None = bare ident).
     ///
     /// Stores the full `ReactiveValue` (which IS `Clone`), so that compound
@@ -192,8 +192,8 @@ struct Cx<'a, 'e> {
 }
 
 impl<'a, 'e> Cx<'a, 'e> {
-    fn atom(&self, s: &str) -> Atom<'a> {
-        Atom::from_in(s, self.b.allocator)
+    fn atom(&self, s: &str) -> Str<'a> {
+        Str::from_in(s, self.b.allocator)
     }
 
     fn alloc_cache_index(&mut self) -> u32 {
@@ -2226,7 +2226,7 @@ impl<'a, 'e> Cx<'a, 'e> {
             let raw = self.atom(&q.raw);
             let cooked = q.cooked.as_ref().map(|c| self.atom(c));
             let value = oxc::TemplateElementValue { raw, cooked };
-            elems.push(self.b.template_element(SPAN, value, i == last, false));
+            elems.push(self.b.template_element(SPAN, value, i == last));
         }
         let mut exprs = self.b.vec();
         for s in subexprs {
@@ -2241,7 +2241,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         let cooked = value.cooked.as_ref().map(|c| self.atom(c));
         let tv = oxc::TemplateElementValue { raw, cooked };
         let mut elems = self.b.vec();
-        elems.push(self.b.template_element(SPAN, tv, true, false));
+        elems.push(self.b.template_element(SPAN, tv, true));
         self.b.template_literal(SPAN, elems, self.b.vec())
     }
 

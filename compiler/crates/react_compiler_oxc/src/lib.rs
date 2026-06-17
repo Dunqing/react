@@ -114,6 +114,7 @@ pub fn transform_source(
     let parsed = oxc_parser::Parser::new(&allocator, source_text, source_type).parse();
 
     let semantic = oxc_semantic::SemanticBuilder::new()
+        .with_build_nodes(true)
         .build(&parsed.program)
         .semantic;
 
@@ -162,6 +163,7 @@ pub fn lint_source(
     let parsed = oxc_parser::Parser::new(&allocator, source_text, source_type).parse();
 
     let semantic = oxc_semantic::SemanticBuilder::new()
+        .with_build_nodes(true)
         .build(&parsed.program)
         .semantic;
 

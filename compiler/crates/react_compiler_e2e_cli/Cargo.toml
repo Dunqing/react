@@ -12,9 +12,9 @@ react_compiler = { path = "../react_compiler" }
 react_compiler_oxc = { path = "../react_compiler_oxc" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
-oxc_parser = "0.121"
-oxc_allocator = "0.121"
-oxc_span = "0.121"
-oxc_semantic = "0.121"
-oxc_codegen = "0.121"
-oxc_diagnostics = "0.121"
+oxc_parser = "0.136.0"
+oxc_allocator = "0.136.0"
+oxc_span = "0.136.0"
+oxc_semantic = "0.136.0"
+oxc_codegen = "0.136.0"
+oxc_diagnostics = "0.136.0"

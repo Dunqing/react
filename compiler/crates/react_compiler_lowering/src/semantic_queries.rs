@@ -492,13 +492,19 @@ mod tests {
         let allocator = Allocator::default();
         let source_type = SourceType::tsx();
         let ret = Parser::new(&allocator, source, source_type).parse();
-        assert!(ret.errors.is_empty(), "parse errors: {:?}", ret.errors);
-        let program = ret.program;
-        let semantic_ret = SemanticBuilder::new().build(&program);
         assert!(
-            semantic_ret.errors.is_empty(),
+            ret.diagnostics.is_empty(),
+            "parse errors: {:?}",
+            ret.diagnostics
+        );
+        let program = ret.program;
+        let semantic_ret = SemanticBuilder::new()
+            .with_build_nodes(true)
+            .build(&program);
+        assert!(
+            semantic_ret.diagnostics.is_empty(),
             "semantic errors: {:?}",
-            semantic_ret.errors
+            semantic_ret.diagnostics
         );
         f(&semantic_ret.semantic, &program)
     }

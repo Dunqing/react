@@ -258,6 +258,7 @@ fn bench_compile_one(fixture: &BenchFixture, parse_only: bool) -> bool {
     }
 
     let semantic = oxc_semantic::SemanticBuilder::new()
+        .with_build_nodes(true)
         .build(&parsed.program)
         .semantic;
 
@@ -373,8 +374,8 @@ fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> Comp
     let allocator = oxc_allocator::Allocator::default();
     let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
 
-    if parsed.panicked || !parsed.errors.is_empty() {
-        let err_msgs: Vec<String> = parsed.errors.iter().map(|e| e.to_string()).collect();
+    if parsed.panicked || !parsed.diagnostics.is_empty() {
+        let err_msgs: Vec<String> = parsed.diagnostics.iter().map(|e| e.to_string()).collect();
         return CompileOutput {
             code: None,
             error: Some(format!("OXC parse errors: {}", err_msgs.join("; "))),
@@ -384,6 +385,7 @@ fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> Comp
     }
 
     let semantic = oxc_semantic::SemanticBuilder::new()
+        .with_build_nodes(true)
         .build(&parsed.program)
         .semantic;
 
