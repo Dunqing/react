@@ -73,6 +73,56 @@ use react_compiler_hir::reactive::ReactiveValue;
 /// Sentinel from the reference codegen; emitted as `Symbol.for("…")`.
 const MEMO_CACHE_SENTINEL: &str = "react.memo_cache_sentinel";
 
+/// `@enableResetCacheOnSourceFileChanges` (fast-refresh / HMR) state for the
+/// top-level function. Mirrors the `fastRefreshState` local in TS
+/// `codegenFunction`: when the feature is enabled and the source code is
+/// available, the first cache slot is reserved to store a source hash and a
+/// cache-reset preamble is emitted. See `CodegenReactiveFunction.ts`.
+struct FastRefreshState {
+    /// Reserved cache slot holding the source hash (always `0`).
+    cache_index: u32,
+    /// `HMAC-SHA256(key = source code, message = "")` as lowercase hex. This
+    /// mirrors `createHmac('sha256', fn.env.code).digest('hex')` in TS, which
+    /// keys the HMAC with the full source and digests an empty message.
+    hash: String,
+    /// Collision-safe loop-counter name (the TS `$i`).
+    index_name: String,
+}
+
+/// Compute the fast-refresh state if `@enableResetCacheOnSourceFileChanges` is
+/// active and the source code is available. Returns `None` otherwise, in which
+/// case no cache-reset preamble is emitted and slot 0 is not reserved.
+///
+/// Mirrors `CodegenReactiveFunction.ts` ~133-146.
+fn compute_fast_refresh_state(
+    env: &Environment,
+    unique_identifiers: &HashSet<String>,
+) -> Option<FastRefreshState> {
+    if env.config.enable_reset_cache_on_source_file_changes != Some(true) {
+        return None;
+    }
+    let code = env.code.as_ref()?;
+    Some(FastRefreshState {
+        cache_index: 0,
+        hash: hmac_sha256_hex(code.as_bytes()),
+        index_name: synthesize_name("$i", unique_identifiers),
+    })
+}
+
+/// `HMAC-SHA256(key = `key`, message = "")` as lowercase hex. Matches Node's
+/// `createHmac('sha256', key).digest('hex')` with no `.update(...)` call.
+fn hmac_sha256_hex(key: &[u8]) -> String {
+    use hmac::Mac;
+    type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+    let mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    let bytes = mac.finalize().into_bytes();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    hex
+}
+
 /// Sentinel marking "no early return taken"; emitted as `Symbol.for("…")` in
 /// the early-return guard appended after a reactive scope.
 const EARLY_RETURN_SENTINEL: &str = "react.early_return_sentinel";
@@ -163,6 +213,7 @@ pub fn codegen_oxc_function<'a>(
         declared: HashSet::new(),
         object_methods: HashMap::new(),
         fbt_operands,
+        fast_refresh: compute_fast_refresh_state(env, unique_identifiers),
     };
 
     let (function, cache_count) = cx.codegen_function(func, /* top_level */ true)?;
@@ -206,6 +257,12 @@ struct Cx<'a, 'e, 'f> {
     /// container, because the fbt transform reads these as literal strings.
     /// Mirrors the reference codegen's `cx.fbtOperands`.
     fbt_operands: &'f HashSet<IdentifierId>,
+    /// `@enableResetCacheOnSourceFileChanges` state, set only when the feature
+    /// is active and source code is available. When `Some`, the TOP-LEVEL
+    /// function reserves cache slot 0 for the source hash and emits a
+    /// cache-reset preamble. Mirrors the `fastRefreshState` local in TS
+    /// `codegenFunction`.
+    fast_refresh: Option<FastRefreshState>,
 }
 
 impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
@@ -322,6 +379,136 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
             self.b
                 .variable_declaration(SPAN, oxc::VariableDeclarationKind::Const, decls, false);
         oxc::Statement::VariableDeclaration(self.b.alloc(decl))
+    }
+
+    /// `@enableResetCacheOnSourceFileChanges` preamble:
+    ///
+    /// ```js
+    /// if ($[0] !== "<hash>") {
+    ///   for (let $i = 0; $i < <cache_count>; $i += 1) {
+    ///     $[$i] = Symbol.for("react.memo_cache_sentinel");
+    ///   }
+    ///   $[0] = "<hash>";
+    /// }
+    /// ```
+    ///
+    /// `cache_count` is the full cache size (including the reserved hash slot),
+    /// so the loop resets every slot — including slot 0, which is then
+    /// overwritten with the hash. Mirrors TS `codegenFunction` ~180-243. Only
+    /// called when `self.fast_refresh` is `Some` on the top-level function.
+    fn fast_refresh_preamble(&self, cache_count: u32) -> oxc::Statement<'a> {
+        let state = self
+            .fast_refresh
+            .as_ref()
+            .expect("fast_refresh_preamble called without fast-refresh state");
+        let hash = state.hash.clone();
+        let index_name = state.index_name.clone();
+
+        // Test: `$[cacheIndex] !== "<hash>"`
+        let test = self.b.expression_binary(
+            SPAN,
+            self.cache_slot(state.cache_index),
+            OxcBinOp::StrictInequality,
+            self.b
+                .expression_string_literal(SPAN, self.atom(&hash), None),
+        );
+
+        // for-init: `let $i = 0`
+        let init_declarator = self.b.variable_declarator(
+            SPAN,
+            oxc::VariableDeclarationKind::Let,
+            self.binding_pattern(&index_name),
+            None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
+            Some(
+                self.b
+                    .expression_numeric_literal(SPAN, 0.0, None, oxc::NumberBase::Decimal),
+            ),
+            false,
+        );
+        let mut init_decls = self.b.vec();
+        init_decls.push(init_declarator);
+        let init =
+            oxc::ForStatementInit::VariableDeclaration(self.b.alloc(self.b.variable_declaration(
+                SPAN,
+                oxc::VariableDeclarationKind::Let,
+                init_decls,
+                false,
+            )));
+
+        // for-test: `$i < cacheCount`
+        let for_test = self.b.expression_binary(
+            SPAN,
+            self.ident_expr(&index_name),
+            OxcBinOp::LessThan,
+            self.b.expression_numeric_literal(
+                SPAN,
+                cache_count as f64,
+                None,
+                oxc::NumberBase::Decimal,
+            ),
+        );
+
+        // for-update: `$i += 1`
+        let for_update = oxc::Expression::AssignmentExpression(
+            self.b.alloc(
+                self.b.assignment_expression(
+                    SPAN,
+                    oxc::AssignmentOperator::Addition,
+                    oxc::AssignmentTarget::AssignmentTargetIdentifier(
+                        self.b
+                            .alloc(self.b.identifier_reference(SPAN, self.atom(&index_name))),
+                    ),
+                    self.b
+                        .expression_numeric_literal(SPAN, 1.0, None, oxc::NumberBase::Decimal),
+                ),
+            ),
+        );
+
+        // for-body: `$[$i] = Symbol.for("react.memo_cache_sentinel");`
+        let slot_target = {
+            let object = self.ident_expr(&self.cache_name);
+            let property = self.ident_expr(&index_name);
+            oxc::AssignmentTarget::ComputedMemberExpression(
+                self.b.alloc(
+                    self.b
+                        .computed_member_expression(SPAN, object, property, false),
+                ),
+            )
+        };
+        let reset_assign =
+            oxc::Expression::AssignmentExpression(self.b.alloc(self.b.assignment_expression(
+                SPAN,
+                oxc::AssignmentOperator::Assign,
+                slot_target,
+                self.symbol_for(MEMO_CACHE_SENTINEL),
+            )));
+        let mut for_body_stmts = self.b.vec();
+        for_body_stmts.push(self.b.statement_expression(SPAN, reset_assign));
+        let for_body = self.b.statement_block(SPAN, for_body_stmts);
+
+        let for_stmt =
+            self.b
+                .statement_for(SPAN, Some(init), Some(for_test), Some(for_update), for_body);
+
+        // After the loop: `$[cacheIndex] = "<hash>";`
+        let hash_assign = oxc::Expression::AssignmentExpression(
+            self.b.alloc(
+                self.b.assignment_expression(
+                    SPAN,
+                    oxc::AssignmentOperator::Assign,
+                    self.cache_slot_target(state.cache_index),
+                    self.b
+                        .expression_string_literal(SPAN, self.atom(&hash), None),
+                ),
+            ),
+        );
+
+        let mut consequent_stmts = self.b.vec();
+        consequent_stmts.push(for_stmt);
+        consequent_stmts.push(self.b.statement_expression(SPAN, hash_assign));
+        let consequent = self.b.statement_block(SPAN, consequent_stmts);
+
+        self.b.statement_if(SPAN, test, consequent, None)
     }
 
     /// Whether `@enableEmitHookGuards` is active for this function. The feature
@@ -521,6 +708,15 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
         let saved_cache_index = self.next_cache_index;
         self.next_cache_index = 0;
 
+        // `@enableResetCacheOnSourceFileChanges`: reserve cache slot 0 for the
+        // source hash on the TOP-LEVEL function. Mirrors TS `codegenFunction`,
+        // which reads `cx.nextCacheIndex` once up front (consuming slot 0)
+        // before reactive codegen runs, so all memo slots start at 1.
+        let emit_fast_refresh = top_level && self.fast_refresh.is_some();
+        if emit_fast_refresh {
+            self.next_cache_index = 1;
+        }
+
         // Params: each param is registered (declared) so later writes reassign
         // rather than redeclare. Params are never inlined temporaries. A spread
         // param becomes a rest element (`...rest`), which lives in a dedicated
@@ -573,6 +769,15 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
         // Cache var preface: const $ = _c(N);
         let cache_count = self.next_cache_index;
         if cache_count != 0 {
+            // `@enableResetCacheOnSourceFileChanges` preamble: after the cache
+            // decl, emit the source-hash check + reset loop. `cache_count` is
+            // the FULL size (including the reserved slot 0). Inserted at index 1
+            // so it lands directly below `const $ = _c(N)`, matching TS
+            // `codegenFunction` (which unshifts `[cacheDecl, ifBlock]`).
+            if emit_fast_refresh {
+                let preamble = self.fast_refresh_preamble(cache_count);
+                body_stmts.insert(0, preamble);
+            }
             let preface = self.cache_var_decl(cache_count);
             body_stmts.insert(0, preface);
         }
@@ -2761,7 +2966,6 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
         children: Option<&[Place]>,
     ) -> Bail<oxc::Expression<'a>> {
         let name = self.jsx_element_name(tag)?;
-        let closing_name = self.jsx_element_name(tag)?;
 
         let mut attrs = self.b.vec();
         for attr in props {
@@ -2787,14 +2991,25 @@ impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
             None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
             attrs,
         );
-        let closing = Some(self.b.jsx_closing_element(SPAN, closing_name));
 
+        // A self-closing source element (`<Tag />`) lowers to `children: None`;
+        // an element with an explicit closing tag (even if empty) lowers to
+        // `children: Some(...)`. Mirror that distinction: emit a closing element
+        // only when children are present, so a `None`-children element prints
+        // self-closing (`<Tag />`). The oxc printer infers self-closing from a
+        // `None` closing element. Matches TS `codegenInstructionValue`'s
+        // `instrValue.children === null` test in `CodegenReactiveFunction.ts`.
         let mut child_nodes = self.b.vec();
-        if let Some(children) = children {
-            for c in children {
-                child_nodes.push(self.jsx_child(c)?);
+        let closing = match children {
+            Some(children) => {
+                for c in children {
+                    child_nodes.push(self.jsx_child(c)?);
+                }
+                let closing_name = self.jsx_element_name(tag)?;
+                Some(self.b.jsx_closing_element(SPAN, closing_name))
             }
-        }
+            None => None,
+        };
 
         let element = self.b.jsx_element(SPAN, opening, child_nodes, closing);
         Ok(oxc::Expression::JSXElement(self.b.alloc(element)))

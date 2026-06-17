@@ -733,3 +733,17 @@ Reimplemented two pragma-gated codegen features lost in the codegen rewrite:
 All infra (config flags, OutputMode, add_import_specifier) already existed — last-mile wiring.
 Cleared codegen-instrument-forget-test, conflict-codegen-instrument-forget,
 gating/codegen-instrument-forget-gating-test, flag-enable-emit-hook-guards. Verified 0 regressions.
+
+## 20260617 fast-refresh preamble + JSX self-close (+2, → 1785/1797)
+- `@enableResetCacheOnSourceFileChanges`: port the HMR cache-reset preamble — slot-0 reserved on the
+  top-level fn, `if ($[0] !== "<hash>") { for(...) $[i]=Symbol.for(sentinel); $[0]="<hash>" }`, hash =
+  HMAC-SHA256(key=source, msg="") hex (codegen_oxc.rs; +sha2/hmac deps). Pragma-gated, inert otherwise.
+- JSX: emit a closing element only when `children.is_some()` (was always emitting `<Tag></Tag>`),
+  so source-self-closing elements self-close — matches Babel, fixed jsx-preserve-whitespace.
+Cleared fast-refresh-reloading, jsx-preserve-whitespace. Verified 0 regressions.
+
+### Remaining after Batch 8 (12 failing, 1785/1797)
+- **Deep recursive function-discovery (5):** nested-function-discovery-if-test-expr, gating/gating-nonreferenced-identifier-collision, gating/invalid-fnexpr-reference, props-method-dependency, try-catch-optional-call. All blocked on the `TODO(N1.3)` gap — TS `program.traverse` compiles every program-scoped function expression (incl. nested in object/array literals); native discovery only finds top-level positions. Needs recursive discovery + generalized `splice_in_expression` (currently descends one level into object props only). Substantial, regression-prone.
+- **Invariant-divergence N-VAL (4):** error.bug-invariant-local-or-context-references, error.bug-invariant-unnamed-temporary, error.todo-repro-named-function-with-shadowed-local-same-name (×2). DEFERRED — handoff doc warns forcing risks false-positives on 1700+ passing; the validators exist, the divergence is upstream HIR shape.
+- **ValidateSourceLocations (1):** error.todo-missing-source-locations — needs native codegen source-location tracking (HARD, low-yield, pragma-gated).
+- **Vendored oxc_codegen (2):** lone-surrogate-string-values, fbt/fbt-param-with-quotes — oxc_codegen 0.136 string/JSX-attr printer limitations; need an oxc patch/bump.
