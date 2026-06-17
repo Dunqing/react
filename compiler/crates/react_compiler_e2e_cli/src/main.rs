@@ -85,6 +85,19 @@ struct Cli {
     /// `--bench-parse-only` and `--bench-core-only` are set, parse-only wins.
     #[arg(long)]
     bench_core_only: bool,
+
+    /// In `--bench` mode, write the absolute paths of fixtures that compiled to
+    /// code (one per line) to this file. Used to compute the cross-engine
+    /// intersection so the apples-to-apples comparison times only fixtures that
+    /// every engine fully compiles (native bails cheaply on more fixtures).
+    #[arg(long)]
+    bench_dump_compiled: Option<String>,
+
+    /// In `--bench` mode, restrict the corpus to the absolute fixture paths
+    /// listed (one per line) in this file. Used to bench over the cross-engine
+    /// intersection set.
+    #[arg(long)]
+    bench_filter: Option<String>,
 }
 
 /// Which slice of the native pipeline a `--bench` run times.
@@ -121,7 +134,13 @@ fn main() {
         } else {
             BenchMode::Full
         };
-        run_bench(dir, cli.iterations, mode);
+        run_bench(
+            dir,
+            cli.iterations,
+            mode,
+            cli.bench_filter.as_deref(),
+            cli.bench_dump_compiled.as_deref(),
+        );
         return;
     }
 
@@ -334,13 +353,33 @@ fn bench_compile_one(fixture: &BenchFixture, mode: BenchMode) -> bool {
 /// timed region), then compile the whole corpus `iterations` times. The first
 /// iteration is a separate warmup pass (discarded); statistics are reported
 /// over the `iterations` timed passes.
-fn run_bench(dir: &str, iterations: usize, mode: BenchMode) {
+fn run_bench(
+    dir: &str,
+    iterations: usize,
+    mode: BenchMode,
+    filter_path: Option<&str>,
+    dump_compiled_path: Option<&str>,
+) {
     let root = std::path::Path::new(dir);
     let mut paths = Vec::new();
     if root.is_file() {
         paths.push(root.to_path_buf());
     } else {
         collect_fixture_paths(root, &mut paths);
+    }
+
+    // Optional cross-engine intersection filter: keep only the listed paths.
+    if let Some(fp) = filter_path {
+        let allowed: std::collections::HashSet<String> = std::fs::read_to_string(fp)
+            .unwrap_or_else(|e| {
+                eprintln!("failed to read filter file {fp}: {e}");
+                process::exit(1);
+            })
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        paths.retain(|p| allowed.contains(&p.to_string_lossy().into_owned()));
     }
 
     // Load all sources up front — IO is OUTSIDE the timed region.
@@ -368,11 +407,24 @@ fn run_bench(dir: &str, iterations: usize, mode: BenchMode) {
     };
     eprintln!("Benchmarking {n} fixtures, {iterations} timed iterations, mode: {mode_str}");
 
-    // Warmup pass (discarded): also counts how many fixtures compile to code.
+    // Warmup pass (discarded): also counts how many fixtures compile to code,
+    // and (optionally) records their paths for the cross-engine intersection.
     let mut compiled_count = 0usize;
+    let mut compiled_paths: Vec<&str> = Vec::new();
     for fixture in &fixtures {
         if bench_compile_one(fixture, mode) {
             compiled_count += 1;
+            if dump_compiled_path.is_some() {
+                compiled_paths.push(&fixture.filename);
+            }
+        }
+    }
+    if let Some(dp) = dump_compiled_path {
+        let body = compiled_paths.join("\n");
+        if let Err(e) = std::fs::write(dp, body) {
+            eprintln!("failed to write dump file {dp}: {e}");
+        } else {
+            eprintln!("wrote {} compiled paths to {dp}", compiled_paths.len());
         }
     }
 
