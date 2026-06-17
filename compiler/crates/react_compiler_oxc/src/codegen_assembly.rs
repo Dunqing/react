@@ -29,6 +29,7 @@ use oxc_allocator::Allocator;
 use oxc_allocator::Box as ArenaBox;
 use oxc_ast::AstBuilder;
 use oxc_ast::ast as oxc;
+use oxc_span::Atom;
 use oxc_span::GetSpan;
 use oxc_span::SPAN;
 use oxc_span::SourceType;
@@ -372,15 +373,21 @@ fn build_dispatcher<'a>(
     optimized_name: &str,
     unoptimized_name: &str,
 ) -> oxc::Statement<'a> {
+    // Intern the `arg0..argN` names once; each is reused for the param pattern
+    // here and for both the optimized/unoptimized dispatcher call argument lists
+    // (Atom is Copy, so reuse avoids re-formatting + re-interning the same name).
+    let arg_atoms: Vec<Atom<'a>> = (0..param_count)
+        .map(|i| builder.atom(&format!("arg{i}")))
+        .collect();
+
     // Build params arg0..argN. If the original had a rest parameter, the last
     // param is a rest element (and is spread in the calls). The rest element
     // lives in a dedicated slot on `FormalParameters` rather than `items`.
     let mut params = builder.vec();
     let mut rest = None;
-    for i in 0..param_count {
-        let arg_name = format!("arg{i}");
+    for (i, &arg_atom) in arg_atoms.iter().enumerate() {
         if has_rest && i == param_count - 1 {
-            let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(&arg_name));
+            let pat = builder.binding_pattern_binding_identifier(SPAN, arg_atom);
             let rest_elem = builder.binding_rest_element(SPAN, pat);
             rest = Some(builder.alloc(builder.formal_parameter_rest(
                 SPAN,
@@ -389,7 +396,7 @@ fn build_dispatcher<'a>(
                 None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
             )));
         } else {
-            let pat = builder.binding_pattern_binding_identifier(SPAN, builder.atom(&arg_name));
+            let pat = builder.binding_pattern_binding_identifier(SPAN, arg_atom);
             let fp = builder.formal_parameter(
                 SPAN,
                 builder.vec(),
@@ -417,7 +424,7 @@ fn build_dispatcher<'a>(
         SPAN,
         builder.expression_identifier(SPAN, builder.atom(optimized_name)),
         None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
-        dispatcher_args(builder, param_count, has_rest),
+        dispatcher_args(builder, &arg_atoms, has_rest),
         false,
     );
     let consequent = builder.statement_return(SPAN, Some(opt_call));
@@ -425,7 +432,7 @@ fn build_dispatcher<'a>(
         SPAN,
         builder.expression_identifier(SPAN, builder.atom(unoptimized_name)),
         None::<ArenaBox<'a, oxc::TSTypeParameterInstantiation<'a>>>,
-        dispatcher_args(builder, param_count, has_rest),
+        dispatcher_args(builder, &arg_atoms, has_rest),
         false,
     );
     let alternate = builder.statement_return(SPAN, Some(unopt_call));
@@ -452,17 +459,18 @@ fn build_dispatcher<'a>(
     oxc::Statement::FunctionDeclaration(builder.alloc(function))
 }
 
-/// Build the call arguments `arg0, ..., [...argN]` for a dispatcher call.
+/// Build the call arguments `arg0, ..., [...argN]` for a dispatcher call, reusing
+/// the already-interned `arg0..argN` atoms.
 fn dispatcher_args<'a>(
     builder: &AstBuilder<'a>,
-    param_count: usize,
+    arg_atoms: &[Atom<'a>],
     has_rest: bool,
 ) -> oxc_allocator::Vec<'a, oxc::Argument<'a>> {
+    let last = arg_atoms.len().wrapping_sub(1);
     let mut args = builder.vec();
-    for i in 0..param_count {
-        let arg_name = format!("arg{i}");
-        let ident = builder.expression_identifier(SPAN, builder.atom(&arg_name));
-        if has_rest && i == param_count - 1 {
+    for (i, &arg_atom) in arg_atoms.iter().enumerate() {
+        let ident = builder.expression_identifier(SPAN, arg_atom);
+        if has_rest && i == last {
             args.push(oxc::Argument::SpreadElement(
                 builder.alloc(builder.spread_element(SPAN, ident)),
             ));
