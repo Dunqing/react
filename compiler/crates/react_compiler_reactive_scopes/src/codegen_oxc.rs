@@ -320,7 +320,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         // rather than redeclare. Params are never inlined temporaries. A spread
         // param becomes a rest element (`...rest`), which lives in a dedicated
         // slot on `FormalParameters` rather than the `items` list.
-        let mut params: Vec<oxc::FormalParameter<'a>> = Vec::new();
+        let mut params = self.b.vec();
         let mut rest: Option<oxc::BindingPattern<'a>> = None;
         for p in &func.params {
             match p {
@@ -339,7 +339,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         }
 
         // Body.
-        let mut body_stmts: Vec<oxc::Statement<'a>> = Vec::new();
+        let mut body_stmts = self.b.vec();
         self.codegen_block(&func.body, &mut body_stmts)?;
 
         // Strip a trailing bare `return undefined;` (matches the reference).
@@ -364,9 +364,9 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn build_function_shell(
         &self,
         func: &ReactiveFunction,
-        params: Vec<oxc::FormalParameter<'a>>,
+        params: ArenaVec<'a, oxc::FormalParameter<'a>>,
         rest: Option<oxc::BindingPattern<'a>>,
-        body_stmts: Vec<oxc::Statement<'a>>,
+        body_stmts: ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<oxc::Function<'a>> {
         if func.generator {
             bail!("generator function not yet supported");
@@ -387,12 +387,12 @@ impl<'a, 'e> Cx<'a, 'e> {
         let formal_params = self.b.formal_parameters(
             SPAN,
             oxc::FormalParameterKind::FormalParameter,
-            self.b.vec_from_iter(params),
+            params,
             rest,
         );
         let body = self
             .b
-            .function_body(SPAN, self.b.vec(), self.b.vec_from_iter(body_stmts));
+            .function_body(SPAN, self.b.vec(), body_stmts);
         Ok(self.b.function(
             SPAN,
             oxc::FunctionType::FunctionDeclaration,
@@ -413,7 +413,7 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn codegen_block(
         &mut self,
         block: &ReactiveBlock,
-        out: &mut Vec<oxc::Statement<'a>>,
+        out: &mut ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<()> {
         for stmt in block {
             match stmt {
@@ -433,14 +433,14 @@ impl<'a, 'e> Cx<'a, 'e> {
                     // label) and flatten implicit labels / bare blocks inline.
                     match &term.label {
                         Some(label) if !label.implicit => {
-                            let mut scratch = Vec::new();
+                            let mut scratch = self.b.vec();
                             self.codegen_terminal(&term.terminal, &mut scratch)?;
                             // The label wraps a single statement; if the terminal
                             // produced exactly one block, unwrap to it.
                             let inner = if scratch.len() == 1 {
                                 scratch.pop().unwrap()
                             } else {
-                                self.b.statement_block(SPAN, self.b.vec_from_iter(scratch))
+                                self.b.statement_block(SPAN, scratch)
                             };
                             let label_id = self
                                 .b
@@ -460,7 +460,7 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn codegen_instruction(
         &mut self,
         instr: &react_compiler_hir::reactive::ReactiveInstruction,
-        out: &mut Vec<oxc::Statement<'a>>,
+        out: &mut ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<()> {
         // Statement-level dispatch for stores/declares (mirrors
         // codegen_instruction_nullable).
@@ -632,7 +632,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         &mut self,
         lvalue: &react_compiler_hir::LValue,
         value: &Place,
-        out: &mut Vec<oxc::Statement<'a>>,
+        out: &mut ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<()> {
         let name = self.place_name(&lvalue.place)?;
         let decl_id = self.decl_id(&lvalue.place);
@@ -674,7 +674,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         &mut self,
         lvalue: &LValuePattern,
         value: &Place,
-        out: &mut Vec<oxc::Statement<'a>>,
+        out: &mut ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<()> {
         // Register unnamed pattern operands as declared-but-no-expression so
         // they resolve to bare identifiers (matches the reference).
@@ -932,7 +932,7 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn codegen_reactive_scope(
         &mut self,
         scope_block: &ReactiveScopeBlock,
-        out: &mut Vec<oxc::Statement<'a>>,
+        out: &mut ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<()> {
         let scope_id = scope_block.scope;
         let scope = self.scope(scope_id)?.clone();
@@ -1011,7 +1011,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         };
 
         // --- Recompute (consequent) block. ---
-        let mut compute_stmts: Vec<oxc::Statement<'a>> = Vec::new();
+        let mut compute_stmts = self.b.vec();
         self.codegen_block(&scope_block.instructions, &mut compute_stmts)?;
         // Append dependency stores: `$[i] = dep;`
         for (index, dep_expr) in dep_stores {
@@ -1039,9 +1039,7 @@ impl<'a, 'e> Cx<'a, 'e> {
             else_stmts.push(self.b.statement_expression(SPAN, assign));
         }
 
-        let consequent = self
-            .b
-            .statement_block(SPAN, self.b.vec_from_iter(compute_stmts));
+        let consequent = self.b.statement_block(SPAN, compute_stmts);
         let alternate = if else_stmts.is_empty() {
             None
         } else {
@@ -1120,7 +1118,7 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn codegen_terminal(
         &mut self,
         terminal: &ReactiveTerminal,
-        out: &mut Vec<oxc::Statement<'a>>,
+        out: &mut ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<()> {
         match terminal {
             ReactiveTerminal::Return { value, .. } => {
@@ -1146,16 +1144,13 @@ impl<'a, 'e> Cx<'a, 'e> {
                 ..
             } => {
                 let test_expr = self.place_expr(test)?;
-                let mut cons = Vec::new();
+                let mut cons = self.b.vec();
                 self.codegen_block(consequent, &mut cons)?;
-                let cons_stmt = self.b.statement_block(SPAN, self.b.vec_from_iter(cons));
+                let cons_stmt = self.b.statement_block(SPAN, cons);
                 let alt_stmt = if let Some(alt) = alternate {
-                    let mut alt_stmts = Vec::new();
+                    let mut alt_stmts = self.b.vec();
                     self.codegen_block(alt, &mut alt_stmts)?;
-                    Some(
-                        self.b
-                            .statement_block(SPAN, self.b.vec_from_iter(alt_stmts)),
-                    )
+                    Some(self.b.statement_block(SPAN, alt_stmts))
                 } else {
                     None
                 };
@@ -1298,13 +1293,12 @@ impl<'a, 'e> Cx<'a, 'e> {
                     };
                     // Each case's block is wrapped in its own braced block.
                     let consequent = if let Some(block) = &case.block {
-                        let mut stmts = Vec::new();
+                        let mut stmts = self.b.vec();
                         self.codegen_block(block, &mut stmts)?;
                         if stmts.is_empty() {
                             self.b.vec()
                         } else {
-                            let block_stmt =
-                                self.b.statement_block(SPAN, self.b.vec_from_iter(stmts));
+                            let block_stmt = self.b.statement_block(SPAN, stmts);
                             let mut v = self.b.vec();
                             v.push(block_stmt);
                             v
@@ -1363,9 +1357,9 @@ impl<'a, 'e> Cx<'a, 'e> {
 
     /// Codegen a block into a single `BlockStatement`.
     fn codegen_block_as_block_stmt(&mut self, block: &ReactiveBlock) -> Bail<oxc::Statement<'a>> {
-        let mut stmts = Vec::new();
+        let mut stmts = self.b.vec();
         self.codegen_block(block, &mut stmts)?;
-        Ok(self.b.statement_block(SPAN, self.b.vec_from_iter(stmts)))
+        Ok(self.b.statement_block(SPAN, stmts))
     }
 
     /// Unwrap a `Statement::BlockStatement` into the owned `BlockStatement`
@@ -1391,7 +1385,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         if let ReactiveValue::SequenceExpression { instructions, .. } = init {
             // Emit the instructions as statements, then fold into a single
             // `let`/`const` declaration (matching the reference's logic).
-            let mut stmts: Vec<oxc::Statement<'a>> = Vec::new();
+            let mut stmts = self.b.vec();
             for instr in instructions {
                 self.codegen_instruction(instr, &mut stmts)?;
             }
@@ -1409,7 +1403,7 @@ impl<'a, 'e> Cx<'a, 'e> {
     /// reference performs, and merges multiple declarators.
     fn fold_for_init_statements(
         &self,
-        stmts: Vec<oxc::Statement<'a>>,
+        stmts: ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<oxc::VariableDeclaration<'a>> {
         let mut declarators = self.b.vec();
         let mut any_let = false;
@@ -1567,7 +1561,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                 // instruction becomes a comma-expression operand.
                 let mut exprs = self.b.vec();
                 for instr in instructions {
-                    let mut stmts = Vec::new();
+                    let mut stmts = self.b.vec();
                     self.codegen_instruction(instr, &mut stmts)?;
                     for stmt in stmts {
                         match stmt {
