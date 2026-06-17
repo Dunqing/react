@@ -93,7 +93,7 @@ pub enum CompileResult {
         /// separate events/debugLogs arrays).
         #[serde(rename = "orderedLog", skip_serializing_if = "Vec::is_empty")]
         ordered_log: Vec<OrderedLogItem>,
-        /// Variable renames from lowering, for applying back to the Babel AST.
+        /// Variable renames from lowering, applied to the compiled output.
         /// Each entry maps an original binding name to its renamed version,
         /// identified by the binding's declaration start position in the source.
         #[serde(skip_serializing_if = "Vec::is_empty")]

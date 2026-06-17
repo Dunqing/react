@@ -44,7 +44,7 @@ pub struct ProgramContext {
     pub instrument_gating_name: Option<String>,
     pub hook_guard_name: Option<String>,
 
-    // Variable renames from lowering, to be applied back to the Babel AST
+    // Variable renames from lowering, applied to the compiled output
     pub renames: Vec<react_compiler_hir::environment::BindingRename>,
 
     /// Timing data for profiling. Accumulates across all function compilations.
@@ -112,7 +112,7 @@ impl ProgramContext {
     }
 
     /// Check if a function at the given start position has already been compiled.
-    /// This is a workaround for Babel not consistently respecting skip().
+    /// Guards against discovering/compiling the same function more than once during traversal.
     pub fn is_already_compiled(&self, start: u32) -> bool {
         self.already_compiled.contains(&start)
     }

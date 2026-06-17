@@ -73,7 +73,7 @@ pub struct Environment {
     pub hook_guard_name: Option<String>,
 
     // Renames: tracks variable renames from lowering (original_name → new_name)
-    // keyed by binding declaration position, for applying back to the Babel AST.
+    // keyed by binding declaration position, for applying to the compiled output.
     pub renames: Vec<BindingRename>,
 
     // Node IDs of identifiers that are actual references to bindings.
@@ -86,7 +86,7 @@ pub struct Environment {
     // via DeclareContext to avoid duplicate hoisting. Keyed by raw u32 id.
     hoisted_identifiers: HashSet<u32>,
 
-    // Config flags for validation passes (kept for backwards compat with existing pipeline code)
+    // Config flags toggling validation passes (read across the pipeline)
     pub validate_preserve_existing_memoization_guarantees: bool,
     pub validate_no_set_state_in_render: bool,
     pub enable_preserve_existing_memoization_guarantees: bool,
