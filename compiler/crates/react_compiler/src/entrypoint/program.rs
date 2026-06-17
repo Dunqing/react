@@ -460,6 +460,39 @@ impl<'a> Visit<'a> for ReturnsNonNodeVisitor {
 /// descends into non-matching functions to find nested components/hooks, with
 /// `skip()` semantics) and object-method components are not yet ported — only
 /// top-level / wrapper-callback discovery.
+/// Returns true if the program contains an `import {c} from "<module_name>"`
+/// declaration, regardless of the local name of the `c` specifier and the
+/// presence of other specifiers in the same declaration. A file that imports
+/// the memo-cache function has already been compiled by the compiler.
+///
+/// Mirrors `hasMemoCacheFunctionImport` in `Entrypoint/Program.ts`.
+fn has_memo_cache_function_import(program: &oxc::Program, module_name: &str) -> bool {
+    for stmt in &program.body {
+        let oxc::Statement::ImportDeclaration(import) = stmt else {
+            continue;
+        };
+        if import.source.value != module_name {
+            continue;
+        }
+        let Some(specifiers) = &import.specifiers else {
+            continue;
+        };
+        for specifier in specifiers {
+            if let oxc::ImportDeclarationSpecifier::ImportSpecifier(spec) = specifier {
+                let imported_name = match &spec.imported {
+                    oxc::ModuleExportName::IdentifierName(ident) => ident.name.as_str(),
+                    oxc::ModuleExportName::IdentifierReference(ident) => ident.name.as_str(),
+                    oxc::ModuleExportName::StringLiteral(lit) => lit.value.as_str(),
+                };
+                if imported_name == "c" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn find_functions_to_compile<'a>(
     program: &'a oxc::Program<'a>,
     compile_all: bool,
@@ -735,6 +768,18 @@ pub fn compile_program(
     }
 
     if !options.should_compile {
+        return CompileProgramResult {
+            result: success(None, early_ordered_log, Vec::new()),
+            native_artifacts: Vec::new(),
+        };
+    }
+
+    // If the file already imports the memo-cache function (`import {c} from
+    // "<runtime>"`), it has already been compiled. Skip the whole program to
+    // avoid recompiling memoized code. Mirrors `hasMemoCacheFunctionImport` in
+    // `Entrypoint/Program.ts`.
+    let runtime_module = super::imports::get_react_compiler_runtime_module(&options.target);
+    if has_memo_cache_function_import(program, &runtime_module) {
         return CompileProgramResult {
             result: success(None, early_ordered_log, Vec::new()),
             native_artifacts: Vec::new(),

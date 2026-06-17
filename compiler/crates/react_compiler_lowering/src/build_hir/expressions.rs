@@ -13,6 +13,8 @@
 use oxc_ast::ast as oxc;
 use oxc_span::GetSpan;
 use react_compiler_diagnostics::CompilerError;
+use react_compiler_diagnostics::CompilerErrorDetail;
+use react_compiler_diagnostics::ErrorCategory;
 use react_compiler_hir::*;
 
 use crate::hir_builder::HirBuilder;
@@ -336,11 +338,38 @@ pub(crate) fn lower_identifier_value(
                 Ok(InstructionValue::LoadLocal { place, loc })
             }
         }
-        non_local => Ok(InstructionValue::LoadGlobal {
-            binding: non_local_binding_of(non_local),
-            loc,
-        }),
+        non_local => {
+            record_eval_unsupported(builder, &non_local, loc)?;
+            Ok(InstructionValue::LoadGlobal {
+                binding: non_local_binding_of(non_local),
+                loc,
+            })
+        }
     }
+}
+
+/// Record an error if `binding` is the `eval` global. Mirrors `lowerIdentifier`
+/// in `BuildHIR.ts`: `eval` cannot be analyzed by the compiler.
+fn record_eval_unsupported(
+    builder: &mut HirBuilder,
+    binding: &VariableBinding,
+    loc: Option<SourceLocation>,
+) -> Result<(), CompilerError> {
+    if let VariableBinding::Global { name } = binding
+        && name == "eval"
+    {
+        builder.record_error(CompilerErrorDetail {
+            category: ErrorCategory::UnsupportedSyntax,
+            reason: "The 'eval' function is not supported".to_string(),
+            description: Some(
+                "Eval is an anti-pattern in JavaScript, and the code executed cannot be evaluated by React Compiler"
+                    .to_string(),
+            ),
+            loc,
+            suggestions: None,
+        })?;
+    }
+    Ok(())
 }
 
 /// Lower an identifier reference to a `Place` (loads via LoadGlobal temporary
@@ -360,6 +389,7 @@ fn lower_identifier_to_place(
             loc,
         }),
         non_local => {
+            record_eval_unsupported(builder, &non_local, loc)?;
             let instr_value = InstructionValue::LoadGlobal {
                 binding: non_local_binding_of(non_local),
                 loc,
@@ -1284,7 +1314,10 @@ fn lower_object_expression(
     for prop in &obj.properties {
         match prop {
             oxc::ObjectPropertyKind::ObjectProperty(p) => {
-                if p.method {
+                // Methods (`{ foo() {} }`) and get/set accessors (oxc sets
+                // `method: false, kind: Get|Set`) both route through
+                // `lower_object_method`, which bails accessors with a Todo.
+                if p.method || p.kind != oxc::PropertyKind::Init {
                     if let Some(prop) = super::functions::lower_object_method(builder, p)? {
                         properties.push(ObjectPropertyOrSpread::Property(prop));
                     }

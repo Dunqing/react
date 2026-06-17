@@ -669,3 +669,11 @@ codegen_oxc.rs `InstructionKind::Function|HoistedFunction` store arm was `bail!`
 it to emit a hoisted oxc `FunctionDeclaration` (new `fn_decl_from_expr` helper; mirrors TS
 `createFunctionDeclaration`). compare-code.ts 1738→1741. Cleared: function-decl-shadowed-by-inner-const,
 hoisted-function-declaration, recursive-function-expression.
+
+## 20260617 Fix 4 safe lowering/entry Todos (+5, → 1746)
+- get/set object-method dispatch: route accessors (`kind != Init`) to lower_object_method (expressions.rs).
+- `eval` global rejection: record UnsupportedSyntax in LoadGlobal arms (expressions.rs).
+- lowerReorderableExpression Todo ported into lower_default (patterns.rs).
+- hasMemoCacheFunctionImport module guard: skip compile when `import {c}` from runtime present (program.rs).
+Cleared: error.todo-object-expression-{get,set}-syntax, error.invalid-eval-unsupported,
+error.default-param-accesses-local, skip-useMemoCache. compare-code.ts 1741→1746.

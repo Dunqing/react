@@ -565,7 +565,9 @@ pub(crate) fn lower_default(
     let consequent = {
         let temp = temp.clone();
         builder.try_enter(BlockKind::Value, move |builder, _| {
-            let default_value = lower_expression_to_temporary(builder, default_expr)?;
+            // Because we reorder evaluation, we restrict the allowed default
+            // values to those whose evaluation order is unobservable.
+            let default_value = lower_reorderable_expression(builder, default_expr)?;
             lower_value_to_temporary(
                 builder,
                 InstructionValue::StoreLocal {
@@ -654,6 +656,202 @@ pub(crate) fn lower_default(
     );
 
     Ok(temp)
+}
+
+/// Lower a default/reorderable expression, recording a Todo error first if the
+/// expression's evaluation order is observable. Mirrors
+/// `lowerReorderableExpression` in `BuildHIR.ts`: there are a few places (switch
+/// case tests, destructuring defaults) where we do not preserve original
+/// evaluation order, so only simple expressions whose evaluation cannot be
+/// observed are allowed.
+fn lower_reorderable_expression(
+    builder: &mut HirBuilder,
+    expr: &oxc::Expression,
+) -> Result<Place, CompilerError> {
+    if !is_reorderable_expression(builder, expr, true)? {
+        let loc = Some(builder.loc_of_span(expr.span()));
+        builder.record_error(CompilerErrorDetail {
+            category: ErrorCategory::Todo,
+            reason: format!(
+                "(BuildHIR::node.lowerReorderableExpression) Expression type `{}` cannot be safely reordered",
+                reorderable_expr_type_name(expr)
+            ),
+            description: None,
+            loc,
+            suggestions: None,
+        })?;
+    }
+    lower_expression_to_temporary(builder, expr)
+}
+
+/// Returns the babel-style node type name used in the
+/// `lowerReorderableExpression` error message. oxc splits `MemberExpression`
+/// into static/computed/private variants; babel (and the TS compiler) use the
+/// single `MemberExpression` name.
+fn reorderable_expr_type_name(expr: &oxc::Expression) -> &'static str {
+    match expr {
+        oxc::Expression::StaticMemberExpression(_)
+        | oxc::Expression::ComputedMemberExpression(_)
+        | oxc::Expression::PrivateFieldExpression(_) => "MemberExpression",
+        other => super::expressions::expression_kind_name(other),
+    }
+}
+
+/// Returns true if `expr`'s evaluation order is unobservable, so it is safe to
+/// reorder. Mirrors `isReorderableExpression` in `BuildHIR.ts` exactly.
+fn is_reorderable_expression(
+    builder: &mut HirBuilder,
+    expr: &oxc::Expression,
+    allow_local_identifiers: bool,
+) -> Result<bool, CompilerError> {
+    use oxc_syntax::operator::UnaryOperator;
+    match expr {
+        oxc::Expression::Identifier(ident) => {
+            let symbol_id = sq::resolve_identifier_reference(builder.semantic(), ident);
+            let loc = Some(builder.loc_of_span(ident.span));
+            match builder.resolve_identifier_symbol(&ident.name, symbol_id, loc)? {
+                // Local binding: only safe when locals are allowed.
+                VariableBinding::Identifier { .. } => Ok(allow_local_identifiers),
+                // Global, definitely safe.
+                _ => Ok(true),
+            }
+        }
+        oxc::Expression::TSInstantiationExpression(inner) => {
+            is_reorderable_expression(builder, &inner.expression, allow_local_identifiers)
+        }
+        oxc::Expression::RegExpLiteral(_)
+        | oxc::Expression::StringLiteral(_)
+        | oxc::Expression::NumericLiteral(_)
+        | oxc::Expression::NullLiteral(_)
+        | oxc::Expression::BooleanLiteral(_)
+        | oxc::Expression::BigIntLiteral(_) => Ok(true),
+        oxc::Expression::UnaryExpression(unary) => match unary.operator {
+            UnaryOperator::LogicalNot | UnaryOperator::UnaryPlus | UnaryOperator::UnaryNegation => {
+                is_reorderable_expression(builder, &unary.argument, allow_local_identifiers)
+            }
+            _ => Ok(false),
+        },
+        // TS-only casts: babel's TSAsExpression / TSNonNullExpression /
+        // TypeCastExpression.
+        oxc::Expression::TSAsExpression(inner) => {
+            is_reorderable_expression(builder, &inner.expression, allow_local_identifiers)
+        }
+        oxc::Expression::TSSatisfiesExpression(inner) => {
+            is_reorderable_expression(builder, &inner.expression, allow_local_identifiers)
+        }
+        oxc::Expression::TSNonNullExpression(inner) => {
+            is_reorderable_expression(builder, &inner.expression, allow_local_identifiers)
+        }
+        oxc::Expression::LogicalExpression(logical) => {
+            Ok(
+                is_reorderable_expression(builder, &logical.left, allow_local_identifiers)?
+                    && is_reorderable_expression(builder, &logical.right, allow_local_identifiers)?,
+            )
+        }
+        oxc::Expression::ConditionalExpression(cond) => Ok(is_reorderable_expression(
+            builder,
+            &cond.test,
+            allow_local_identifiers,
+        )? && is_reorderable_expression(
+            builder,
+            &cond.consequent,
+            allow_local_identifiers,
+        )? && is_reorderable_expression(
+            builder,
+            &cond.alternate,
+            allow_local_identifiers,
+        )?),
+        oxc::Expression::ArrayExpression(array) => {
+            for element in &array.elements {
+                match element.as_expression() {
+                    Some(e) if is_reorderable_expression(builder, e, allow_local_identifiers)? => {}
+                    _ => return Ok(false),
+                }
+            }
+            Ok(true)
+        }
+        oxc::Expression::ObjectExpression(object) => {
+            for property in &object.properties {
+                match property {
+                    oxc::ObjectPropertyKind::ObjectProperty(prop) if !prop.computed => {
+                        if !is_reorderable_expression(
+                            builder,
+                            &prop.value,
+                            allow_local_identifiers,
+                        )? {
+                            return Ok(false);
+                        }
+                    }
+                    _ => return Ok(false),
+                }
+            }
+            Ok(true)
+        }
+        oxc::Expression::StaticMemberExpression(_)
+        | oxc::Expression::ComputedMemberExpression(_)
+        | oxc::Expression::PrivateFieldExpression(_) => {
+            // A common pattern is switch statements where the case test values
+            // are properties of a global, eg `case ProductOptions.Option: ...`.
+            // We allow expressions where the innermost object is a global
+            // identifier, and reject all other member expressions (for now).
+            let mut inner: &oxc::Expression = expr;
+            while let Some(member) = inner.as_member_expression() {
+                inner = member.object();
+            }
+            if let oxc::Expression::Identifier(ident) = inner {
+                let symbol_id = sq::resolve_identifier_reference(builder.semantic(), ident);
+                let loc = Some(builder.loc_of_span(ident.span));
+                match builder.resolve_identifier_symbol(&ident.name, symbol_id, loc)? {
+                    // Innermost object is a local -> not safe.
+                    VariableBinding::Identifier { .. } => Ok(false),
+                    // Property/computed load from a global -> safe to reorder.
+                    _ => Ok(true),
+                }
+            } else {
+                Ok(false)
+            }
+        }
+        oxc::Expression::ArrowFunctionExpression(arrow) => {
+            if arrow.expression {
+                // Expression body `() => expr`: oxc wraps it in a single
+                // `ExpressionStatement`. Disallow local identifiers in the body.
+                match arrow.body.statements.first() {
+                    Some(oxc::Statement::ExpressionStatement(stmt)) => {
+                        is_reorderable_expression(builder, &stmt.expression, false)
+                    }
+                    _ => Ok(false),
+                }
+            } else {
+                // Block body: only an empty block is reorderable.
+                Ok(arrow.body.statements.is_empty())
+            }
+        }
+        oxc::Expression::CallExpression(call) => {
+            if !is_reorderable_expression(builder, &call.callee, allow_local_identifiers)? {
+                return Ok(false);
+            }
+            for arg in &call.arguments {
+                match arg.as_expression() {
+                    Some(e) if is_reorderable_expression(builder, e, allow_local_identifiers)? => {}
+                    _ => return Ok(false),
+                }
+            }
+            Ok(true)
+        }
+        oxc::Expression::NewExpression(new_expr) => {
+            if !is_reorderable_expression(builder, &new_expr.callee, allow_local_identifiers)? {
+                return Ok(false);
+            }
+            for arg in &new_expr.arguments {
+                match arg.as_expression() {
+                    Some(e) if is_reorderable_expression(builder, e, allow_local_identifiers)? => {}
+                    _ => return Ok(false),
+                }
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 /// Helper to read a binding-identifier's HIR loc (`Some(loc)`).
