@@ -74,6 +74,29 @@ struct Cli {
     /// for the parse-vs-full-pipeline breakdown.
     #[arg(long)]
     bench_parse_only: bool,
+
+    /// In `--bench` mode, run parse + semantic + `compile_program` (lowering +
+    /// analysis/reactive-scope passes + native HIR→oxc-ast codegen) but SKIP
+    /// the final output assembly + print. Isolates the Rust compiler core — the
+    /// "true Rust-vs-Rust" cell in the before/after-oxc decomposition. Combined
+    /// with `--bench-parse-only` and the default full run, the per-phase costs
+    /// fall out by subtraction: frontend = parse-only, core = core-only minus
+    /// parse-only, assembly+print = full minus core-only. If both
+    /// `--bench-parse-only` and `--bench-core-only` are set, parse-only wins.
+    #[arg(long)]
+    bench_core_only: bool,
+}
+
+/// Which slice of the native pipeline a `--bench` run times.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BenchMode {
+    /// parse + semantic only — the front-end cost in isolation.
+    ParseOnly,
+    /// parse + semantic + `compile_program` (lowering + passes + native
+    /// HIR→oxc-ast codegen), excluding the final output assembly + print.
+    CoreOnly,
+    /// The full pipeline: parse + semantic + `compile_program` + assemble+print.
+    Full,
 }
 
 /// Result of compiling via a frontend, carrying both code/error and logger events.
@@ -91,7 +114,14 @@ fn main() {
 
     // Benchmark mode: compile a whole corpus in one process and report timing.
     if let Some(ref dir) = cli.bench {
-        run_bench(dir, cli.iterations, cli.bench_parse_only);
+        let mode = if cli.bench_parse_only {
+            BenchMode::ParseOnly
+        } else if cli.bench_core_only {
+            BenchMode::CoreOnly
+        } else {
+            BenchMode::Full
+        };
+        run_bench(dir, cli.iterations, mode);
         return;
     }
 
@@ -236,13 +266,15 @@ fn collect_fixture_paths(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf
     }
 }
 
-/// Compile one already-loaded fixture through the full native path, mirroring
-/// `compile_oxc`: parse -> semantic -> transform (which internally runs the
-/// React compiler passes + native oxc codegen). When `parse_only` is true, only
-/// parse + semantic run (the front-end cost in isolation). Returns whether the
-/// fixture produced compiled code, so the timed loop can't be optimized away.
+/// Compile one already-loaded fixture through the native path, mirroring
+/// `compile_oxc`: parse -> semantic -> transform (which internally runs
+/// `compile_program` + native oxc assembly/print). `mode` selects how much of
+/// the pipeline runs: `ParseOnly` stops after semantic (front-end cost in
+/// isolation), `CoreOnly` also runs `compile_program` but skips the final
+/// assembly + print, and `Full` runs everything. Returns whether the fixture
+/// produced compiled code, so the timed loop can't be optimized away.
 #[inline]
-fn bench_compile_one(fixture: &BenchFixture, parse_only: bool) -> bool {
+fn bench_compile_one(fixture: &BenchFixture, mode: BenchMode) -> bool {
     let first_line = fixture.source.lines().next().unwrap_or("");
     let is_script = first_line.contains("@script");
     let source_type = oxc_span::SourceType::from_path(&fixture.filename)
@@ -263,7 +295,7 @@ fn bench_compile_one(fixture: &BenchFixture, parse_only: bool) -> bool {
         .build(&parsed.program)
         .semantic;
 
-    if parse_only {
+    if mode == BenchMode::ParseOnly {
         // Touch the semantic result so the build can't be optimized away.
         std::hint::black_box(&semantic);
         return !parsed.program.body.is_empty();
@@ -276,6 +308,22 @@ fn bench_compile_one(fixture: &BenchFixture, parse_only: bool) -> bool {
     )
     .unwrap();
 
+    if mode == BenchMode::CoreOnly {
+        // Run only the compiler core (lowering + passes + native HIR→oxc-ast
+        // codegen into artifacts); skip the final assembly + re-parse + print.
+        // `native_artifacts` non-empty mirrors `Full`'s `code.is_some()` (the
+        // final print emits code only when at least one function compiled).
+        let compiled = react_compiler::entrypoint::program::compile_program(
+            &parsed.program,
+            &semantic,
+            &fixture.source,
+            options,
+        );
+        let compiled_to_code = !compiled.native_artifacts.is_empty();
+        std::hint::black_box(&compiled);
+        return compiled_to_code;
+    }
+
     let mut result =
         react_compiler_oxc::transform(&parsed.program, &semantic, &fixture.source, options);
     let code = result.code.take();
@@ -286,7 +334,7 @@ fn bench_compile_one(fixture: &BenchFixture, parse_only: bool) -> bool {
 /// timed region), then compile the whole corpus `iterations` times. The first
 /// iteration is a separate warmup pass (discarded); statistics are reported
 /// over the `iterations` timed passes.
-fn run_bench(dir: &str, iterations: usize, parse_only: bool) {
+fn run_bench(dir: &str, iterations: usize, mode: BenchMode) {
     let root = std::path::Path::new(dir);
     let mut paths = Vec::new();
     if root.is_file() {
@@ -313,17 +361,17 @@ fn run_bench(dir: &str, iterations: usize, parse_only: bool) {
         process::exit(1);
     }
 
-    let mode = if parse_only {
-        "parse+semantic only"
-    } else {
-        "full pipeline (parse+semantic+compile+codegen)"
+    let mode_str = match mode {
+        BenchMode::ParseOnly => "parse+semantic only",
+        BenchMode::CoreOnly => "core only (parse+semantic+compile_program, no assembly/print)",
+        BenchMode::Full => "full pipeline (parse+semantic+compile+codegen)",
     };
-    eprintln!("Benchmarking {n} fixtures, {iterations} timed iterations, mode: {mode}");
+    eprintln!("Benchmarking {n} fixtures, {iterations} timed iterations, mode: {mode_str}");
 
     // Warmup pass (discarded): also counts how many fixtures compile to code.
     let mut compiled_count = 0usize;
     for fixture in &fixtures {
-        if bench_compile_one(fixture, parse_only) {
+        if bench_compile_one(fixture, mode) {
             compiled_count += 1;
         }
     }
@@ -334,7 +382,7 @@ fn run_bench(dir: &str, iterations: usize, parse_only: bool) {
         let start = Instant::now();
         let mut sink = 0usize;
         for fixture in &fixtures {
-            if bench_compile_one(fixture, parse_only) {
+            if bench_compile_one(fixture, mode) {
                 sink += 1;
             }
         }
@@ -349,7 +397,7 @@ fn run_bench(dir: &str, iterations: usize, parse_only: bool) {
     let fixtures_per_sec = n as f64 / median;
     let per_fixture_ms = (median / n as f64) * 1000.0;
 
-    println!("=== Rust native-oxc bench ({mode}) ===");
+    println!("=== Rust native-oxc bench ({mode_str}) ===");
     println!("fixtures:            {n}");
     println!("compiled to code:    {compiled_count}");
     println!("iterations (timed):  {iterations}");
