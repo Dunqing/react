@@ -934,10 +934,22 @@ impl<'a, 'e> Cx<'a, 'e> {
         out: &mut ArenaVec<'a, oxc::Statement<'a>>,
     ) -> Bail<()> {
         let scope_id = scope_block.scope;
-        let scope = self.scope(scope_id)?.clone();
+        // Clone only the fields actually consumed below, instead of cloning the
+        // whole `ReactiveScope` (which would also copy `range`, `merged`, `loc`,
+        // `id`) and then re-cloning `dependencies`/`declarations`. The owned
+        // copies are needed because the loops below call `&mut self` methods,
+        // which precludes holding the `&self` borrow returned by `self.scope`.
+        let (mut deps, mut decls, reassignments, early_return_value) = {
+            let scope = self.scope(scope_id)?;
+            (
+                scope.dependencies.clone(),
+                scope.declarations.clone(),
+                scope.reassignments.clone(),
+                scope.early_return_value.clone(),
+            )
+        };
 
         // --- Dependencies: one slot each (sorted for stable order). ---
-        let mut deps = scope.dependencies.clone();
         deps.sort_by(compare_scope_dependency);
 
         let mut change_exprs: Vec<oxc::Expression<'a>> = Vec::new();
@@ -958,7 +970,6 @@ impl<'a, 'e> Cx<'a, 'e> {
         }
 
         // --- Declarations + reassignments: one slot each (sorted). ---
-        let mut decls = scope.declarations.clone();
         decls.sort_by(|a, b| a.0.0.cmp(&b.0.0));
         let mut first_output_index: Option<u32> = None;
         // (name, slot index)
@@ -977,7 +988,7 @@ impl<'a, 'e> Cx<'a, 'e> {
             }
             outputs.push((name, index));
         }
-        for id in &scope.reassignments {
+        for id in &reassignments {
             let index = self.alloc_cache_index();
             if first_output_index.is_none() {
                 first_output_index = Some(index);
@@ -1053,7 +1064,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         //   }
         // The early-return value identifier has been promoted to a named
         // variable by the time codegen runs. Mirrors the reference codegen.
-        if let Some(early_return) = &scope.early_return_value {
+        if let Some(early_return) = &early_return_value {
             let name = self.ident_name(early_return.value).map_err(|_| {
                 CodegenBail::new("early return value not promoted to a named variable")
             })?;
