@@ -99,7 +99,7 @@ function discoverFixtures(rootPath: string): string[] {
 // --- Build ---
 console.log('Building e2e CLI...');
 try {
-  execSync('rustup run 1.92.0 cargo build -p react_compiler_e2e_cli', {
+  execSync('rustup run 1.94.0 cargo build -p react_compiler_e2e_cli', {
     cwd: path.join(REPO_ROOT, 'compiler/crates'),
     stdio: ['inherit', 'pipe', 'pipe'],
     shell: true,

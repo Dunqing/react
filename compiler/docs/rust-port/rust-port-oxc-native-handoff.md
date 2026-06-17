@@ -35,7 +35,8 @@ Two oracles, both comparing the native Oxc compiler against the in-process TS co
   byte-identical to the TS compiler. (Many semantically-correct fixtures differ only in HIR temp/block
   ID *numbering*, which compiles identically — so HIR-MATCH < SEMANTIC-pass by design.)
 
-Toolchain: requires **rustc 1.92.0** (oxc 0.121); `rustup run 1.92.0 cargo …` from `compiler/`. Node
+Toolchain: requires **rustc 1.94.0** (oxc 0.136); `cargo …` from `compiler/` uses it automatically
+via `rust-toolchain.toml` (or `rustup run 1.94.0 cargo …`). Node
 scripts run via `tsx`. The CLI is `react_compiler_e2e_cli` (`--frontend oxc`, `--dump-hir`, `--json`).
 
 ## Performance (Apple M4 Max, release, single-threaded, warm, median-of-8, 1505-fixture corpus)

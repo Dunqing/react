@@ -24,7 +24,7 @@ Arguments:
    - `yarn workspace babel-plugin-react-compiler lint` — lint compiler source
 
 3. **If Rust changed**, run these sequentially (stop on failure):
-   - `rustup run 1.92.0 cargo test` (from `compiler/`) — Rust unit tests; must pass
+   - `rustup run 1.94.0 cargo test` (from `compiler/`) — Rust unit tests; must pass
    - `npx tsx compiler/scripts/compare-code.ts --limit 0` — OXC semantic-parity oracle (compares native Rust-on-OXC output vs the TS compiler across all fixtures; SEMANTIC-pass must not regress)
    - `npx tsx compiler/scripts/test-e2e.ts --variant oxc` — end-to-end OXC oracle (compares the OXC CLI's compiled output and logger events against the TS baseline)
 

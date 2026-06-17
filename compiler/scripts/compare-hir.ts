@@ -97,10 +97,10 @@ const CLI_BINARY = path.join(TARGET_DIR, 'react-compiler-e2e');
 
 if (!noBuild) {
   if (!singleMode || !fs.existsSync(CLI_BINARY)) {
-    console.error('Building react_compiler_e2e_cli (rustc 1.92.0)...');
+    console.error('Building react_compiler_e2e_cli (rustc 1.94.0)...');
   }
   try {
-    execSync('rustup run 1.92.0 cargo build -p react_compiler_e2e_cli', {
+    execSync('rustup run 1.94.0 cargo build -p react_compiler_e2e_cli', {
       cwd: path.join(REPO_ROOT, 'compiler/crates'),
       stdio: ['inherit', 'pipe', 'pipe'],
       shell: true,
