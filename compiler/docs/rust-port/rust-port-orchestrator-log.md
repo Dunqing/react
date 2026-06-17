@@ -647,3 +647,25 @@ formatting code (formatCompilerError, categoryToHeading, printCodeFrame) and the
 dependency from babel-plugin-react-compiler-rust. Also fixed JSXExpressionContainer nodes in
 codegen to propagate source locations from place.loc, eliminating the ensureNodeLocs JS post-pass.
 test-rust-port: 1724/1724, Snap: 1725/1725, Snap --rust: 1725/1725.
+
+---
+
+# Native-Oxc era (post-migration)
+
+**Oracle changed.** `test-rust-port.sh` (the Babel-AST/HIR per-pass harness) was deleted
+in the oxc-native migration (N3). The live oracle is now `compiler/scripts/compare-code.ts`
+(SEMANTIC equivalence of compiled output vs the in-process TS compiler). All 49 passes are
+ported; remaining work is the SEMANTIC tail, not pass-porting.
+
+## 20260617 Native-Oxc SEMANTIC baseline
+compare-code.ts --limit 0: **1738/1803 SEMANTIC-pass**, 65 failing.
+- N-VAL 9 (all `error.*`; some deliberately-deferred invariants).
+- BAIL 36 (24 `fbt/`; rest: destructure-to-context-var, function discovery/hoisting, ts-enum-inline, jsx-namespaced-name, skip-useMemoCache, recursive-function-expression).
+- OTHER 20 (instrument-forget ×5, gating ×2, loc_diff/numeric ×4, lone-surrogate, jsx-preserve-whitespace, props-method-dependency, try-catch-optional-call, valid-setState ×2, fbt lambda ×2).
+Goal: close the tractable single-cause tail without regressing the 1738.
+
+## 20260617 Fix function-kind store codegen (+3, → 1741)
+codegen_oxc.rs `InstructionKind::Function|HoistedFunction` store arm was `bail!`. Implemented
+it to emit a hoisted oxc `FunctionDeclaration` (new `fn_decl_from_expr` helper; mirrors TS
+`createFunctionDeclaration`). compare-code.ts 1738→1741. Cleared: function-decl-shadowed-by-inner-const,
+hoisted-function-declaration, recursive-function-expression.

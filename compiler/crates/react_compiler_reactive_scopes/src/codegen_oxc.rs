@@ -639,11 +639,36 @@ impl<'a, 'e> Cx<'a, 'e> {
                 out.push(self.assign_ident_stmt(&name, value_expr));
             }
             InstructionKind::Function | InstructionKind::HoistedFunction => {
-                bail!("function-kind store not yet supported")
+                // The function value is already lowered to a FunctionExpression;
+                // a function-kind store emits a hoisted `function name(…) {…}`
+                // declaration rather than a `let`/assignment. Mirrors the
+                // reference `InstructionKind.Function` arm in
+                // CodegenReactiveFunction.ts.
+                self.declared.insert(decl_id);
+                out.push(self.fn_decl_from_expr(&name, value_expr)?);
             }
             InstructionKind::Catch => bail!("catch-kind store not yet supported"),
         }
         Ok(())
+    }
+
+    /// Convert an already-lowered function-expression value into a hoisted
+    /// `FunctionDeclaration` statement named `name`. Mirrors the reference
+    /// `createFunctionDeclaration` call in the `InstructionKind.Function` arm
+    /// (which reuses the function value's params/body/generator/async and only
+    /// changes the statement form).
+    fn fn_decl_from_expr(
+        &self,
+        name: &str,
+        value_expr: oxc::Expression<'a>,
+    ) -> Bail<oxc::Statement<'a>> {
+        let oxc::Expression::FunctionExpression(func) = value_expr else {
+            invariant_bail!("Expected a function as a function declaration value");
+        };
+        let mut function = func.unbox();
+        function.r#type = oxc::FunctionType::FunctionDeclaration;
+        function.id = Some(self.b.binding_identifier(SPAN, self.atom(name)));
+        Ok(oxc::Statement::FunctionDeclaration(self.b.alloc(function)))
     }
 
     /// Codegen a `Destructure { lvalue: {pattern, kind}, value }`.
@@ -1960,9 +1985,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         crate::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn, self.env);
         if run_hoisted {
             crate::prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn, self.env)
-                .map_err(|_| {
-                    CodegenBail::new("nested function: prune_hoisted_contexts failed")
-                })?;
+                .map_err(|_| CodegenBail::new("nested function: prune_hoisted_contexts failed"))?;
         }
         Ok(reactive_fn)
     }
@@ -2605,8 +2628,8 @@ impl<'a, 'e> Cx<'a, 'e> {
         // A nested JSX element temporary -> embed directly as a child element.
         let jsx_instruction = match self.temp.get(&decl_id) {
             Some(Some(ReactiveValue::Instruction(
-                iv @ (InstructionValue::JsxExpression { .. }
-                | InstructionValue::JsxFragment { .. }),
+                iv
+                @ (InstructionValue::JsxExpression { .. } | InstructionValue::JsxFragment { .. }),
             ))) => Some(iv.clone()),
             _ => None,
         };
@@ -2668,7 +2691,6 @@ impl<'a, 'e> Cx<'a, 'e> {
         }
         Ok(expr)
     }
-
 }
 
 // =============================================================================
