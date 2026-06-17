@@ -17,7 +17,6 @@
 //! + splice the oxc AST in `react_compiler_oxc::transform`, AFTER the semantic
 //!   borrow ends and against a freshly-parsed *owned* program.
 
-use react_compiler_hir::ReactFunctionType;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::reactive::ReactiveFunction;
 
@@ -66,8 +65,6 @@ pub struct NativeArtifact {
     /// Source span of the original function node (start, end). Used to locate
     /// and replace the original node in the program body during assembly.
     pub fn_span: (u32, u32),
-    /// The function's React classification (Component / Hook / Other).
-    pub fn_type: ReactFunctionType,
     /// Whether the original source form was an arrow function.
     pub is_arrow: bool,
     /// The binding name for `const X = ...` / declaration forms, if any.

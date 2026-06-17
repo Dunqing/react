@@ -958,12 +958,14 @@ impl<'a, 'e> Cx<'a, 'e> {
         for dep in &deps {
             let index = self.alloc_cache_index();
             let dep_expr = self.dependency_expr(dep)?;
-            // `$[index] !== dep`
+            // `$[index] !== dep`. Dependencies are referenced twice (in the
+            // `!==` check and in the store); oxc Expressions aren't Clone, so we
+            // rebuild from the HIR each time.
             let cmp = self.b.expression_binary(
                 SPAN,
                 self.cache_slot(index),
                 OxcBinOp::StrictInequality,
-                self.clone_expr_via_rebuild_dep(dep)?,
+                self.dependency_expr(dep)?,
             );
             change_exprs.push(cmp);
             dep_stores.push((index, dep_expr));
@@ -1258,7 +1260,8 @@ impl<'a, 'e> Cx<'a, 'e> {
                 if instrs.len() != 2 {
                     bail!("for-in init not a 2-instruction sequence");
                 }
-                let right = self.instruction_value_expr(&instrs[0].value)?;
+                // Build the for-in iterable expression from instrs[0].
+                let right = self.codegen_value(&instrs[0].value)?;
                 let left = self.extract_for_in_of_left(&instrs[1].value)?;
                 let body = self.codegen_block_as_block_stmt(loop_block)?;
                 out.push(self.b.statement_for_in(SPAN, left, right, body));
@@ -1473,11 +1476,6 @@ impl<'a, 'e> Cx<'a, 'e> {
             ReactiveValue::SequenceExpression { instructions, .. } => Ok(instructions),
             _ => bail!("expected sequence expression"),
         }
-    }
-
-    /// Build a ReactiveValue expression for the for-in iterable.
-    fn instruction_value_expr(&mut self, value: &ReactiveValue) -> Bail<oxc::Expression<'a>> {
-        self.codegen_value(value)
     }
 
     /// Extract the `for (LEFT of/in ...)` left side from the item instruction
@@ -2694,14 +2692,6 @@ impl<'a, 'e> Cx<'a, 'e> {
         Ok(expr)
     }
 
-    /// Dependencies are referenced twice (in the `!==` check and in the store);
-    /// oxc Expressions aren't Clone, so we rebuild from the HIR each time.
-    fn clone_expr_via_rebuild_dep(
-        &self,
-        dep: &react_compiler_hir::ReactiveScopeDependency,
-    ) -> Bail<oxc::Expression<'a>> {
-        self.dependency_expr(dep)
-    }
 }
 
 // =============================================================================

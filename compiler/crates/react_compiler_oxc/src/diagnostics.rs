@@ -50,7 +50,7 @@ fn error_info_to_diagnostic(
     diag
 }
 
-fn error_detail_to_diagnostic(detail: &CompilerErrorDetailInfo, is_error: bool) -> OxcDiagnostic {
+fn error_detail_to_diagnostic(detail: &CompilerErrorDetailInfo) -> OxcDiagnostic {
     let message = if let Some(description) = &detail.description {
         format!(
             "[ReactCompiler] {}: {}. {}",
@@ -60,11 +60,7 @@ fn error_detail_to_diagnostic(detail: &CompilerErrorDetailInfo, is_error: bool) 
         format!("[ReactCompiler] {}: {}", detail.category, detail.reason)
     };
 
-    if is_error {
-        OxcDiagnostic::error(message)
-    } else {
-        OxcDiagnostic::warn(message)
-    }
+    OxcDiagnostic::warn(message)
 }
 
 fn event_to_diagnostic(event: &LoggerEvent) -> Option<OxcDiagnostic> {
@@ -73,7 +69,7 @@ fn event_to_diagnostic(event: &LoggerEvent) -> Option<OxcDiagnostic> {
         LoggerEvent::CompileSkip { .. } => None,
         LoggerEvent::CompileError { detail, .. }
         | LoggerEvent::CompileErrorWithLoc { detail, .. } => {
-            Some(error_detail_to_diagnostic(detail, false))
+            Some(error_detail_to_diagnostic(detail))
         }
         LoggerEvent::CompileUnexpectedThrow { data, .. } => Some(OxcDiagnostic::error(format!(
             "[ReactCompiler] Unexpected error: {}",

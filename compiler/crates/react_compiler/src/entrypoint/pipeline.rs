@@ -1213,7 +1213,6 @@ pub fn compile_fn(
                     // Sentinel span: assembly appends this as a top-level
                     // function declaration rather than splicing by source span.
                     fn_span: (0, 0),
-                    fn_type: resolved_type,
                     // Outlined functions are emitted as function declarations.
                     is_arrow: false,
                     // The generated name (e.g. `_temp`) is carried on the
@@ -1243,7 +1242,6 @@ pub fn compile_fn(
         env,
         unique_identifiers: native_unique_identifiers,
         fn_span: (native_fn_span.0, native_fn_span.1),
-        fn_type,
         is_arrow: native_is_arrow,
         fn_name: fn_name.map(|s| s.to_string()),
         // Gating is resolved in `compile_program` after this returns, where the
