@@ -455,6 +455,14 @@ impl<'a, 'e> Cx<'a, 'e> {
         Ok(())
     }
 
+    /// Stash a Reassign store/destructure under its outer lvalue so the use
+    /// site rebuilds it as an inline expression (e.g. `f((x = makeObject()))`).
+    fn stash_inlined(&mut self, outer: &Place, value: &ReactiveValue) {
+        let decl_id = self.decl_id(outer);
+        self.declared.insert(decl_id);
+        self.temp.insert(decl_id, Some(value.clone()));
+    }
+
     fn codegen_instruction(
         &mut self,
         instr: &react_compiler_hir::reactive::ReactiveInstruction,
@@ -476,10 +484,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                     if matches!(lvalue.kind, InstructionKind::Reassign)
                         && instr.lvalue.is_some() =>
                 {
-                    let outer = instr.lvalue.as_ref().unwrap();
-                    let decl_id = self.decl_id(outer);
-                    self.declared.insert(decl_id);
-                    self.temp.insert(decl_id, Some(instr.value.clone()));
+                    self.stash_inlined(instr.lvalue.as_ref().unwrap(), &instr.value);
                     return Ok(());
                 }
                 // A `StoreContext` Reassign that is *also* referenced as an
@@ -498,10 +503,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                                 .is_none()
                         }) =>
                 {
-                    let outer = instr.lvalue.as_ref().unwrap();
-                    let decl_id = self.decl_id(outer);
-                    self.declared.insert(decl_id);
-                    self.temp.insert(decl_id, Some(instr.value.clone()));
+                    self.stash_inlined(instr.lvalue.as_ref().unwrap(), &instr.value);
                     return Ok(());
                 }
                 // Invariant (mirrors the reference codegen's `emit_store`): a
@@ -530,17 +532,15 @@ impl<'a, 'e> Cx<'a, 'e> {
                     if matches!(lvalue.kind, InstructionKind::Reassign)
                         && instr.lvalue.is_some() =>
                 {
-                    let outer = instr.lvalue.as_ref().unwrap();
-                    let decl_id = self.decl_id(outer);
-                    self.declared.insert(decl_id);
-                    self.temp.insert(decl_id, Some(instr.value.clone()));
+                    self.stash_inlined(instr.lvalue.as_ref().unwrap(), &instr.value);
                     return Ok(());
                 }
                 // A `Const`/`Let` destructure that is *also* referenced as an
                 // expression (the enclosing instruction has an outer lvalue) is
                 // an invalid IR state the TS compiler rejects with a fatal error
-                // (the third member of the same `Const`/`Let` invariant group as
-                // the StoreLocal/StoreContext arm above). This arises from nested
+                // (same `Const`/`Let` invariant as the StoreLocal/StoreContext
+                // arm above; kept separate because Destructure's `lvalue` is an
+                // `LValuePattern`, not an `LValue`). This arises from nested
                 // destructuring-assignment-as-expression, e.g. `f(([[x]] = obj()))`,
                 // where the inner level lowers to a Const destructure temp.
                 InstructionValue::Destructure { lvalue, .. }
@@ -609,17 +609,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         let expr = self.codegen_value(&instr.value)?;
         if self.declared.contains(&decl_id) {
             // Reassignment: `name = expr;`
-            let target = oxc::AssignmentTarget::AssignmentTargetIdentifier(
-                self.b
-                    .alloc(self.b.identifier_reference(SPAN, self.atom(&name))),
-            );
-            let assign = self.b.expression_assignment(
-                SPAN,
-                oxc_syntax::operator::AssignmentOperator::Assign,
-                target,
-                expr,
-            );
-            out.push(self.b.statement_expression(SPAN, assign));
+            out.push(self.assign_ident_stmt(&name, expr));
         } else {
             self.declared.insert(decl_id);
             out.push(self.const_decl(&name, Some(expr)));
@@ -646,17 +636,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                 out.push(self.let_decl(&name, Some(value_expr)));
             }
             InstructionKind::Reassign => {
-                let target = oxc::AssignmentTarget::AssignmentTargetIdentifier(
-                    self.b
-                        .alloc(self.b.identifier_reference(SPAN, self.atom(&name))),
-                );
-                let assign = self.b.expression_assignment(
-                    SPAN,
-                    oxc_syntax::operator::AssignmentOperator::Assign,
-                    target,
-                    value_expr,
-                );
-                out.push(self.b.statement_expression(SPAN, assign));
+                out.push(self.assign_ident_stmt(&name, value_expr));
             }
             InstructionKind::Function | InstructionKind::HoistedFunction => {
                 bail!("function-kind store not yet supported")
@@ -729,12 +709,13 @@ impl<'a, 'e> Cx<'a, 'e> {
     }
 
     /// Build a `VariableDeclaration` statement with a destructuring pattern.
-    fn var_decl_pattern(
+    /// Build a single-declarator `VariableDeclaration` (`kind pat = init`).
+    fn single_decl(
         &self,
         kind: oxc::VariableDeclarationKind,
         pat: oxc::BindingPattern<'a>,
         init: Option<oxc::Expression<'a>>,
-    ) -> oxc::Statement<'a> {
+    ) -> oxc::VariableDeclaration<'a> {
         let declarator = self.b.variable_declarator(
             SPAN,
             kind,
@@ -745,7 +726,16 @@ impl<'a, 'e> Cx<'a, 'e> {
         );
         let mut decls = self.b.vec();
         decls.push(declarator);
-        let decl = self.b.variable_declaration(SPAN, kind, decls, false);
+        self.b.variable_declaration(SPAN, kind, decls, false)
+    }
+
+    fn var_decl_pattern(
+        &self,
+        kind: oxc::VariableDeclarationKind,
+        pat: oxc::BindingPattern<'a>,
+        init: Option<oxc::Expression<'a>>,
+    ) -> oxc::Statement<'a> {
+        let decl = self.single_decl(kind, pat, init);
         oxc::Statement::VariableDeclaration(self.b.alloc(decl))
     }
 
@@ -892,6 +882,22 @@ impl<'a, 'e> Cx<'a, 'e> {
         )
     }
 
+    /// `name = expr` as an expression.
+    fn assign_ident_expr(&self, name: &str, expr: oxc::Expression<'a>) -> oxc::Expression<'a> {
+        self.b.expression_assignment(
+            SPAN,
+            oxc_syntax::operator::AssignmentOperator::Assign,
+            self.assignment_target_identifier(name),
+            expr,
+        )
+    }
+
+    /// `name = expr;` as an expression statement.
+    fn assign_ident_stmt(&self, name: &str, expr: oxc::Expression<'a>) -> oxc::Statement<'a> {
+        let assign = self.assign_ident_expr(name, expr);
+        self.b.statement_expression(SPAN, assign)
+    }
+
     fn const_decl(&self, name: &str, init: Option<oxc::Expression<'a>>) -> oxc::Statement<'a> {
         self.var_decl(oxc::VariableDeclarationKind::Const, name, init)
     }
@@ -907,17 +913,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         init: Option<oxc::Expression<'a>>,
     ) -> oxc::Statement<'a> {
         let pat = self.binding_pattern(name);
-        let declarator = self.b.variable_declarator(
-            SPAN,
-            kind,
-            pat,
-            None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
-            init,
-            false,
-        );
-        let mut decls = self.b.vec();
-        decls.push(declarator);
-        let decl = self.b.variable_declaration(SPAN, kind, decls, false);
+        let decl = self.single_decl(kind, pat, init);
         oxc::Statement::VariableDeclaration(self.b.alloc(decl))
     }
 
@@ -1034,17 +1030,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         // --- Else block: `name = $[i];` for each output. ---
         let mut else_stmts = self.b.vec();
         for (name, index) in &outputs {
-            let target = oxc::AssignmentTarget::AssignmentTargetIdentifier(
-                self.b
-                    .alloc(self.b.identifier_reference(SPAN, self.atom(name))),
-            );
-            let assign = self.b.expression_assignment(
-                SPAN,
-                oxc_syntax::operator::AssignmentOperator::Assign,
-                target,
-                self.cache_slot(*index),
-            );
-            else_stmts.push(self.b.statement_expression(SPAN, assign));
+            else_stmts.push(self.assign_ident_stmt(name, self.cache_slot(*index)));
         }
 
         let consequent = self.b.statement_block(SPAN, compute_stmts);
@@ -1488,17 +1474,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                 let decl_id = self.decl_id(&lvalue.place);
                 self.declared.insert(decl_id);
                 let pat = self.binding_pattern(&name);
-                let declarator = self.b.variable_declarator(
-                    SPAN,
-                    kind,
-                    pat,
-                    None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
-                    None,
-                    false,
-                );
-                let mut decls = self.b.vec();
-                decls.push(declarator);
-                let decl = self.b.variable_declaration(SPAN, kind, decls, false);
+                let decl = self.single_decl(kind, pat, None);
                 Ok(oxc::ForStatementLeft::VariableDeclaration(
                     self.b.alloc(decl),
                 ))
@@ -1506,17 +1482,7 @@ impl<'a, 'e> Cx<'a, 'e> {
             InstructionValue::Destructure { lvalue, .. } => {
                 let kind = var_decl_kind(lvalue.kind)?;
                 let pat = self.binding_pattern_from_pattern(&lvalue.pattern, lvalue.kind)?;
-                let declarator = self.b.variable_declarator(
-                    SPAN,
-                    kind,
-                    pat,
-                    None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
-                    None,
-                    false,
-                );
-                let mut decls = self.b.vec();
-                decls.push(declarator);
-                let decl = self.b.variable_declaration(SPAN, kind, decls, false);
+                let decl = self.single_decl(kind, pat, None);
                 Ok(oxc::ForStatementLeft::VariableDeclaration(
                     self.b.alloc(decl),
                 ))
@@ -1902,17 +1868,8 @@ impl<'a, 'e> Cx<'a, 'e> {
                 // `name = value`.
                 debug_assert!(matches!(lvalue.kind, InstructionKind::Reassign));
                 let name = self.place_name(&lvalue.place)?;
-                let target = oxc::AssignmentTarget::AssignmentTargetIdentifier(
-                    self.b
-                        .alloc(self.b.identifier_reference(SPAN, self.atom(&name))),
-                );
                 let val = self.place_expr(value)?;
-                Ok(self.b.expression_assignment(
-                    SPAN,
-                    oxc_syntax::operator::AssignmentOperator::Assign,
-                    target,
-                    val,
-                ))
+                Ok(self.assign_ident_expr(&name, val))
             }
             InstructionValue::Destructure { lvalue, value, .. } => {
                 // Destructure reaches expression context only as a reassignment
@@ -1985,13 +1942,15 @@ impl<'a, 'e> Cx<'a, 'e> {
     /// function into a reactive function, prunes it, then recursively codegens
     /// it (inheriting the outer inline-temporary table so captured temporaries
     /// resolve).
-    fn function_expression(
-        &mut self,
-        name: &Option<String>,
-        name_hint: &Option<String>,
+    /// Build + prune the reactive function for a nested function/method
+    /// (`build_reactive_function → prune_unused_labels → prune_unused_lvalues`).
+    /// When `run_hoisted` is set, also runs `prune_hoisted_contexts` (the nested
+    /// function-expression path needs it; the object-method path does not).
+    fn lower_nested_reactive_fn(
+        &self,
         lowered_func: &react_compiler_hir::LoweredFunction,
-        expr_type: FunctionExpressionType,
-    ) -> Bail<oxc::Expression<'a>> {
+        run_hoisted: bool,
+    ) -> Bail<ReactiveFunction> {
         let hir = &self.env.functions[lowered_func.func.0 as usize];
         let mut reactive_fn =
             crate::build_reactive_function::build_reactive_function(hir, self.env)
@@ -1999,8 +1958,23 @@ impl<'a, 'e> Cx<'a, 'e> {
         crate::prune_unused_labels::prune_unused_labels(&mut reactive_fn, self.env)
             .map_err(|_| CodegenBail::new("nested function: prune_unused_labels failed"))?;
         crate::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn, self.env);
-        crate::prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn, self.env)
-            .map_err(|_| CodegenBail::new("nested function: prune_hoisted_contexts failed"))?;
+        if run_hoisted {
+            crate::prune_hoisted_contexts::prune_hoisted_contexts(&mut reactive_fn, self.env)
+                .map_err(|_| {
+                    CodegenBail::new("nested function: prune_hoisted_contexts failed")
+                })?;
+        }
+        Ok(reactive_fn)
+    }
+
+    fn function_expression(
+        &mut self,
+        name: &Option<String>,
+        name_hint: &Option<String>,
+        lowered_func: &react_compiler_hir::LoweredFunction,
+        expr_type: FunctionExpressionType,
+    ) -> Bail<oxc::Expression<'a>> {
+        let reactive_fn = self.lower_nested_reactive_fn(lowered_func, true)?;
 
         // Recurse. The nested function shares this Cx (arena, temp table,
         // declared set) and gets its own cache numbering.
@@ -2072,13 +2046,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         &mut self,
         lowered_func: &react_compiler_hir::LoweredFunction,
     ) -> Bail<oxc::Expression<'a>> {
-        let hir = &self.env.functions[lowered_func.func.0 as usize];
-        let mut reactive_fn =
-            crate::build_reactive_function::build_reactive_function(hir, self.env)
-                .map_err(|_| CodegenBail::new("object method: build_reactive_function failed"))?;
-        crate::prune_unused_labels::prune_unused_labels(&mut reactive_fn, self.env)
-            .map_err(|_| CodegenBail::new("object method: prune_unused_labels failed"))?;
-        crate::prune_unused_lvalues::prune_unused_lvalues(&mut reactive_fn, self.env);
+        let reactive_fn = self.lower_nested_reactive_fn(lowered_func, false)?;
 
         let (mut function, _nested_cache) = self.codegen_function(&reactive_fn)?;
         function.r#type = oxc::FunctionType::FunctionExpression;

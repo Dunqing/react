@@ -828,6 +828,19 @@ enum Wrapper {
     ExportDefault,
 }
 
+/// Tag a `Function` as a `FunctionDeclaration` and wrap it as a declaration
+/// statement.
+fn as_fn_decl<'a>(builder: &AstBuilder<'a>, mut function: oxc::Function<'a>) -> oxc::Statement<'a> {
+    function.r#type = oxc::FunctionType::FunctionDeclaration;
+    oxc::Statement::FunctionDeclaration(builder.alloc(function))
+}
+
+/// Tag a `Function` as a `FunctionExpression` and wrap it as an expression.
+fn as_fn_expr<'a>(builder: &AstBuilder<'a>, mut function: oxc::Function<'a>) -> oxc::Expression<'a> {
+    function.r#type = oxc::FunctionType::FunctionExpression;
+    oxc::Expression::FunctionExpression(builder.alloc(function))
+}
+
 /// Convert a `FunctionDeclaration` (as a boxed `Function`) into a
 /// `FunctionExpression` expression for use as the "original" side of a gating
 /// conditional, preserving id / params / body.
@@ -835,17 +848,13 @@ fn function_decl_to_expression<'a>(
     builder: &AstBuilder<'a>,
     func: ArenaBox<'a, oxc::Function<'a>>,
 ) -> oxc::Expression<'a> {
-    let mut function = func.unbox();
-    function.r#type = oxc::FunctionType::FunctionExpression;
-    oxc::Expression::FunctionExpression(builder.alloc(function))
+    as_fn_expr(builder, func.unbox())
 }
 
 /// Build a top-level replacement statement for a compiled function (no gating).
 fn build_replacement<'a>(builder: &AstBuilder<'a>, node: CompiledNode<'a>) -> oxc::Statement<'a> {
     // Top-level matched node is a function declaration form.
-    let mut function = node.function;
-    function.r#type = oxc::FunctionType::FunctionDeclaration;
-    oxc::Statement::FunctionDeclaration(builder.alloc(function))
+    as_fn_decl(builder, node.function)
 }
 
 /// Build the compiled function declaration and rewrap it in the original
@@ -894,7 +903,7 @@ fn function_expression<'a>(
     builder: &AstBuilder<'a>,
     node: CompiledNode<'a>,
 ) -> oxc::Expression<'a> {
-    let mut function = node.function;
+    let function = node.function;
     if node.is_arrow {
         // Render the compiled function as a true arrow to preserve the original
         // form (`X = () => {...}`). Arrows are anonymous, so drop any name.
@@ -925,8 +934,7 @@ fn function_expression<'a>(
             fn_body,
         )
     } else {
-        function.r#type = oxc::FunctionType::FunctionExpression;
-        oxc::Expression::FunctionExpression(builder.alloc(function))
+        as_fn_expr(builder, function)
     }
 }
 
