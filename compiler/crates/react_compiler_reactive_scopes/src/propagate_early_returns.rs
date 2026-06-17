@@ -114,61 +114,62 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
         state: &mut State,
     ) -> Result<Transformed<ReactiveStatement>, react_compiler_diagnostics::CompilerError> {
         if state.within_reactive_scope
-            && let ReactiveTerminal::Return { value, .. } = &stmt.terminal {
-                let loc = value.loc;
+            && let ReactiveTerminal::Return { value, .. } = &stmt.terminal
+        {
+            let loc = value.loc;
 
-                let early_return_value = if let Some(ref existing) = state.early_return_value {
-                    existing.clone()
-                } else {
-                    // Create a new early return identifier
-                    let identifier_id = create_temporary_place_id(self.env, loc);
-                    promote_temporary(self.env, identifier_id);
-                    let label = self.env.next_block_id();
-                    EarlyReturnInfo {
-                        value: identifier_id,
-                        loc,
-                        label,
-                    }
-                };
+            let early_return_value = if let Some(ref existing) = state.early_return_value {
+                existing.clone()
+            } else {
+                // Create a new early return identifier
+                let identifier_id = create_temporary_place_id(self.env, loc);
+                promote_temporary(self.env, identifier_id);
+                let label = self.env.next_block_id();
+                EarlyReturnInfo {
+                    value: identifier_id,
+                    loc,
+                    label,
+                }
+            };
 
-                state.early_return_value = Some(early_return_value.clone());
+            state.early_return_value = Some(early_return_value.clone());
 
-                let return_value = value.clone();
+            let return_value = value.clone();
 
-                return Ok(Transformed::ReplaceMany(vec![
-                    // StoreLocal: reassign the early return value
-                    ReactiveStatement::Instruction(ReactiveInstruction {
-                        id: EvaluationOrder(0),
-                        lvalue: None,
-                        value: ReactiveValue::Instruction(InstructionValue::StoreLocal {
-                            lvalue: LValue {
-                                kind: InstructionKind::Reassign,
-                                place: Place {
-                                    identifier: early_return_value.value,
-                                    effect: Effect::Capture,
-                                    reactive: true,
-                                    loc,
-                                },
+            return Ok(Transformed::ReplaceMany(vec![
+                // StoreLocal: reassign the early return value
+                ReactiveStatement::Instruction(ReactiveInstruction {
+                    id: EvaluationOrder(0),
+                    lvalue: None,
+                    value: ReactiveValue::Instruction(InstructionValue::StoreLocal {
+                        lvalue: LValue {
+                            kind: InstructionKind::Reassign,
+                            place: Place {
+                                identifier: early_return_value.value,
+                                effect: Effect::Capture,
+                                reactive: true,
+                                loc,
                             },
-                            value: return_value,
-                            type_annotation: None,
-                            loc,
-                        }),
-                        effects: None,
+                        },
+                        value: return_value,
+                        type_annotation: None,
                         loc,
                     }),
-                    // Break to the label
-                    ReactiveStatement::Terminal(ReactiveTerminalStatement {
-                        terminal: ReactiveTerminal::Break {
-                            target: early_return_value.label,
-                            id: EvaluationOrder(0),
-                            target_kind: ReactiveTerminalTargetKind::Labeled,
-                            loc,
-                        },
-                        label: None,
-                    }),
-                ]));
-            }
+                    effects: None,
+                    loc,
+                }),
+                // Break to the label
+                ReactiveStatement::Terminal(ReactiveTerminalStatement {
+                    terminal: ReactiveTerminal::Break {
+                        target: early_return_value.label,
+                        id: EvaluationOrder(0),
+                        target_kind: ReactiveTerminalTargetKind::Labeled,
+                        loc,
+                    },
+                    label: None,
+                }),
+            ]));
+        }
 
         // Default: traverse into the terminal's sub-blocks
         self.visit_terminal(stmt, state)?;

@@ -85,7 +85,7 @@ impl ReactiveFunctionVisitor for Visitor<'_> {
 /// Phase 2: Walk the tree and null out lvalues whose DeclarationId is unused.
 /// This is necessary because Rust's visitor takes immutable references.
 fn null_unused_lvalues(
-    block: &mut Vec<ReactiveStatement>,
+    block: &mut [ReactiveStatement],
     env: &Environment,
     unused: &HashSet<DeclarationId>,
 ) {

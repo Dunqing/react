@@ -186,55 +186,57 @@ fn visit_instruction_id(
 ) {
     // Handle all scopes that end at this instruction
     if let Some(top) = scope_info.scope_ends.last()
-        && top.id <= id {
-            let scope_end_entry = scope_info.scope_ends.pop().unwrap();
+        && top.id <= id
+    {
+        let scope_end_entry = scope_info.scope_ends.pop().unwrap();
 
-            // Sort scopes by start descending (matching active_scopes order)
-            let mut scopes_sorted = scope_end_entry.scopes;
-            scopes_sorted.sort_by(|a, b| {
-                let a_start = env.scopes[a.0 as usize].range.start;
-                let b_start = env.scopes[b.0 as usize].range.start;
-                b_start.cmp(&a_start)
-            });
+        // Sort scopes by start descending (matching active_scopes order)
+        let mut scopes_sorted = scope_end_entry.scopes;
+        scopes_sorted.sort_by(|a, b| {
+            let a_start = env.scopes[a.0 as usize].range.start;
+            let b_start = env.scopes[b.0 as usize].range.start;
+            b_start.cmp(&a_start)
+        });
 
-            for scope in &scopes_sorted {
-                let idx = state.active_scopes.iter().position(|s| s == scope);
-                if let Some(idx) = idx {
-                    // Detect and merge all overlapping scopes
-                    if idx != state.active_scopes.len() - 1 {
-                        let mut to_union: Vec<ScopeId> = vec![*scope];
-                        to_union.extend_from_slice(&state.active_scopes[idx + 1..]);
-                        state.joined.union(&to_union);
-                    }
-                    state.active_scopes.remove(idx);
+        for scope in &scopes_sorted {
+            let idx = state.active_scopes.iter().position(|s| s == scope);
+            if let Some(idx) = idx {
+                // Detect and merge all overlapping scopes
+                if idx != state.active_scopes.len() - 1 {
+                    let mut to_union: Vec<ScopeId> = vec![*scope];
+                    to_union.extend_from_slice(&state.active_scopes[idx + 1..]);
+                    state.joined.union(&to_union);
                 }
+                state.active_scopes.remove(idx);
             }
         }
+    }
 
     // Handle all scopes that begin at this instruction
     if let Some(top) = scope_info.scope_starts.last()
-        && top.id <= id {
-            let scope_start_entry = scope_info.scope_starts.pop().unwrap();
+        && top.id <= id
+    {
+        let scope_start_entry = scope_info.scope_starts.pop().unwrap();
 
-            // Sort by end descending
-            let mut scopes_sorted = scope_start_entry.scopes;
-            scopes_sorted.sort_by(|a, b| {
-                let a_end = env.scopes[a.0 as usize].range.end;
-                let b_end = env.scopes[b.0 as usize].range.end;
-                b_end.cmp(&a_end)
-            });
+        // Sort by end descending
+        let mut scopes_sorted = scope_start_entry.scopes;
+        scopes_sorted.sort_by(|a, b| {
+            let a_end = env.scopes[a.0 as usize].range.end;
+            let b_end = env.scopes[b.0 as usize].range.end;
+            b_end.cmp(&a_end)
+        });
 
-            state.active_scopes.extend_from_slice(&scopes_sorted);
+        state.active_scopes.extend_from_slice(&scopes_sorted);
 
-            // Merge all identical scopes (same start and end)
-            for i in 1..scopes_sorted.len() {
-                let prev = scopes_sorted[i - 1];
-                let curr = scopes_sorted[i];
-                if env.scopes[prev.0 as usize].range.end == env.scopes[curr.0 as usize].range.end {
-                    state.joined.union(&[prev, curr]);
-                }
+        // Merge all identical scopes (same start and end)
+        for i in 1..scopes_sorted.len() {
+            let prev = scopes_sorted[i - 1];
+            let curr = scopes_sorted[i];
+            if env.scopes[prev.0 as usize].range.end == env.scopes[curr.0 as usize].range.end {
+                state.joined.union(&[prev, curr]);
             }
         }
+    }
 }
 
 // =============================================================================
@@ -251,15 +253,17 @@ fn visit_place(
     // of the stack to the mutated outer scope
     let place_scope = get_place_scope(env, id, identifier_id);
     if let Some(scope_id) = place_scope
-        && is_mutable(env, id, identifier_id) {
-            let place_scope_idx = state.active_scopes.iter().position(|s| *s == scope_id);
-            if let Some(idx) = place_scope_idx
-                && idx != state.active_scopes.len() - 1 {
-                    let mut to_union: Vec<ScopeId> = vec![scope_id];
-                    to_union.extend_from_slice(&state.active_scopes[idx + 1..]);
-                    state.joined.union(&to_union);
-                }
+        && is_mutable(env, id, identifier_id)
+    {
+        let place_scope_idx = state.active_scopes.iter().position(|s| *s == scope_id);
+        if let Some(idx) = place_scope_idx
+            && idx != state.active_scopes.len() - 1
+        {
+            let mut to_union: Vec<ScopeId> = vec![scope_id];
+            to_union.extend_from_slice(&state.active_scopes[idx + 1..]);
+            state.joined.union(&to_union);
         }
+    }
 }
 
 // =============================================================================

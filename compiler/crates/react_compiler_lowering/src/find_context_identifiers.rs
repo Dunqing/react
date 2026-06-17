@@ -60,8 +60,7 @@ pub fn find_context_identifiers(
 
             // The reference crosses a function boundary if it is used from a
             // function nested strictly below the binding's enclosing function.
-            if ref_fn != binding_fn
-                && sq::is_descendant_or_self_scope(semantic, ref_fn, binding_fn)
+            if ref_fn != binding_fn && sq::is_descendant_or_self_scope(semantic, ref_fn, binding_fn)
             {
                 referenced_by_inner = true;
                 if is_write {

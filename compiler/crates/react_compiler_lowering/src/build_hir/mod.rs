@@ -413,8 +413,7 @@ fn lower_param(
             }
             let param_loc = Some(builder.loc_of_span(ident.span));
             let symbol_id = ident.symbol_id.get();
-            let binding =
-                builder.resolve_identifier_symbol(&ident.name, symbol_id, param_loc)?;
+            let binding = builder.resolve_identifier_symbol(&ident.name, symbol_id, param_loc)?;
             match binding {
                 VariableBinding::Identifier { identifier, .. } => {
                     builder.set_identifier_declaration_loc(identifier, &param_loc);

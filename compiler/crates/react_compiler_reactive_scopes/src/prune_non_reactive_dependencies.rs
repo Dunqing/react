@@ -150,9 +150,10 @@ impl<'a> ReactiveFunctionTransform for PruneVisitor<'a> {
         match &instruction.value {
             ReactiveValue::Instruction(InstructionValue::LoadLocal { place, .. }) => {
                 if let Some(lv) = lvalue
-                    && state.contains(&place.identifier) {
-                        state.insert(lv.identifier);
-                    }
+                    && state.contains(&place.identifier)
+                {
+                    state.insert(lv.identifier);
+                }
             }
             ReactiveValue::Instruction(InstructionValue::StoreLocal {
                 value: store_value,
@@ -198,9 +199,10 @@ impl<'a> ReactiveFunctionTransform for PruneVisitor<'a> {
                 object, property, ..
             }) => {
                 if let Some(lv) = lvalue
-                    && (state.contains(&object.identifier) || state.contains(&property.identifier)) {
-                        state.insert(lv.identifier);
-                    }
+                    && (state.contains(&object.identifier) || state.contains(&property.identifier))
+                {
+                    state.insert(lv.identifier);
+                }
             }
             _ => {}
         }

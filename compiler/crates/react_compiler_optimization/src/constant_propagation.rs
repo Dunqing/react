@@ -531,21 +531,21 @@ fn evaluate_instruction(
                 ..
             }) = object_value
                 && let PropertyLiteral::String(prop_name) = property
-                    && prop_name == "length" {
-                        // Use UTF-16 code unit count to match JS .length semantics
-                        let len = s.encode_utf16().count() as f64;
-                        let loc = *loc;
-                        let result = Constant::Primitive {
-                            value: PrimitiveValue::Number(FloatValue::new(len)),
-                            loc,
-                        };
-                        func.instructions[instr_id.0 as usize].value =
-                            InstructionValue::Primitive {
-                                value: PrimitiveValue::Number(FloatValue::new(len)),
-                                loc,
-                            };
-                        return Some(result);
-                    }
+                && prop_name == "length"
+            {
+                // Use UTF-16 code unit count to match JS .length semantics
+                let len = s.encode_utf16().count() as f64;
+                let loc = *loc;
+                let result = Constant::Primitive {
+                    value: PrimitiveValue::Number(FloatValue::new(len)),
+                    loc,
+                };
+                func.instructions[instr_id.0 as usize].value = InstructionValue::Primitive {
+                    value: PrimitiveValue::Number(FloatValue::new(len)),
+                    loc,
+                };
+                return Some(result);
+            }
             None
         }
         InstructionValue::TemplateLiteral {
@@ -679,9 +679,9 @@ fn evaluate_instruction(
                             constant,
                             ..
                         } = &mut deps[idx].root
-                        {
-                            *constant = true;
-                        }
+                    {
+                        *constant = true;
+                    }
                 }
             }
             None

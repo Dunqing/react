@@ -136,11 +136,12 @@ pub fn align_object_method_scopes(func: &mut HirFunction, env: &mut Environment)
     for ident in &mut env.identifiers {
         if let Some(scope_id) = ident.scope
             && let Some(&orig_range_id) = original_range_ids.get(&scope_id)
-                && ident.mutable_range.id == orig_range_id {
-                    let new_range = &env.scopes[scope_id.0 as usize].range;
-                    ident.mutable_range.start = new_range.start;
-                    ident.mutable_range.end = new_range.end;
-                }
+            && ident.mutable_range.id == orig_range_id
+        {
+            let new_range = &env.scopes[scope_id.0 as usize].range;
+            ident.mutable_range.start = new_range.start;
+            ident.mutable_range.end = new_range.end;
+        }
     }
 
     // Step 2: Repoint identifiers whose scopes were merged
@@ -157,9 +158,10 @@ pub fn align_object_method_scopes(func: &mut HirFunction, env: &mut Environment)
             let lvalue_id = func.instructions[instr_id.0 as usize].lvalue.identifier;
 
             if let Some(current_scope) = env.identifiers[lvalue_id.0 as usize].scope
-                && let Some(&root) = scope_remap.get(&current_scope) {
-                    env.identifiers[lvalue_id.0 as usize].scope = Some(root);
-                }
+                && let Some(&root) = scope_remap.get(&current_scope)
+            {
+                env.identifiers[lvalue_id.0 as usize].scope = Some(root);
+            }
         }
     }
 }

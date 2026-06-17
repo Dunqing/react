@@ -34,11 +34,11 @@ pub fn prune_unused_labels_hir(func: &mut HirFunction) {
                 ..
             } = &next.terminal
                 && goto_target == fallthrough_id
-                    && next.kind == BlockKind::Block
-                    && fallthrough.kind == BlockKind::Block
-                {
-                    merged.push((block_id, *next_id, *fallthrough_id));
-                }
+                && next.kind == BlockKind::Block
+                && fallthrough.kind == BlockKind::Block
+            {
+                merged.push((block_id, *next_id, *fallthrough_id));
+            }
         }
     }
 

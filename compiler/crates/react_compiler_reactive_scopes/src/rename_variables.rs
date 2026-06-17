@@ -183,14 +183,12 @@ impl ReactiveFunctionVisitor for Visitor<'_> {
     /// TS: `visitValue(id, value, state) { this.traverseValue(id, value, state); if (value.kind === 'FunctionExpression' || value.kind === 'ObjectMethod') this.visitHirFunction(value.loweredFunc.func, state) }`
     fn visit_value(&self, id: EvaluationOrder, value: &ReactiveValue, state: &mut Scopes) {
         self.traverse_value(id, value, state);
-        if let ReactiveValue::Instruction(iv) = value {
-            match iv {
-                InstructionValue::FunctionExpression { lowered_func, .. }
-                | InstructionValue::ObjectMethod { lowered_func, .. } => {
-                    self.visit_hir_function(lowered_func.func, state);
-                }
-                _ => {}
-            }
+        if let ReactiveValue::Instruction(
+            InstructionValue::FunctionExpression { lowered_func, .. }
+            | InstructionValue::ObjectMethod { lowered_func, .. },
+        ) = value
+        {
+            self.visit_hir_function(lowered_func.func, state);
         }
     }
 }
@@ -236,9 +234,10 @@ fn rename_variables_with_parent(
     // Phase 2: Apply the computed renames to all identifiers in env.
     for identifier in env.identifiers.iter_mut() {
         if let Some(mapped_name) = scopes.seen.get(&identifier.declaration_id)
-            && identifier.name.is_some() {
-                identifier.name = Some(mapped_name.clone());
-            }
+            && identifier.name.is_some()
+        {
+            identifier.name = Some(mapped_name.clone());
+        }
     }
 
     let mut result: HashSet<String> = scopes.names;

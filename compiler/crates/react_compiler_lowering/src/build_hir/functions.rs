@@ -284,10 +284,7 @@ pub(crate) fn lower_object_method(
 
     let lowered_func = lower_function(builder, &form)?;
 
-    let method_value = InstructionValue::ObjectMethod {
-        loc,
-        lowered_func,
-    };
+    let method_value = InstructionValue::ObjectMethod { loc, lowered_func };
     let method_place = lower_value_to_temporary(builder, method_value)?;
 
     Ok(Some(ObjectProperty {

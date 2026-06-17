@@ -143,13 +143,15 @@ pub fn find_program_suppressions(
         let value = comment_value(comment, source_text);
 
         // Check for eslint-disable-next-line (only if not already within a block)
-        if disable_comment.is_none() && has_rules
+        if disable_comment.is_none()
+            && has_rules
             && let Some(names) = rule_names
-                && matches_eslint_disable_next_line(value, names) {
-                    disable_comment = Some(*comment);
-                    enable_comment = Some(*comment);
-                    source = Some(SuppressionSource::Eslint);
-                }
+            && matches_eslint_disable_next_line(value, names)
+        {
+            disable_comment = Some(*comment);
+            enable_comment = Some(*comment);
+            source = Some(SuppressionSource::Eslint);
+        }
 
         // Check for Flow suppression (only if not already within a block)
         if flow_suppressions && disable_comment.is_none() && matches_flow_suppression(value) {
@@ -161,18 +163,20 @@ pub fn find_program_suppressions(
         // Check for eslint-disable (block start)
         if has_rules
             && let Some(names) = rule_names
-                && matches_eslint_disable(value, names) {
-                    disable_comment = Some(*comment);
-                    source = Some(SuppressionSource::Eslint);
-                }
+            && matches_eslint_disable(value, names)
+        {
+            disable_comment = Some(*comment);
+            source = Some(SuppressionSource::Eslint);
+        }
 
         // Check for eslint-enable (block end)
         if has_rules
             && let Some(names) = rule_names
-                && matches_eslint_enable(value, names)
-                    && matches!(source, Some(SuppressionSource::Eslint)) {
-                        enable_comment = Some(*comment);
-                    }
+            && matches_eslint_enable(value, names)
+            && matches!(source, Some(SuppressionSource::Eslint))
+        {
+            enable_comment = Some(*comment);
+        }
 
         // If we have a complete suppression, push it
         if disable_comment.is_some() && source.is_some() {

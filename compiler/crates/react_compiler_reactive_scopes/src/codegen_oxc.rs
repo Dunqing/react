@@ -344,9 +344,10 @@ impl<'a, 'e> Cx<'a, 'e> {
 
         // Strip a trailing bare `return undefined;` (matches the reference).
         if let Some(oxc::Statement::ReturnStatement(r)) = body_stmts.last()
-            && r.argument.is_none() {
-                body_stmts.pop();
-            }
+            && r.argument.is_none()
+        {
+            body_stmts.pop();
+        }
 
         // Cache var preface: const $ = _c(N);
         let cache_count = self.next_cache_index;
@@ -389,9 +390,7 @@ impl<'a, 'e> Cx<'a, 'e> {
             params,
             rest,
         );
-        let body = self
-            .b
-            .function_body(SPAN, self.b.vec(), body_stmts);
+        let body = self.b.function_body(SPAN, self.b.vec(), body_stmts);
         Ok(self.b.function(
             SPAN,
             oxc::FunctionType::FunctionDeclaration,
@@ -493,10 +492,11 @@ impl<'a, 'e> Cx<'a, 'e> {
                 // and that stashes when the outer lvalue is an unnamed temp.
                 InstructionValue::StoreContext { lvalue, .. }
                     if matches!(lvalue.kind, InstructionKind::Reassign)
-                        && instr
-                            .lvalue
-                            .as_ref()
-                            .is_some_and(|lv| self.env.identifiers[lv.identifier.0 as usize].name.is_none()) =>
+                        && instr.lvalue.as_ref().is_some_and(|lv| {
+                            self.env.identifiers[lv.identifier.0 as usize]
+                                .name
+                                .is_none()
+                        }) =>
                 {
                     let outer = instr.lvalue.as_ref().unwrap();
                     let decl_id = self.decl_id(outer);
@@ -1461,9 +1461,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         } else {
             oxc::VariableDeclarationKind::Const
         };
-        Ok(self
-            .b
-            .variable_declaration(SPAN, kind, declarators, false))
+        Ok(self.b.variable_declaration(SPAN, kind, declarators, false))
     }
 
     /// Get the instructions of a sequence ReactiveValue (for for-in/of inits).
@@ -1949,8 +1947,7 @@ impl<'a, 'e> Cx<'a, 'e> {
                 let type_annotation = self.parse_ts_type(type_text)?;
                 let is_satisfies = type_annotation_kind.as_deref() == Some("satisfies");
                 Ok(if is_satisfies {
-                    self.b
-                        .expression_ts_satisfies(SPAN, inner, type_annotation)
+                    self.b.expression_ts_satisfies(SPAN, inner, type_annotation)
                 } else {
                     self.b.expression_ts_as(SPAN, inner, type_annotation)
                 })
@@ -2047,10 +2044,11 @@ impl<'a, 'e> Cx<'a, 'e> {
     /// giving it an inferred runtime name. Used for enableNameAnonymousFunctions.
     fn wrap_with_name_hint(&self, value: oxc::Expression<'a>, hint: &str) -> oxc::Expression<'a> {
         // Build the object literal `{ "<hint>": value }`.
-        let key = oxc::PropertyKey::StringLiteral(
-            self.b
-                .alloc(self.b.string_literal(SPAN, self.atom(hint), None)),
-        );
+        let key = oxc::PropertyKey::StringLiteral(self.b.alloc(self.b.string_literal(
+            SPAN,
+            self.atom(hint),
+            None,
+        )));
         let prop = self.b.object_property_kind_object_property(
             SPAN,
             oxc::PropertyKind::Init,
@@ -2369,7 +2367,9 @@ impl<'a, 'e> Cx<'a, 'e> {
                             .get(&prop.place.identifier)
                             .cloned()
                             .ok_or_else(|| {
-                                CodegenBail::new("object method: no stashed ObjectMethod instruction")
+                                CodegenBail::new(
+                                    "object method: no stashed ObjectMethod instruction",
+                                )
                             })?;
                         let value = self.build_method_function(&lowered_func)?;
                         let object_property = self.b.object_property(
@@ -2533,10 +2533,7 @@ impl<'a, 'e> Cx<'a, 'e> {
 
     /// Convert an inlined tag expression (identifier or member chain) into a
     /// `JSXElementName`. Mirrors the reference `expression_to_jsx_tag`.
-    fn expr_to_jsx_element_name(
-        &self,
-        expr: oxc::Expression<'a>,
-    ) -> Bail<oxc::JSXElementName<'a>> {
+    fn expr_to_jsx_element_name(&self, expr: oxc::Expression<'a>) -> Bail<oxc::JSXElementName<'a>> {
         match expr {
             oxc::Expression::Identifier(ident) => Ok(self
                 .b
@@ -2566,9 +2563,7 @@ impl<'a, 'e> Cx<'a, 'e> {
             oxc::Expression::StaticMemberExpression(m) => {
                 let m = m.unbox();
                 let object = self.expr_to_jsx_member_object(m.object)?;
-                let property = self
-                    .b
-                    .jsx_identifier(SPAN, m.property.name);
+                let property = self.b.jsx_identifier(SPAN, m.property.name);
                 Ok(self
                     .b
                     .jsx_member_expression_object_member_expression(SPAN, object, property))
@@ -2626,7 +2621,9 @@ impl<'a, 'e> Cx<'a, 'e> {
             // holding a JS string literal, so the generator re-escapes it.
             // Mirrors the reference `JSX_TEXT_CHILD_REQUIRES_EXPR_CONTAINER_PATTERN`.
             if jsx_text_requires_expr_container(&value) {
-                let lit = self.b.expression_string_literal(SPAN, self.atom(&value), None);
+                let lit = self
+                    .b
+                    .expression_string_literal(SPAN, self.atom(&value), None);
                 let container = self
                     .b
                     .jsx_expression_container(SPAN, oxc::JSXExpression::from(lit));
@@ -2638,19 +2635,19 @@ impl<'a, 'e> Cx<'a, 'e> {
         if let Some(Some(ReactiveValue::Instruction(iv))) = self.temp.get(&decl_id).cloned()
             && let InstructionValue::JsxExpression { .. } | InstructionValue::JsxFragment { .. } =
                 &iv
-            {
-                let expr = self.codegen_instruction_value(&iv)?;
-                return Ok(match expr {
-                    oxc::Expression::JSXElement(el) => oxc::JSXChild::Element(el),
-                    oxc::Expression::JSXFragment(f) => oxc::JSXChild::Fragment(f),
-                    other => {
-                        let container = self
-                            .b
-                            .jsx_expression_container(SPAN, oxc::JSXExpression::from(other));
-                        oxc::JSXChild::ExpressionContainer(self.b.alloc(container))
-                    }
-                });
-            }
+        {
+            let expr = self.codegen_instruction_value(&iv)?;
+            return Ok(match expr {
+                oxc::Expression::JSXElement(el) => oxc::JSXChild::Element(el),
+                oxc::Expression::JSXFragment(f) => oxc::JSXChild::Fragment(f),
+                other => {
+                    let container = self
+                        .b
+                        .jsx_expression_container(SPAN, oxc::JSXExpression::from(other));
+                    oxc::JSXChild::ExpressionContainer(self.b.alloc(container))
+                }
+            });
+        }
         let expr = self.place_expr(place)?;
         let container = self
             .b
@@ -2665,10 +2662,11 @@ impl<'a, 'e> Cx<'a, 'e> {
     fn place_expr(&mut self, place: &Place) -> Bail<oxc::Expression<'a>> {
         let decl_id = self.decl_id(place);
         if let Some(entry) = self.temp.get(&decl_id)
-            && let Some(rv) = entry.clone() {
-                return self.codegen_value(&rv);
-            }
-            // declared but no inline value -> bare identifier below.
+            && let Some(rv) = entry.clone()
+        {
+            return self.codegen_value(&rv);
+        }
+        // declared but no inline value -> bare identifier below.
         let name = self.place_name(place)?;
         Ok(self.ident_expr(&name))
     }
@@ -2732,8 +2730,7 @@ fn string_requires_expr_container(s: &str) -> bool {
 /// (`{"…"}`) rather than raw `JSXText`. Mirrors the reference
 /// `JSX_TEXT_CHILD_REQUIRES_EXPR_CONTAINER_PATTERN = /[<>&{}]/`.
 fn jsx_text_requires_expr_container(s: &str) -> bool {
-    s.chars()
-        .any(|c| matches!(c, '<' | '>' | '&' | '{' | '}'))
+    s.chars().any(|c| matches!(c, '<' | '>' | '&' | '{' | '}'))
 }
 
 /// Generate a collision-safe name (mirrors `Context::synthesize_name`).

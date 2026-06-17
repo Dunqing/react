@@ -136,6 +136,12 @@ pub struct ShapeRegistry {
     entries: HashMap<String, ObjectShape>,
 }
 
+impl Default for ShapeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShapeRegistry {
     /// Create an empty builder-mode registry.
     pub fn new() -> Self {

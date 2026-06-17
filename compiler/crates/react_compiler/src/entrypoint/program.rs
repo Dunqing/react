@@ -155,7 +155,10 @@ trait FnBody {
 struct FunctionBodyRef<'a, 'b>(&'b oxc::Function<'a>);
 impl<'a, 'b> FnBody for FunctionBodyRef<'a, 'b> {
     fn statements(&self) -> &[oxc::Statement<'_>] {
-        self.0.body.as_ref().map_or(&[], |b| b.statements.as_slice())
+        self.0
+            .body
+            .as_ref()
+            .map_or(&[], |b| b.statements.as_slice())
     }
     fn concise_return(&self) -> Option<&oxc::Expression<'_>> {
         None
@@ -367,9 +370,10 @@ fn is_valid_component_params(params: &oxc::FormalParameters) -> bool {
     // The first param: if there is at least one non-rest item, it is `items[0]`;
     // otherwise the only param is the rest element.
     if let Some(first) = items.first()
-        && !is_valid_props_annotation(first) {
-            return false;
-        }
+        && !is_valid_props_annotation(first)
+    {
+        return false;
+    }
 
     if total == 1 {
         // A single rest param (`...props`) is not valid.
@@ -479,7 +483,12 @@ fn find_functions_to_compile<'a>(
                     consider_function(func, None, compile_all, &mut queue);
                 }
                 oxc::ExportDefaultDeclarationKind::ArrowFunctionExpression(arrow) => {
-                    consider_anonymous_arrow(arrow, ClassifyContext::default(), compile_all, &mut queue);
+                    consider_anonymous_arrow(
+                        arrow,
+                        ClassifyContext::default(),
+                        compile_all,
+                        &mut queue,
+                    );
                 }
                 expr_kind => {
                     if let Some(expr) = expr_kind.as_expression() {
@@ -527,12 +536,7 @@ fn find_functions_to_compile<'a>(
                 // call's function-literal argument is a forwardRef/memo render
                 // callback.
                 oxc::Expression::CallExpression(_) => {
-                    consider_expression(
-                        &expr_stmt.expression,
-                        None,
-                        compile_all,
-                        &mut queue,
-                    );
+                    consider_expression(&expr_stmt.expression, None, compile_all, &mut queue);
                 }
                 _ => {}
             },
@@ -556,7 +560,13 @@ fn consider_expression<'a>(
 ) {
     match expr {
         oxc::Expression::ArrowFunctionExpression(arrow) => {
-            consider_arrow(arrow, inferred_name, ClassifyContext::default(), compile_all, queue);
+            consider_arrow(
+                arrow,
+                inferred_name,
+                ClassifyContext::default(),
+                compile_all,
+                queue,
+            );
         }
         oxc::Expression::FunctionExpression(func) => {
             consider_function(func, inferred_name, compile_all, queue);
@@ -633,7 +643,13 @@ fn consider_function<'a>(
     compile_all: bool,
     queue: &mut Vec<CompileSource<'a>>,
 ) {
-    consider_function_with_ctx(func, inferred_name, ClassifyContext::default(), compile_all, queue);
+    consider_function_with_ctx(
+        func,
+        inferred_name,
+        ClassifyContext::default(),
+        compile_all,
+        queue,
+    );
 }
 
 fn consider_function_with_ctx<'a>(
@@ -737,22 +753,19 @@ pub fn compile_program(
     // (TS passes `ruleNames = null`); Flow suppressions are always honored.
     const DEFAULT_ESLINT_SUPPRESSIONS: &[&str] =
         &["react-hooks/exhaustive-deps", "react-hooks/rules-of-hooks"];
-    let rule_names: Option<Vec<String>> = if options.environment.validate_exhaustive_memoization_dependencies
+    let rule_names: Option<Vec<String>> = if options
+        .environment
+        .validate_exhaustive_memoization_dependencies
         && options.environment.validate_hooks_usage
     {
         None
     } else {
-        Some(
-            options
-                .eslint_suppression_rules
-                .clone()
-                .unwrap_or_else(|| {
-                    DEFAULT_ESLINT_SUPPRESSIONS
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect()
-                }),
-        )
+        Some(options.eslint_suppression_rules.clone().unwrap_or_else(|| {
+            DEFAULT_ESLINT_SUPPRESSIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        }))
     };
     let suppressions = super::suppression::find_program_suppressions(
         &program.comments,
@@ -803,14 +816,12 @@ pub fn compile_program(
             source.fn_span.end,
         );
         if !suppressions_in_fn.is_empty() {
-            let suppression_ranges: Vec<_> =
-                suppressions_in_fn.into_iter().cloned().collect();
+            let suppression_ranges: Vec<_> = suppressions_in_fn.into_iter().cloned().collect();
             let err = super::suppression::suppressions_to_compiler_error(
                 &suppression_ranges,
                 source_text,
             );
-            let fn_loc =
-                span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
+            let fn_loc = span_to_logger_loc(source_text, source.fn_span, context.filename.clone());
             if let Some(result) = handle_error(&err, fn_loc, &mut context) {
                 return CompileProgramResult {
                     result,
@@ -888,11 +899,7 @@ pub fn compile_program(
                     // plan on the main artifact for assembly. Mirrors
                     // `insertGatedFunctionDeclaration` in `Entrypoint/Gating.ts`.
                     let gating_local_name = context
-                        .add_import_specifier(
-                            &gating.source,
-                            &gating.import_specifier_name,
-                            None,
-                        )
+                        .add_import_specifier(&gating.source, &gating.import_specifier_name, None)
                         .name;
 
                     // Only a named `function Foo` declaration can be referenced
@@ -1091,11 +1098,13 @@ fn validate_dynamic_gating_directives(
                 "Dynamic gating directive is not a valid JavaScript identifier",
                 Some(format!("Found '{value}'")),
             )
-            .with_detail(react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
-                loc: Some(span_to_diag_loc(source_text, directive.span)),
-                message: None,
-                identifier_name: None,
-            });
+            .with_detail(
+                react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
+                    loc: Some(span_to_diag_loc(source_text, directive.span)),
+                    message: None,
+                    identifier_name: None,
+                },
+            );
             error.push_diagnostic(diag);
         }
     }
@@ -1115,11 +1124,13 @@ fn validate_dynamic_gating_directives(
             "Multiple dynamic gating directives found",
             Some(format!("Expected a single directive but found [{found}]")),
         )
-        .with_detail(react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
-            loc: Some(span_to_diag_loc(source_text, matches[0].span)),
-            message: None,
-            identifier_name: None,
-        });
+        .with_detail(
+            react_compiler_diagnostics::CompilerDiagnosticDetail::Error {
+                loc: Some(span_to_diag_loc(source_text, matches[0].span)),
+                message: None,
+                identifier_name: None,
+            },
+        );
         error.push_diagnostic(diag);
         return Some(error);
     }
@@ -1171,12 +1182,13 @@ fn resolve_function_gating(
     directives: &[oxc::Directive],
 ) -> Option<ResolvedGating> {
     if let Some(dynamic) = &context.opts.dynamic_gating
-        && let Some(import_specifier_name) = find_dynamic_gating_match(directives) {
-            return Some(ResolvedGating {
-                source: dynamic.source.clone(),
-                import_specifier_name,
-            });
-        }
+        && let Some(import_specifier_name) = find_dynamic_gating_match(directives)
+    {
+        return Some(ResolvedGating {
+            source: dynamic.source.clone(),
+            import_specifier_name,
+        });
+    }
     context.opts.gating.as_ref().map(|g| ResolvedGating {
         source: g.source.clone(),
         import_specifier_name: g.import_specifier_name.clone(),
@@ -1307,15 +1319,16 @@ fn handle_error(
         }
 
         if error_info.raw_message.is_none()
-            && let Some(ref source) = context.code {
-                error_info.formatted_message = Some(
-                    react_compiler_diagnostics::code_frame::format_compiler_error(
-                        err,
-                        source,
-                        source_fn.as_deref(),
-                    ),
-                );
-            }
+            && let Some(ref source) = context.code
+        {
+            error_info.formatted_message = Some(
+                react_compiler_diagnostics::code_frame::format_compiler_error(
+                    err,
+                    source,
+                    source_fn.as_deref(),
+                ),
+            );
+        }
 
         Some(CompileResult::Error {
             error: error_info,

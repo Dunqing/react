@@ -177,8 +177,7 @@ fn lower_binding_identifier(
     }
     let id_loc = Some(builder.loc_of_span(id.span));
     let symbol_id = id.symbol_id.get();
-    let result =
-        lower_identifier_for_assignment(builder, loc, id_loc, kind, &id.name, symbol_id)?;
+    let result = lower_identifier_for_assignment(builder, loc, id_loc, kind, &id.name, symbol_id)?;
     match result {
         None => Ok(None),
         Some(IdentifierForAssignment::Global { name }) => {
@@ -249,12 +248,7 @@ fn lower_array_binding(
                 let id_loc = Some(builder.loc_of_span(id.span));
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
-                        builder,
-                        id_loc,
-                        id_loc,
-                        kind,
-                        &id.name,
-                        symbol_id,
+                        builder, id_loc, id_loc, kind, &id.name, symbol_id,
                     )? {
                         Some(IdentifierForAssignment::Place(place)) => {
                             items.push(ArrayPatternElement::Place(place));
@@ -293,12 +287,7 @@ fn lower_array_binding(
                 let id_loc = Some(builder.loc_of_span(id.span));
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
-                        builder,
-                        rest_loc,
-                        id_loc,
-                        kind,
-                        &id.name,
-                        symbol_id,
+                        builder, rest_loc, id_loc, kind, &id.name, symbol_id,
                     )? {
                         Some(IdentifierForAssignment::Place(place)) => {
                             items.push(ArrayPatternElement::Spread(SpreadPattern { place }));
@@ -380,12 +369,7 @@ fn lower_object_binding(
                 let id_loc = Some(builder.loc_of_span(id.span));
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
-                        builder,
-                        id_loc,
-                        id_loc,
-                        kind,
-                        &id.name,
-                        symbol_id,
+                        builder, id_loc, id_loc, kind, &id.name, symbol_id,
                     )? {
                         Some(IdentifierForAssignment::Place(place)) => {
                             properties.push(ObjectPropertyOrSpread::Property(ObjectProperty {
@@ -440,12 +424,7 @@ fn lower_object_binding(
                 let id_loc = Some(builder.loc_of_span(id.span));
                 if binding_can_use_direct(builder, symbol_id, style, force_temporaries) {
                     match lower_identifier_for_assignment(
-                        builder,
-                        rest_loc,
-                        id_loc,
-                        kind,
-                        &id.name,
-                        symbol_id,
+                        builder, rest_loc, id_loc, kind, &id.name, symbol_id,
                     )? {
                         Some(IdentifierForAssignment::Place(place)) => {
                             properties

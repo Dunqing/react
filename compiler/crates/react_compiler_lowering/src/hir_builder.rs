@@ -819,16 +819,12 @@ impl<'a> HirBuilder<'a> {
         // Find a unique name: start with the original name, then name_0, name_1, ...
         let mut candidate = name.to_string();
         let mut index = 0u32;
-        loop {
-            if let Some(&existing_symbol_id) = self.used_names.get(&candidate) {
-                if existing_symbol_id == symbol_id {
-                    break;
-                }
-                candidate = format!("{}_{}", name, index);
-                index += 1;
-            } else {
+        while let Some(&existing_symbol_id) = self.used_names.get(&candidate) {
+            if existing_symbol_id == symbol_id {
                 break;
             }
+            candidate = format!("{}_{}", name, index);
+            index += 1;
         }
 
         let decl_span = sq::declaration_span(self.semantic, symbol_id);
@@ -906,9 +902,7 @@ impl<'a> HirBuilder<'a> {
                             sq::ImportBindingKind::Named => VariableBinding::ImportSpecifier {
                                 name: name.to_string(),
                                 module: import_info.source,
-                                imported: import_info
-                                    .imported
-                                    .unwrap_or_else(|| name.to_string()),
+                                imported: import_info.imported.unwrap_or_else(|| name.to_string()),
                             },
                             sq::ImportBindingKind::Namespace => VariableBinding::ImportNamespace {
                                 name: name.to_string(),
@@ -1058,9 +1052,10 @@ pub fn remove_unreachable_for_updates(hir: &mut HIR) {
     for block in hir.blocks.values_mut() {
         if let Terminal::For { update, .. } = &mut block.terminal
             && let Some(update_id) = *update
-                && !block_ids.contains(&update_id) {
-                    *update = None;
-                }
+            && !block_ids.contains(&update_id)
+        {
+            *update = None;
+        }
     }
 }
 
@@ -1085,14 +1080,15 @@ pub fn remove_dead_do_while_statements(hir: &mut HIR) {
                     id: EvaluationOrder(0),
                     loc: None,
                 },
-            ) {
-                block.terminal = Terminal::Goto {
-                    block: loop_block,
-                    variant: GotoVariant::Break,
-                    id,
-                    loc,
-                };
-            }
+            )
+        {
+            block.terminal = Terminal::Goto {
+                block: loop_block,
+                variant: GotoVariant::Break,
+                id,
+                loc,
+            };
+        }
     }
 }
 
@@ -1111,9 +1107,10 @@ pub fn remove_unnecessary_try_catch(hir: &mut HIR) {
                 loc,
                 ..
             } = &block.terminal
-                && !block_ids.contains(handler) {
-                    return Some((block_id, *try_block, *handler, *fallthrough, *loc));
-                }
+                && !block_ids.contains(handler)
+            {
+                return Some((block_id, *try_block, *handler, *fallthrough, *loc));
+            }
             None
         })
         .collect();

@@ -96,9 +96,9 @@ pub fn find_directive_disabling_memoization<'a>(
         && let Some(found) = directives
             .iter()
             .find(|d| custom.iter().any(|c| c == d.expression.value.as_str()))
-        {
-            return Some(found);
-        }
+    {
+        return Some(found);
+    }
     directives
         .iter()
         .find(|d| OPT_OUT_DIRECTIVES.contains(&d.expression.value.as_str()))

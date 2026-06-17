@@ -509,23 +509,24 @@ impl Environment {
 
                 // Check for module type validation errors (hook-name vs hook-type mismatches)
                 if let Some(errors) = self.module_type_errors.remove(module.as_str())
-                    && let Some(first_error) = errors.into_iter().next() {
-                        self.record_error(
-                            CompilerErrorDetail::new(
-                                ErrorCategory::Config,
-                                "Invalid type configuration for module",
-                            )
-                            .with_description(first_error.to_string())
-                            .with_loc(loc),
-                        )?;
-                    }
+                    && let Some(first_error) = errors.into_iter().next()
+                {
+                    self.record_error(
+                        CompilerErrorDetail::new(
+                            ErrorCategory::Config,
+                            "Invalid type configuration for module",
+                        )
+                        .with_description(first_error.to_string())
+                        .with_loc(loc),
+                    )?;
+                }
 
                 if let Some(module_type) = module_type
                     && let Some(imported_type) =
                         Self::get_property_type_from_shapes(&self.shapes, &module_type, imported)
-                    {
-                        return Ok(Some(imported_type));
-                    }
+                {
+                    return Ok(Some(imported_type));
+                }
 
                 if is_hook_name(imported) || is_hook_name(name) {
                     Ok(Some(self.get_custom_hook_type()))
@@ -551,16 +552,17 @@ impl Environment {
 
                 // Check for module type validation errors (hook-name vs hook-type mismatches)
                 if let Some(errors) = self.module_type_errors.remove(module.as_str())
-                    && let Some(first_error) = errors.into_iter().next() {
-                        self.record_error(
-                            CompilerErrorDetail::new(
-                                ErrorCategory::Config,
-                                "Invalid type configuration for module",
-                            )
-                            .with_description(first_error.to_string())
-                            .with_loc(loc),
-                        )?;
-                    }
+                    && let Some(first_error) = errors.into_iter().next()
+                {
+                    self.record_error(
+                        CompilerErrorDetail::new(
+                            ErrorCategory::Config,
+                            "Invalid type configuration for module",
+                        )
+                        .with_description(first_error.to_string())
+                        .with_loc(loc),
+                    )?;
+                }
 
                 if let Some(module_type) = module_type {
                     let imported_type = if is_default {
@@ -994,9 +996,10 @@ impl Environment {
         let decl_id = ident.declaration_id;
         for other in &self.identifiers {
             if other.declaration_id == decl_id
-                && let Some(IdentifierName::Named(name)) = &other.name {
-                    return Some(name.clone());
-                }
+                && let Some(IdentifierName::Named(name)) = &other.name
+            {
+                return Some(name.clone());
+            }
         }
         None
     }

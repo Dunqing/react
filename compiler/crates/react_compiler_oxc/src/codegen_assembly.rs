@@ -199,11 +199,12 @@ fn splice_functions<'a>(
         // the statement span; for `export [default] function F` the function
         // span is nested inside the export wrapper, so look there too.
         if let Some(start) = function_declaration_start(&stmt)
-            && let Some(node) = by_start.remove(&start) {
-                emit_top_level(builder, &mut program.body, stmt, node, gating_imports);
-                emit_outlined_children(builder, &mut program.body, start, outlined_by_parent);
-                continue;
-            }
+            && let Some(node) = by_start.remove(&start)
+        {
+            emit_top_level(builder, &mut program.body, stmt, node, gating_imports);
+            emit_outlined_children(builder, &mut program.body, start, outlined_by_parent);
+            continue;
+        }
         // For variable declarations / exports / assignments / object props the
         // function span starts at the init expression, not the statement. Record
         // which nested span(s) were spliced so any outlined children can be
@@ -255,7 +256,9 @@ fn emit_top_level<'a>(
     let Some(plan) = node.gating.clone() else {
         // No gating: replace the function body with the compiled version,
         // preserving the original `export` / `export default` wrapper.
-        body.push(rewrap_function_declaration(builder, node, &wrapper, &orig_fn));
+        body.push(rewrap_function_declaration(
+            builder, node, &wrapper, &orig_fn,
+        ));
         return;
     };
 
@@ -273,8 +276,12 @@ fn emit_top_level<'a>(
     let original_name = orig_fn.id.as_ref().map(|id| id.name.to_string());
     let compiled_expr = function_expression(builder, node);
     let original_expr = function_decl_to_expression(builder, orig_fn);
-    let gating_expr =
-        gating_conditional(builder, &plan.gating_local_name, compiled_expr, original_expr);
+    let gating_expr = gating_conditional(
+        builder,
+        &plan.gating_local_name,
+        compiled_expr,
+        original_expr,
+    );
 
     match (wrapper, original_name) {
         // `export default function F` -> `const F = <gating>; export default F;`
@@ -775,7 +782,8 @@ fn function_declaration_start(stmt: &oxc::Statement<'_>) -> Option<u32> {
             }
         }
         oxc::Statement::ExportDefaultDeclaration(export) => {
-            if let oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) = &export.declaration
+            if let oxc::ExportDefaultDeclarationKind::FunctionDeclaration(func) =
+                &export.declaration
             {
                 Some(func.span().start)
             } else {
@@ -854,9 +862,10 @@ fn rewrap_function_declaration<'a>(
     // Preserve the original function name (codegen keeps it, but be safe for
     // anonymous default exports).
     if function.id.is_none()
-        && let Some(id) = &orig_fn.id {
-            function.id = Some(builder.binding_identifier(SPAN, builder.str(id.name.as_str())));
-        }
+        && let Some(id) = &orig_fn.id
+    {
+        function.id = Some(builder.binding_identifier(SPAN, builder.str(id.name.as_str())));
+    }
     let func_box = builder.alloc(function);
     match wrapper {
         Wrapper::None => oxc::Statement::FunctionDeclaration(func_box),
@@ -985,9 +994,11 @@ fn build_require_destructure<'a>(
     let callee = oxc::Expression::Identifier(
         builder.alloc(builder.identifier_reference(SPAN, builder.str("require"))),
     );
-    let module_arg = oxc::Argument::StringLiteral(
-        builder.alloc(builder.string_literal(SPAN, builder.str(module), None)),
-    );
+    let module_arg = oxc::Argument::StringLiteral(builder.alloc(builder.string_literal(
+        SPAN,
+        builder.str(module),
+        None,
+    )));
     let mut args = builder.vec();
     args.push(module_arg);
     let require_call = oxc::Expression::CallExpression(builder.alloc(builder.call_expression(

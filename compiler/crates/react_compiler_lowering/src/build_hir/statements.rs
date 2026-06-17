@@ -897,12 +897,8 @@ fn lower_for_in_statement(
         },
     )?;
 
-    let assign_result = lower_for_head_target(
-        builder,
-        &for_in.left,
-        left_loc,
-        next_property.clone(),
-    )?;
+    let assign_result =
+        lower_for_head_target(builder, &for_in.left, left_loc, next_property.clone())?;
     let test_value = assign_result.unwrap_or(next_property);
     let test = lower_value_to_temporary(
         builder,
@@ -1013,12 +1009,8 @@ fn lower_for_of_statement(
         },
     )?;
 
-    let assign_result = lower_for_head_target(
-        builder,
-        &for_of.left,
-        left_loc,
-        advance_iterator.clone(),
-    )?;
+    let assign_result =
+        lower_for_head_target(builder, &for_of.left, left_loc, advance_iterator.clone())?;
     let test_value = assign_result.unwrap_or(advance_iterator);
     let test = lower_value_to_temporary(
         builder,

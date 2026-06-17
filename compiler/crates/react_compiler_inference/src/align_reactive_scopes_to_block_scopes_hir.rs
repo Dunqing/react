@@ -113,22 +113,22 @@ pub fn align_reactive_scopes_to_block_scopes_hir(func: &mut HirFunction, env: &m
 
         // Check if we've reached a fallthrough block
         if let Some(top) = active_block_fallthrough_ranges.last().cloned()
-            && top.fallthrough == block_id {
-                active_block_fallthrough_ranges.pop();
-                // All active scopes overlap this block-fallthrough range;
-                // extend their start to include the range start.
-                for &scope_id in &active_scopes {
-                    let scope = &mut env.scopes[scope_id.0 as usize];
-                    scope.range.start = std::cmp::min(scope.range.start, top.range.start);
-                }
+            && top.fallthrough == block_id
+        {
+            active_block_fallthrough_ranges.pop();
+            // All active scopes overlap this block-fallthrough range;
+            // extend their start to include the range start.
+            for &scope_id in &active_scopes {
+                let scope = &mut env.scopes[scope_id.0 as usize];
+                scope.range.start = std::cmp::min(scope.range.start, top.range.start);
             }
+        }
 
         let node = value_block_nodes.get(&block_id).cloned();
 
         // Visit instruction lvalues and operands
         let block = func.body.blocks.get(&block_id).unwrap();
-        let instr_ids: Vec<react_compiler_hir::InstructionId> =
-            block.instructions.to_vec();
+        let instr_ids: Vec<react_compiler_hir::InstructionId> = block.instructions.to_vec();
         for &instr_id in &instr_ids {
             let instr = &func.instructions[instr_id.0 as usize];
             let eval_order = instr.id;
@@ -223,20 +223,20 @@ pub fn align_reactive_scopes_to_block_scopes_hir(func: &mut HirFunction, env: &m
                 Some(active_block_fallthrough_ranges.len() - 1)
             };
             if let Some(pos) = start_pos
-                && top_idx != Some(pos) {
-                    let start_range = active_block_fallthrough_ranges[pos].clone();
-                    let first_id = block_first_id(func, start_range.fallthrough);
+                && top_idx != Some(pos)
+            {
+                let start_range = active_block_fallthrough_ranges[pos].clone();
+                let first_id = block_first_id(func, start_range.fallthrough);
 
-                    for &scope_id in &active_scopes {
-                        let scope = &mut env.scopes[scope_id.0 as usize];
-                        if scope.range.end <= terminal_eval_order {
-                            continue;
-                        }
-                        scope.range.start =
-                            std::cmp::min(start_range.range.start, scope.range.start);
-                        scope.range.end = std::cmp::max(first_id, scope.range.end);
+                for &scope_id in &active_scopes {
+                    let scope = &mut env.scopes[scope_id.0 as usize];
+                    if scope.range.end <= terminal_eval_order {
+                        continue;
                     }
+                    scope.range.start = std::cmp::min(start_range.range.start, scope.range.start);
+                    scope.range.end = std::cmp::max(first_id, scope.range.end);
                 }
+            }
         }
 
         // Visit all successors to set up value block nodes

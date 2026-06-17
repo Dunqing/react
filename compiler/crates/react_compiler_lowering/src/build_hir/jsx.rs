@@ -349,13 +349,15 @@ pub(crate) fn lower_jsx_element_value(
             let is_local_binding = builder.has_local_binding(jsx_id.name.as_str());
             if is_local_binding {
                 let reason = format!("<{}> tags should be module-level imports", tag_name);
-                return Err(CompilerDiagnostic::new(ErrorCategory::Invariant, &reason, None)
-                    .with_detail(CompilerDiagnosticDetail::Error {
-                        loc: id_loc,
-                        message: Some(reason.clone()),
-                        identifier_name: None,
-                    })
-                    .into());
+                return Err(
+                    CompilerDiagnostic::new(ErrorCategory::Invariant, &reason, None)
+                        .with_detail(CompilerDiagnosticDetail::Error {
+                            loc: id_loc,
+                            message: Some(reason.clone()),
+                            identifier_name: None,
+                        })
+                        .into(),
+                );
             }
         }
     }
@@ -681,15 +683,16 @@ pub(crate) fn collect_fbt_sub_tags_from_element(
     pronoun_locs: &mut Vec<Option<SourceLocation>>,
 ) {
     if let oxc::JSXElementName::NamespacedName(ns) = &el.opening_element.name
-        && ns.namespace.name == tag_name {
-            let loc = Some(builder.loc_of_span(ns.span));
-            match ns.name.name.as_str() {
-                "enum" => enum_locs.push(loc),
-                "plural" => plural_locs.push(loc),
-                "pronoun" => pronoun_locs.push(loc),
-                _ => {}
-            }
+        && ns.namespace.name == tag_name
+    {
+        let loc = Some(builder.loc_of_span(ns.span));
+        match ns.name.name.as_str() {
+            "enum" => enum_locs.push(loc),
+            "plural" => plural_locs.push(loc),
+            "pronoun" => pronoun_locs.push(loc),
+            _ => {}
         }
+    }
     collect_fbt_sub_tags(
         builder,
         &el.children,

@@ -41,6 +41,12 @@ pub struct GlobalRegistry {
     entries: HashMap<String, Global>,
 }
 
+impl Default for GlobalRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GlobalRegistry {
     /// Create an empty builder-mode registry.
     pub fn new() -> Self {

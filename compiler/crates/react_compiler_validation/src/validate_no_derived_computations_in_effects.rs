@@ -250,11 +250,11 @@ impl DerivationCache {
             for source_id in &source_ids {
                 if let Some(source_metadata) = self.cache.get(source_id)
                     && source_metadata.is_state_source
-                        && !matches!(&source_metadata.place_name, Some(IdentifierName::Named(_)))
-                    {
-                        final_is_source = true;
-                        break;
-                    }
+                    && !matches!(&source_metadata.place_name, Some(IdentifierName::Named(_)))
+                {
+                    final_is_source = true;
+                    break;
+                }
             }
         }
 
@@ -403,19 +403,20 @@ pub fn validate_no_derived_computations_in_effects_exp(
         }
     } else if func.fn_type == ReactFunctionType::Component
         && let Some(param) = func.params.first()
-            && let ParamPattern::Place(place) = param {
-                let name = identifiers[place.identifier.0 as usize].name.clone();
-                context.derivation_cache.cache.insert(
-                    place.identifier,
-                    DerivationMetadata {
-                        place_identifier: place.identifier,
-                        place_name: name,
-                        source_ids: indexmap::IndexSet::new(),
-                        type_of_value: TypeOfValue::FromProps,
-                        is_state_source: true,
-                    },
-                );
-            }
+        && let ParamPattern::Place(place) = param
+    {
+        let name = identifiers[place.identifier.0 as usize].name.clone();
+        context.derivation_cache.cache.insert(
+            place.identifier,
+            DerivationMetadata {
+                place_identifier: place.identifier,
+                place_name: name,
+                source_ids: indexmap::IndexSet::new(),
+                type_of_value: TypeOfValue::FromProps,
+                is_state_source: true,
+            },
+        );
+    }
 
     // Fixpoint iteration
     let mut is_first_pass = true;
@@ -542,27 +543,28 @@ fn record_instruction_derivations(
         }
         InstructionValue::CallExpression { callee, args, .. } => {
             let callee_type = &types[identifiers[callee.identifier.0 as usize].type_.0 as usize];
-            if is_use_effect_hook_type(callee_type) && args.len() == 2
+            if is_use_effect_hook_type(callee_type)
+                && args.len() == 2
                 && let (
                     react_compiler_hir::PlaceOrSpread::Place(arg0),
                     react_compiler_hir::PlaceOrSpread::Place(arg1),
                 ) = (&args[0], &args[1])
-                {
-                    let effect_function = context.functions.get(&arg0.identifier).copied();
-                    let deps = context
-                        .candidate_dependencies
-                        .get(&arg1.identifier)
-                        .cloned();
-                    if let (Some(effect_func_id), Some(dep_elements)) = (effect_function, deps) {
-                        context.effects_cache.insert(
-                            arg0.identifier,
-                            EffectMetadata {
-                                effect_func_id,
-                                dep_elements,
-                            },
-                        );
-                    }
+            {
+                let effect_function = context.functions.get(&arg0.identifier).copied();
+                let deps = context
+                    .candidate_dependencies
+                    .get(&arg1.identifier)
+                    .cloned();
+                if let (Some(effect_func_id), Some(dep_elements)) = (effect_function, deps) {
+                    context.effects_cache.insert(
+                        arg0.identifier,
+                        EffectMetadata {
+                            effect_func_id,
+                            dep_elements,
+                        },
+                    );
                 }
+            }
 
             // Check if lvalue is useState type
             let lvalue_type = &types[identifiers[lvalue_id.0 as usize].type_.0 as usize];
@@ -580,27 +582,28 @@ fn record_instruction_derivations(
         }
         InstructionValue::MethodCall { property, args, .. } => {
             let prop_type = &types[identifiers[property.identifier.0 as usize].type_.0 as usize];
-            if is_use_effect_hook_type(prop_type) && args.len() == 2
+            if is_use_effect_hook_type(prop_type)
+                && args.len() == 2
                 && let (
                     react_compiler_hir::PlaceOrSpread::Place(arg0),
                     react_compiler_hir::PlaceOrSpread::Place(arg1),
                 ) = (&args[0], &args[1])
-                {
-                    let effect_function = context.functions.get(&arg0.identifier).copied();
-                    let deps = context
-                        .candidate_dependencies
-                        .get(&arg1.identifier)
-                        .cloned();
-                    if let (Some(effect_func_id), Some(dep_elements)) = (effect_function, deps) {
-                        context.effects_cache.insert(
-                            arg0.identifier,
-                            EffectMetadata {
-                                effect_func_id,
-                                dep_elements,
-                            },
-                        );
-                    }
+            {
+                let effect_function = context.functions.get(&arg0.identifier).copied();
+                let deps = context
+                    .candidate_dependencies
+                    .get(&arg1.identifier)
+                    .cloned();
+                if let (Some(effect_func_id), Some(dep_elements)) = (effect_function, deps) {
+                    context.effects_cache.insert(
+                        arg0.identifier,
+                        EffectMetadata {
+                            effect_func_id,
+                            dep_elements,
+                        },
+                    );
                 }
+            }
 
             // Check if lvalue is useState type
             let lvalue_type = &types[identifiers[lvalue_id.0 as usize].type_.0 as usize];
@@ -641,9 +644,10 @@ fn record_instruction_derivations(
             let root =
                 get_root_set_state(operand_id, &context.set_state_loads, &mut HashSet::new());
             if let Some(root_id) = root
-                && let Some(usages) = context.set_state_usages.get_mut(&root_id) {
-                    usages.insert(LocKey::from_loc(&operand_loc));
-                }
+                && let Some(usages) = context.set_state_usages.get_mut(&root_id)
+            {
+                usages.insert(LocKey::from_loc(&operand_loc));
+            }
         }
 
         if let Some(operand_metadata) = context.derivation_cache.cache.get(&operand_id) {
@@ -756,14 +760,15 @@ fn build_tree_node(
     };
 
     if source_metadata.is_state_source
-        && let Some(IdentifierName::Named(name)) = &source_metadata.place_name {
-            return vec![TreeNode {
-                name: name.clone(),
-                type_of_value: source_metadata.type_of_value,
-                is_source: true,
-                children: Vec::new(),
-            }];
-        }
+        && let Some(IdentifierName::Named(name)) = &source_metadata.place_name
+    {
+        return vec![TreeNode {
+            name: name.clone(),
+            type_of_value: source_metadata.type_of_value,
+            is_source: true,
+            children: Vec::new(),
+        }];
+    }
 
     let mut children: Vec<TreeNode> = Vec::new();
     let mut named_siblings: indexmap::IndexSet<String> = indexmap::IndexSet::new();
@@ -789,14 +794,15 @@ fn build_tree_node(
     }
 
     if let Some(IdentifierName::Named(name)) = &source_metadata.place_name
-        && !visited.contains(name) {
-            return vec![TreeNode {
-                name: name.clone(),
-                type_of_value: source_metadata.type_of_value,
-                is_source: source_metadata.is_state_source,
-                children,
-            }];
-        }
+        && !visited.contains(name)
+    {
+        return vec![TreeNode {
+            name: name.clone(),
+            type_of_value: source_metadata.type_of_value,
+            is_source: source_metadata.is_state_source,
+            children,
+        }];
+    }
 
     children
 }
@@ -960,9 +966,10 @@ fn validate_effect(
                         &mut HashSet::new(),
                     );
                     if let Some(root_id) = root
-                        && let Some(usages) = effect_set_state_usages.get_mut(&root_id) {
-                            usages.insert(LocKey::from_loc(&operand_loc));
-                        }
+                        && let Some(usages) = effect_set_state_usages.get_mut(&root_id)
+                    {
+                        usages.insert(LocKey::from_loc(&operand_loc));
+                    }
                 }
             }
 
@@ -1009,9 +1016,9 @@ fn validate_effect(
                         if let Some(cm) = callee_metadata
                             && (cm.type_of_value == TypeOfValue::FromProps
                                 || cm.type_of_value == TypeOfValue::FromPropsAndState)
-                            {
-                                return;
-                            }
+                        {
+                            return;
+                        }
 
                         if globals.contains(&callee.identifier) {
                             return;
@@ -1181,37 +1188,41 @@ pub fn validate_no_derived_computations_in_effects(
                     }
                     InstructionValue::CallExpression { callee, args, .. } => {
                         let callee_ty = &tys[ids[callee.identifier.0 as usize].type_.0 as usize];
-                        if is_use_effect_hook_type(callee_ty) && args.len() == 2
+                        if is_use_effect_hook_type(callee_ty)
+                            && args.len() == 2
                             && let (PlaceOrSpread::Place(arg0), PlaceOrSpread::Place(arg1)) =
                                 (&args[0], &args[1])
-                                && let (Some(&func_id), Some(dep_elements)) = (
-                                    functions_map.get(&arg0.identifier),
-                                    candidate_deps.get(&arg1.identifier),
-                                )
-                                    && !dep_elements.is_empty() {
-                                        let resolved: Vec<IdentifierId> = dep_elements
-                                            .iter()
-                                            .map(|d| locals_map.get(d).copied().unwrap_or(*d))
-                                            .collect();
-                                        result.push((func_id, resolved));
-                                    }
+                            && let (Some(&func_id), Some(dep_elements)) = (
+                                functions_map.get(&arg0.identifier),
+                                candidate_deps.get(&arg1.identifier),
+                            )
+                            && !dep_elements.is_empty()
+                        {
+                            let resolved: Vec<IdentifierId> = dep_elements
+                                .iter()
+                                .map(|d| locals_map.get(d).copied().unwrap_or(*d))
+                                .collect();
+                            result.push((func_id, resolved));
+                        }
                     }
                     InstructionValue::MethodCall { property, args, .. } => {
                         let callee_ty = &tys[ids[property.identifier.0 as usize].type_.0 as usize];
-                        if is_use_effect_hook_type(callee_ty) && args.len() == 2
+                        if is_use_effect_hook_type(callee_ty)
+                            && args.len() == 2
                             && let (PlaceOrSpread::Place(arg0), PlaceOrSpread::Place(arg1)) =
                                 (&args[0], &args[1])
-                                && let (Some(&func_id), Some(dep_elements)) = (
-                                    functions_map.get(&arg0.identifier),
-                                    candidate_deps.get(&arg1.identifier),
-                                )
-                                    && !dep_elements.is_empty() {
-                                        let resolved: Vec<IdentifierId> = dep_elements
-                                            .iter()
-                                            .map(|d| locals_map.get(d).copied().unwrap_or(*d))
-                                            .collect();
-                                        result.push((func_id, resolved));
-                                    }
+                            && let (Some(&func_id), Some(dep_elements)) = (
+                                functions_map.get(&arg0.identifier),
+                                candidate_deps.get(&arg1.identifier),
+                            )
+                            && !dep_elements.is_empty()
+                        {
+                            let resolved: Vec<IdentifierId> = dep_elements
+                                .iter()
+                                .map(|d| locals_map.get(d).copied().unwrap_or(*d))
+                                .collect();
+                            result.push((func_id, resolved));
+                        }
                     }
                     _ => {}
                 }
@@ -1322,21 +1333,23 @@ fn validate_effect_non_exp(
 
                     if let InstructionValue::CallExpression { callee, args, .. } = &instr.value {
                         let callee_ty = &tys[ids[callee.identifier.0 as usize].type_.0 as usize];
-                        if is_set_state_type(callee_ty) && args.len() == 1
-                            && let PlaceOrSpread::Place(arg) = &args[0] {
-                                if let Some(deps) = dep_values.get(&arg.identifier) {
-                                    let dep_set: HashSet<_> = deps.iter().collect();
-                                    if dep_set.len() == effect_deps.len() {
-                                        if let Some(loc) = callee.loc {
-                                            set_state_locs.push(loc);
-                                        }
-                                    } else {
-                                        return Vec::new();
+                        if is_set_state_type(callee_ty)
+                            && args.len() == 1
+                            && let PlaceOrSpread::Place(arg) = &args[0]
+                        {
+                            if let Some(deps) = dep_values.get(&arg.identifier) {
+                                let dep_set: HashSet<_> = deps.iter().collect();
+                                if dep_set.len() == effect_deps.len() {
+                                    if let Some(loc) = callee.loc {
+                                        set_state_locs.push(loc);
                                     }
                                 } else {
                                     return Vec::new();
                                 }
+                            } else {
+                                return Vec::new();
                             }
+                        }
                     }
                 }
                 _ => {

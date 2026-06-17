@@ -228,9 +228,11 @@ fn collect_fixture_paths(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf
         if path.is_dir() {
             collect_fixture_paths(&path, out);
         } else if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.ends_with(".js") && !name.ends_with(".flow.js") {
-                out.push(path);
-            }
+            && name.ends_with(".js")
+            && !name.ends_with(".flow.js")
+        {
+            out.push(path);
+        }
     }
 }
 

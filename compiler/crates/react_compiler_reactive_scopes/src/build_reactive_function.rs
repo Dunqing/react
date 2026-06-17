@@ -226,10 +226,9 @@ impl<'a> Context<'a> {
                 // (ownsBlock is boolean, so `!== null` is always true)
                 self.scheduled.remove(block);
                 self.scheduled.remove(continue_block);
-                if *owns_loop
-                    && let Some(lb) = loop_block {
-                        self.scheduled.remove(lb);
-                    }
+                if *owns_loop && let Some(lb) = loop_block {
+                    self.scheduled.remove(lb);
+                }
             }
             _ => {
                 self.scheduled.remove(&last.block());
@@ -288,16 +287,17 @@ impl<'a> Context<'a> {
                 continue_block,
                 ..
             } = target
-                && *continue_block == block {
-                    let kind = if has_preceding_loop {
-                        ReactiveTerminalTargetKind::Labeled
-                    } else if i == self.control_flow_stack.len() - 1 {
-                        ReactiveTerminalTargetKind::Implicit
-                    } else {
-                        ReactiveTerminalTargetKind::Unlabeled
-                    };
-                    return Some((*fallthrough_block, kind));
-                }
+                && *continue_block == block
+            {
+                let kind = if has_preceding_loop {
+                    ReactiveTerminalTargetKind::Labeled
+                } else if i == self.control_flow_stack.len() - 1 {
+                    ReactiveTerminalTargetKind::Implicit
+                } else {
+                    ReactiveTerminalTargetKind::Unlabeled
+                };
+                return Some((*fallthrough_block, kind));
+            }
             has_preceding_loop = has_preceding_loop || target.is_loop();
         }
         None
@@ -1105,16 +1105,17 @@ impl<'a, 'b> Driver<'a, 'b> {
 
         // If we've reached the fallthrough, stop
         if let Some(ft) = fallthrough
-            && block_id == ft {
-                return Err(CompilerDiagnostic::new(
-                    ErrorCategory::Invariant,
-                    format!(
-                        "Did not expect to reach the fallthrough of a value block (bb{})",
-                        block_id.0
-                    ),
-                    None,
-                ));
-            }
+            && block_id == ft
+        {
+            return Err(CompilerDiagnostic::new(
+                ErrorCategory::Invariant,
+                format!(
+                    "Did not expect to reach the fallthrough of a value block (bb{})",
+                    block_id.0
+                ),
+                None,
+            ));
+        }
 
         match &terminal {
             Terminal::Branch {
@@ -1508,18 +1509,14 @@ impl<'a, 'b> Driver<'a, 'b> {
         let mut inner_value = result.value;
 
         // Flatten nested SequenceExpressions
-        loop {
-            match inner_value {
-                ReactiveValue::SequenceExpression {
-                    instructions: seq_instrs,
-                    value,
-                    ..
-                } => {
-                    instructions.extend(seq_instrs);
-                    inner_value = *value;
-                }
-                _ => break,
-            }
+        while let ReactiveValue::SequenceExpression {
+            instructions: seq_instrs,
+            value,
+            ..
+        } = inner_value
+        {
+            instructions.extend(seq_instrs);
+            inner_value = *value;
         }
 
         // Only add the final instruction if the innermost value is not just a LoadLocal

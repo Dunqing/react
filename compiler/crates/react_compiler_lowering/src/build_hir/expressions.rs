@@ -255,9 +255,13 @@ pub(crate) fn lower_expression(
         // ---- TS wrappers ----
         oxc::Expression::TSNonNullExpression(ts) => lower_expression(builder, &ts.expression),
         oxc::Expression::TSInstantiationExpression(ts) => lower_expression(builder, &ts.expression),
-        oxc::Expression::TSAsExpression(ts) => {
-            lower_type_cast(builder, &ts.expression, "as", ts.type_annotation.span(), loc)
-        }
+        oxc::Expression::TSAsExpression(ts) => lower_type_cast(
+            builder,
+            &ts.expression,
+            "as",
+            ts.type_annotation.span(),
+            loc,
+        ),
         oxc::Expression::TSSatisfiesExpression(ts) => lower_type_cast(
             builder,
             &ts.expression,
@@ -265,9 +269,13 @@ pub(crate) fn lower_expression(
             ts.type_annotation.span(),
             loc,
         ),
-        oxc::Expression::TSTypeAssertion(ts) => {
-            lower_type_cast(builder, &ts.expression, "as", ts.type_annotation.span(), loc)
-        }
+        oxc::Expression::TSTypeAssertion(ts) => lower_type_cast(
+            builder,
+            &ts.expression,
+            "as",
+            ts.type_annotation.span(),
+            loc,
+        ),
 
         // ---- nested function / arrow expressions ----
         oxc::Expression::ArrowFunctionExpression(arrow) => {
@@ -775,10 +783,7 @@ pub(crate) fn lower_member_expression(
         oxc::MemberExpression::PrivateFieldExpression(_) => {
             // Private fields are not yet transcribed; bail gracefully with an
             // empty-string property so callers can continue.
-            builder.record_diagnostic(todo_diagnostic(
-                "member expression: private field",
-                loc,
-            ));
+            builder.record_diagnostic(todo_diagnostic("member expression: private field", loc));
             Ok(LoweredMemberExpression {
                 object,
                 property: MemberProperty::Literal(PropertyLiteral::String(String::new())),
@@ -1640,8 +1645,7 @@ fn lower_simple_assignment(
             let right = lower_expression_to_temporary(builder, &expr.right)?;
             let ident_loc = Some(builder.loc_of_span(ident.span));
             let symbol_id = sq::resolve_identifier_reference(builder.semantic(), ident);
-            let binding =
-                builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc)?;
+            let binding = builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc)?;
             match binding {
                 VariableBinding::Identifier {
                     identifier,
@@ -1855,8 +1859,7 @@ fn lower_compound_assignment(
                 },
             )?;
             let ident_loc = Some(builder.loc_of_span(ident.span));
-            let binding =
-                builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc)?;
+            let binding = builder.resolve_identifier_symbol(&ident.name, symbol_id, ident_loc)?;
             match binding {
                 VariableBinding::Identifier { identifier, .. } => {
                     let place = Place {

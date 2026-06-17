@@ -318,25 +318,26 @@ fn collect_temporaries(
             object, property, ..
         } => {
             if sidemap.react.contains(&object.identifier)
-                && let PropertyLiteral::String(prop_name) = property {
-                    if prop_name == "useMemo" {
-                        sidemap.manual_memos.insert(
-                            lvalue_id,
-                            ManualMemoCallee {
-                                kind: ManualMemoKind::UseMemo,
-                                load_instr_id: instr_id,
-                            },
-                        );
-                    } else if prop_name == "useCallback" {
-                        sidemap.manual_memos.insert(
-                            lvalue_id,
-                            ManualMemoCallee {
-                                kind: ManualMemoKind::UseCallback,
-                                load_instr_id: instr_id,
-                            },
-                        );
-                    }
+                && let PropertyLiteral::String(prop_name) = property
+            {
+                if prop_name == "useMemo" {
+                    sidemap.manual_memos.insert(
+                        lvalue_id,
+                        ManualMemoCallee {
+                            kind: ManualMemoKind::UseMemo,
+                            load_instr_id: instr_id,
+                        },
+                    );
+                } else if prop_name == "useCallback" {
+                    sidemap.manual_memos.insert(
+                        lvalue_id,
+                        ManualMemoCallee {
+                            kind: ManualMemoKind::UseCallback,
+                            load_instr_id: instr_id,
+                        },
+                    );
                 }
+            }
         }
         InstructionValue::ArrayExpression { elements, .. } => {
             // Check if all elements are Identifier (Place) - no spreads or holes
@@ -402,21 +403,21 @@ pub fn collect_maybe_memo_dependencies(
             property,
             loc,
             ..
-        } => {
-            maybe_deps.get(&object.identifier).map(|object_dep| ManualMemoDependency {
-                    root: object_dep.root.clone(),
-                    path: {
-                        let mut path = object_dep.path.clone();
-                        path.push(DependencyPathEntry {
-                            property: property.clone(),
-                            optional,
-                            loc: *loc,
-                        });
-                        path
-                    },
-                    loc: *loc,
-                })
-        }
+        } => maybe_deps
+            .get(&object.identifier)
+            .map(|object_dep| ManualMemoDependency {
+                root: object_dep.root.clone(),
+                path: {
+                    let mut path = object_dep.path.clone();
+                    path.push(DependencyPathEntry {
+                        property: property.clone(),
+                        optional,
+                        loc: *loc,
+                    });
+                    path
+                },
+                loc: *loc,
+            }),
         InstructionValue::LoadLocal { place, .. } | InstructionValue::LoadContext { place, .. } => {
             if let Some(source) = maybe_deps.get(&place.identifier) {
                 Some(source.clone())

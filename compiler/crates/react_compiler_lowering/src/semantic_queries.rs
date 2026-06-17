@@ -463,11 +463,7 @@ pub fn enclosing_function_scope(semantic: &Semantic, scope_id: ScopeId) -> Scope
 }
 
 /// True if `scope` is a (transitive) descendant of `ancestor`, or equal.
-pub fn is_descendant_or_self_scope(
-    semantic: &Semantic,
-    scope: ScopeId,
-    ancestor: ScopeId,
-) -> bool {
+pub fn is_descendant_or_self_scope(semantic: &Semantic, scope: ScopeId, ancestor: ScopeId) -> bool {
     let mut current = Some(scope);
     while let Some(id) = current {
         if id == ancestor {

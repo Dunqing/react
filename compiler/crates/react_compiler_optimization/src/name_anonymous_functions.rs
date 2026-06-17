@@ -96,9 +96,10 @@ fn apply_name_hints_to_instructions(
             name_hint,
             ..
         } = &mut instr.value
-            && let Some(new_name) = update_map.get(&lowered_func.func) {
-                *name_hint = Some((*new_name).clone());
-            }
+            && let Some(new_name) = update_map.get(&lowered_func.func)
+        {
+            *name_hint = Some((*new_name).clone());
+        }
     }
 }
 
@@ -182,10 +183,11 @@ fn name_anonymous_functions_impl(func: &HirFunction, env: &Environment) -> Vec<N
                         let node = &mut nodes[node_idx];
                         let var_ident = &env.identifiers[store_lvalue.place.identifier.0 as usize];
                         if node.generated_name.is_none()
-                            && let Some(IdentifierName::Named(ref var_name)) = var_ident.name {
-                                node.generated_name = Some(var_name.clone());
-                                functions.remove(&value.identifier);
-                            }
+                            && let Some(IdentifierName::Named(ref var_name)) = var_ident.name
+                        {
+                            node.generated_name = Some(var_name.clone());
+                            functions.remove(&value.identifier);
+                        }
                     }
                 }
                 InstructionValue::CallExpression { callee, args, .. } => {
@@ -257,7 +259,7 @@ fn handle_call(
     args: &[PlaceOrSpread],
     functions: &mut HashMap<IdentifierId, usize>,
     names: &HashMap<IdentifierId, String>,
-    nodes: &mut Vec<Node>,
+    nodes: &mut [Node],
 ) {
     let callee_ident = &env.identifiers[callee_id.0 as usize];
     let callee_ty = &env.types[callee_ident.type_.0 as usize];

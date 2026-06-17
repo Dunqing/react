@@ -57,23 +57,15 @@ fn unknown_statement_in_function_body_records_todo_bailout() {
     assert!(env.has_errors(), "expected a recorded Todo error");
 
     // The recorded error is a Todo (graceful bailout), not an Invariant/panic.
-    let has_todo = env
-        .errors()
-        .details
-        .iter()
-        .any(|d| match d {
-            react_compiler_diagnostics::CompilerErrorOrDiagnostic::Diagnostic(d) => {
-                d.category == ErrorCategory::Todo
-            }
-            react_compiler_diagnostics::CompilerErrorOrDiagnostic::ErrorDetail(d) => {
-                d.category == ErrorCategory::Todo
-            }
-        });
-    assert!(
-        has_todo,
-        "expected a Todo bailout, got: {:?}",
-        env.errors()
-    );
+    let has_todo = env.errors().details.iter().any(|d| match d {
+        react_compiler_diagnostics::CompilerErrorOrDiagnostic::Diagnostic(d) => {
+            d.category == ErrorCategory::Todo
+        }
+        react_compiler_diagnostics::CompilerErrorOrDiagnostic::ErrorDetail(d) => {
+            d.category == ErrorCategory::Todo
+        }
+    });
+    assert!(has_todo, "expected a Todo bailout, got: {:?}", env.errors());
 
     // The function shell still lowers (params/body block/return exist).
     assert_eq!(hir.id.as_deref(), Some("useValue"));

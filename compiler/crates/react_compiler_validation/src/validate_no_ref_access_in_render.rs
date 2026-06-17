@@ -941,23 +941,22 @@ fn validate_no_ref_access_in_render_impl(
                                             _ => (None, "none"),
                                         };
                                         if let Some(place) = place
-                                            && validation != "none" {
-                                                let key = format!(
-                                                    "{}:{}",
-                                                    place.identifier.0, validation
-                                                );
-                                                if visited_effects.insert(key) {
-                                                    if validation == "direct-ref" {
-                                                        validate_no_direct_ref_value_access(
-                                                            errors, place, ref_env,
-                                                        );
-                                                    } else {
-                                                        validate_no_ref_passed_to_function(
-                                                            errors, ref_env, place, place.loc,
-                                                        );
-                                                    }
+                                            && validation != "none"
+                                        {
+                                            let key =
+                                                format!("{}:{}", place.identifier.0, validation);
+                                            if visited_effects.insert(key) {
+                                                if validation == "direct-ref" {
+                                                    validate_no_direct_ref_value_access(
+                                                        errors, place, ref_env,
+                                                    );
+                                                } else {
+                                                    validate_no_ref_passed_to_function(
+                                                        errors, ref_env, place, place.loc,
+                                                    );
                                                 }
                                             }
+                                        }
                                     }
                                 } else {
                                     for operand in
@@ -1025,11 +1024,11 @@ fn validate_no_ref_access_in_render_impl(
                         let mut found_safe = false;
                         if matches!(&instr.value, InstructionValue::PropertyStore { .. })
                             && let Some(RefAccessType::Ref { ref_id }) = &target
-                                && let Some(pos) = safe_blocks.iter().position(|(_, r)| r == ref_id)
-                                {
-                                    safe_blocks.remove(pos);
-                                    found_safe = true;
-                                }
+                            && let Some(pos) = safe_blocks.iter().position(|(_, r)| r == ref_id)
+                        {
+                            safe_blocks.remove(pos);
+                            found_safe = true;
+                        }
                         if !found_safe {
                             validate_no_ref_update(errors, ref_env, object, instr.loc);
                         }
@@ -1210,9 +1209,10 @@ fn validate_no_ref_access_in_render_impl(
                 test, fallthrough, ..
             } = &block.terminal
                 && let Some(RefAccessType::Guard { ref_id }) = ref_env.get(test.identifier)
-                    && !safe_blocks.iter().any(|(_, r)| r == ref_id) {
-                        safe_blocks.push((*fallthrough, *ref_id));
-                    }
+                && !safe_blocks.iter().any(|(_, r)| r == ref_id)
+            {
+                safe_blocks.push((*fallthrough, *ref_id));
+            }
 
             // Process terminal operands
             for operand in &each_terminal_operand(&block.terminal) {

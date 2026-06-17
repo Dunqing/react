@@ -84,9 +84,10 @@ fn pre_resolve_globals(
     for &instr_id in func.body.blocks.values().flat_map(|b| &b.instructions) {
         let instr = &func.instructions[instr_id.0 as usize];
         if let InstructionValue::LoadGlobal { binding, loc, .. } = &instr.value
-            && let Some(global_type) = env.get_global_declaration(binding, *loc).ok().flatten() {
-                global_types.insert((function_key, instr_id), global_type);
-            }
+            && let Some(global_type) = env.get_global_declaration(binding, *loc).ok().flatten()
+        {
+            global_types.insert((function_key, instr_id), global_type);
+        }
     }
 }
 
@@ -178,9 +179,10 @@ fn resolve_property_type(
                 && let PropertyNameKind::Literal {
                     value: PropertyLiteral::String(s),
                 } = property_name
-                    && is_hook_name(s) {
-                        return Some(hook_type.clone());
-                    }
+                && is_hook_name(s)
+            {
+                return Some(hook_type.clone());
+            }
             return None;
         }
     };
@@ -192,9 +194,10 @@ fn resolve_property_type(
             if let PropertyNameKind::Literal {
                 value: PropertyLiteral::String(s),
             } = property_name
-                && is_hook_name(s) {
-                    return custom_hook_type.cloned();
-                }
+                && is_hook_name(s)
+            {
+                return custom_hook_type.cloned();
+            }
             return None;
         }
     };
@@ -299,27 +302,29 @@ fn generate(
     // Component params
     if func.fn_type == ReactFunctionType::Component {
         if let Some(first) = func.params.first()
-            && let ParamPattern::Place(place) = first {
-                let ty = get_type(place.identifier, &env.identifiers);
-                unifier.unify(
-                    ty,
-                    Type::Object {
-                        shape_id: Some(BUILT_IN_PROPS_ID.to_string()),
-                    },
-                    &env.shapes,
-                )?;
-            }
+            && let ParamPattern::Place(place) = first
+        {
+            let ty = get_type(place.identifier, &env.identifiers);
+            unifier.unify(
+                ty,
+                Type::Object {
+                    shape_id: Some(BUILT_IN_PROPS_ID.to_string()),
+                },
+                &env.shapes,
+            )?;
+        }
         if let Some(second) = func.params.get(1)
-            && let ParamPattern::Place(place) = second {
-                let ty = get_type(place.identifier, &env.identifiers);
-                unifier.unify(
-                    ty,
-                    Type::Object {
-                        shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
-                    },
-                    &env.shapes,
-                )?;
-            }
+            && let ParamPattern::Place(place) = second
+        {
+            let ty = get_type(place.identifier, &env.identifiers);
+            unifier.unify(
+                ty,
+                Type::Object {
+                    shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
+                },
+                &env.shapes,
+            )?;
+        }
     }
 
     // Pre-resolve LoadGlobal types for all functions (outer + inner). We do
@@ -422,27 +427,29 @@ fn generate_for_function_id(
     // Process params for component inner functions
     if inner.fn_type == ReactFunctionType::Component {
         if let Some(first) = inner.params.first()
-            && let ParamPattern::Place(place) = first {
-                let ty = get_type(place.identifier, identifiers);
-                unifier.unify(
-                    ty,
-                    Type::Object {
-                        shape_id: Some(BUILT_IN_PROPS_ID.to_string()),
-                    },
-                    shapes,
-                )?;
-            }
+            && let ParamPattern::Place(place) = first
+        {
+            let ty = get_type(place.identifier, identifiers);
+            unifier.unify(
+                ty,
+                Type::Object {
+                    shape_id: Some(BUILT_IN_PROPS_ID.to_string()),
+                },
+                shapes,
+            )?;
+        }
         if let Some(second) = inner.params.get(1)
-            && let ParamPattern::Place(place) = second {
-                let ty = get_type(place.identifier, identifiers);
-                unifier.unify(
-                    ty,
-                    Type::Object {
-                        shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
-                    },
-                    shapes,
-                )?;
-            }
+            && let ParamPattern::Place(place) = second
+        {
+            let ty = get_type(place.identifier, identifiers);
+            unifier.unify(
+                ty,
+                Type::Object {
+                    shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
+                },
+                shapes,
+            )?;
+        }
     }
 
     // TS creates a fresh `names` Map per recursive `generate` call, so inner
@@ -634,10 +641,11 @@ fn generate_instruction_types(
         InstructionValue::ObjectExpression { properties, .. } => {
             for prop in properties {
                 if let ObjectPropertyOrSpread::Property(obj_prop) = prop
-                    && let ObjectPropertyKey::Computed { name } = &obj_prop.key {
-                        let name_type = get_type(name.identifier, identifiers);
-                        unifier.unify(name_type, Type::Primitive, shapes)?;
-                    }
+                    && let ObjectPropertyKey::Computed { name } = &obj_prop.key
+                {
+                    let name_type = get_type(name.identifier, identifiers);
+                    unifier.unify(name_type, Type::Primitive, shapes)?;
+                }
             }
             unifier.unify(
                 left,
@@ -836,16 +844,17 @@ fn generate_instruction_types(
             if unifier.enable_treat_ref_like_identifiers_as_refs {
                 for prop in props {
                     if let JsxAttribute::Attribute { name, place } = prop
-                        && name == "ref" {
-                            let ref_type = get_type(place.identifier, identifiers);
-                            unifier.unify(
-                                ref_type,
-                                Type::Object {
-                                    shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
-                                },
-                                shapes,
-                            )?;
-                        }
+                        && name == "ref"
+                    {
+                        let ref_type = get_type(place.identifier, identifiers);
+                        unifier.unify(
+                            ref_type,
+                            Type::Object {
+                                shape_id: Some(BUILT_IN_USE_REF_ID.to_string()),
+                            },
+                            shapes,
+                        )?;
+                    }
                 }
             }
             unifier.unify(
@@ -980,7 +989,7 @@ fn apply_function(
 fn resolve_identifier(
     id: IdentifierId,
     identifiers: &mut [Identifier],
-    types: &mut Vec<Type>,
+    types: &mut [Type],
     unifier: &Unifier,
 ) {
     let type_id = identifiers[id.0 as usize].type_;
@@ -993,7 +1002,7 @@ fn resolve_identifier(
 fn apply_instruction_lvalues(
     value: &InstructionValue,
     identifiers: &mut [Identifier],
-    types: &mut Vec<Type>,
+    types: &mut [Type],
     unifier: &Unifier,
 ) {
     match value {
@@ -1055,7 +1064,7 @@ fn apply_instruction_lvalues(
 fn apply_instruction_operands(
     value: &InstructionValue,
     identifiers: &mut [Identifier],
-    types: &mut Vec<Type>,
+    types: &mut [Type],
     unifier: &Unifier,
 ) {
     match value {
@@ -1395,9 +1404,10 @@ impl Unifier {
                 ..
             },
         ) = (&t_a, &t_b)
-            && con_a == con_b {
-                self.unify_impl(*ret_a.clone(), *ret_b.clone(), shapes)?;
-            }
+            && con_a == con_b
+        {
+            self.unify_impl(*ret_a.clone(), *ret_b.clone(), shapes)?;
+        }
         Ok(())
     }
 
@@ -1423,10 +1433,11 @@ impl Unifier {
         }
 
         if let Type::TypeVar { id: ty_id } = &ty
-            && let Some(existing) = self.substitutions.get(ty_id).cloned() {
-                self.unify_impl(v, existing, shapes)?;
-                return Ok(());
-            }
+            && let Some(existing) = self.substitutions.get(ty_id).cloned()
+        {
+            self.unify_impl(v, existing, shapes)?;
+            return Ok(());
+        }
 
         if let Type::Phi { ref operands } = ty {
             if operands.is_empty() {
@@ -1493,9 +1504,10 @@ impl Unifier {
                 for operand in operands {
                     if let Type::TypeVar { id } = operand
                         && let Type::TypeVar { id: v_id } = v
-                            && id == v_id {
-                                continue; // skip self-reference
-                            }
+                        && id == v_id
+                    {
+                        continue; // skip self-reference
+                    }
                     let resolved = self.try_resolve_type(v, operand)?;
                     new_operands.push(resolved);
                 }
@@ -1551,9 +1563,10 @@ impl Unifier {
         }
 
         if let Type::TypeVar { id } = ty
-            && let Some(sub) = self.substitutions.get(id) {
-                return self.occurs_check(v, sub);
-            }
+            && let Some(sub) = self.substitutions.get(id)
+        {
+            return self.occurs_check(v, sub);
+        }
 
         if let Type::Phi { operands } = ty {
             return operands.iter().any(|o| self.occurs_check(v, o));
@@ -1568,9 +1581,10 @@ impl Unifier {
 
     fn get(&self, ty: &Type) -> Type {
         if let Type::TypeVar { id } = ty
-            && let Some(sub) = self.substitutions.get(id) {
-                return self.get(sub);
-            }
+            && let Some(sub) = self.substitutions.get(id)
+        {
+            return self.get(sub);
+        }
 
         if let Type::Phi { operands } = ty {
             return Type::Phi {

@@ -140,25 +140,26 @@ fn visit_scope(scope_block: &ReactiveScopeBlock, state: &mut VisitorState) {
 
     // After traversing, validate scope dependencies against manual memo deps
     if let Some(ref memo_state) = state.manual_memo_state
-        && let Some(ref deps_from_source) = memo_state.deps_from_source {
-            let scope = &state.env.scopes[scope_block.scope.0 as usize];
-            let deps = scope.dependencies.clone();
-            let memo_loc = memo_state.loc;
-            let decls = memo_state.decls.clone();
-            let deps_from_source = deps_from_source.clone();
-            let temporaries = state.temporaries.clone();
-            for dep in &deps {
-                validate_inferred_dep(
-                    dep.identifier,
-                    &dep.path,
-                    &temporaries,
-                    &decls,
-                    &deps_from_source,
-                    state.env,
-                    memo_loc,
-                );
-            }
+        && let Some(ref deps_from_source) = memo_state.deps_from_source
+    {
+        let scope = &state.env.scopes[scope_block.scope.0 as usize];
+        let deps = scope.dependencies.clone();
+        let memo_loc = memo_state.loc;
+        let decls = memo_state.decls.clone();
+        let deps_from_source = deps_from_source.clone();
+        let temporaries = state.temporaries.clone();
+        for dep in &deps {
+            validate_inferred_dep(
+                dep.identifier,
+                &dep.path,
+                &temporaries,
+                &decls,
+                &deps_from_source,
+                state.env,
+                memo_loc,
+            );
         }
+    }
 
     // Mark scope and merged scopes as completed
     let scope = &state.env.scopes[scope_block.scope.0 as usize];
@@ -214,9 +215,10 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
             for place in &operand_places {
                 let ident = &state.env.identifiers[place.identifier.0 as usize];
                 if let Some(scope_id) = ident.scope
-                    && !state.scopes.contains(&scope_id) && !state.pruned_scopes.contains(&scope_id)
-                    {
-                        let diag = CompilerDiagnostic::new(
+                    && !state.scopes.contains(&scope_id)
+                    && !state.pruned_scopes.contains(&scope_id)
+                {
+                    let diag = CompilerDiagnostic::new(
                             ErrorCategory::PreserveManualMemo,
                             "Existing memoization could not be preserved",
                             Some(
@@ -231,8 +233,8 @@ fn visit_instruction(instr: &ReactiveInstruction, state: &mut VisitorState) {
                             ),
                             identifier_name: None,
                         });
-                        state.env.record_diagnostic(diag);
-                    }
+                    state.env.record_diagnostic(diag);
+                }
             }
         }
         ReactiveValue::Instruction(InstructionValue::FinishMemoize {
@@ -342,9 +344,10 @@ fn record_temporaries(instr: &ReactiveInstruction, state: &mut VisitorState) {
     let lvalue = &instr.lvalue;
     let lv_id = lvalue.as_ref().map(|lv| lv.identifier);
     if let Some(id) = lv_id
-        && state.temporaries.contains_key(&id) {
-            return;
-        }
+        && state.temporaries.contains_key(&id)
+    {
+        return;
+    }
 
     if let Some(ref lvalue) = instr.lvalue {
         let lv_ident = &state.env.identifiers[lvalue.identifier.0 as usize];

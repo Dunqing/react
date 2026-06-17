@@ -108,10 +108,11 @@ impl<'a> ReactiveFunctionTransform for MergeTransform<'a> {
 
         // If parent has deps and they match, flatten the inner scope
         if let Some(parent_deps) = state.as_ref()
-            && are_equal_dependencies(parent_deps, &scope_deps, self.env) {
-                let instructions = std::mem::take(&mut scope.instructions);
-                return Ok(Transformed::ReplaceMany(instructions));
-            }
+            && are_equal_dependencies(parent_deps, &scope_deps, self.env)
+        {
+            let instructions = std::mem::take(&mut scope.instructions);
+            return Ok(Transformed::ReplaceMany(instructions));
+        }
         Ok(Transformed::Keep)
     }
 
@@ -143,22 +144,23 @@ impl<'a> MergeTransform<'a> {
         let mut current: Option<MergedScope> = None;
         let mut merged: Vec<MergedScope> = Vec::new();
 
-        let block_len = block.len();
-        for i in 0..block_len {
-            match &block[i] {
+        for (i, stmt) in block.iter().enumerate() {
+            match stmt {
                 ReactiveStatement::Terminal(_) => {
                     // Don't merge across terminals
                     if let Some(c) = current.take()
-                        && c.to > c.from + 1 {
-                            merged.push(c);
-                        }
+                        && c.to > c.from + 1
+                    {
+                        merged.push(c);
+                    }
                 }
                 ReactiveStatement::PrunedScope(_) => {
                     // Don't merge across pruned scopes
                     if let Some(c) = current.take()
-                        && c.to > c.from + 1 {
-                            merged.push(c);
-                        }
+                        && c.to > c.from + 1
+                    {
+                        merged.push(c);
+                    }
                 }
                 ReactiveStatement::Instruction(instr) => {
                     match &instr.value {
@@ -174,18 +176,19 @@ impl<'a> MergeTransform<'a> {
                                 | InstructionValue::TemplateLiteral { .. }
                                 | InstructionValue::UnaryExpression { .. } => {
                                     if let Some(ref mut c) = current
-                                        && let Some(lvalue) = &instr.lvalue {
-                                            let decl_id = self.env.identifiers
-                                                [lvalue.identifier.0 as usize]
+                                        && let Some(lvalue) = &instr.lvalue
+                                    {
+                                        let decl_id = self.env.identifiers
+                                            [lvalue.identifier.0 as usize]
+                                            .declaration_id;
+                                        c.lvalues.insert(decl_id);
+                                        if let InstructionValue::LoadLocal { place, .. } = iv {
+                                            let src_decl = self.env.identifiers
+                                                [place.identifier.0 as usize]
                                                 .declaration_id;
-                                            c.lvalues.insert(decl_id);
-                                            if let InstructionValue::LoadLocal { place, .. } = iv {
-                                                let src_decl = self.env.identifiers
-                                                    [place.identifier.0 as usize]
-                                                    .declaration_id;
-                                                self.temporaries.insert(decl_id, src_decl);
-                                            }
+                                            self.temporaries.insert(decl_id, src_decl);
                                         }
+                                    }
                                 }
                                 InstructionValue::StoreLocal { lvalue, value, .. } => {
                                     if let Some(ref mut c) = current {
@@ -224,18 +227,20 @@ impl<'a> MergeTransform<'a> {
                                 _ => {
                                     // Other instructions prevent merging
                                     if let Some(c) = current.take()
-                                        && c.to > c.from + 1 {
-                                            merged.push(c);
-                                        }
+                                        && c.to > c.from + 1
+                                    {
+                                        merged.push(c);
+                                    }
                                 }
                             }
                         }
                         _ => {
                             // Non-Instruction reactive values prevent merging
                             if let Some(c) = current.take()
-                                && c.to > c.from + 1 {
-                                    merged.push(c);
-                                }
+                                && c.to > c.from + 1
+                            {
+                                merged.push(c);
+                            }
                         }
                     }
                 }
@@ -322,9 +327,10 @@ impl<'a> MergeTransform<'a> {
         }
         // Flush remaining
         if let Some(c) = current.take()
-            && c.to > c.from + 1 {
-                merged.push(c);
-            }
+            && c.to > c.from + 1
+        {
+            merged.push(c);
+        }
 
         // Pass 3: apply merges
         if merged.is_empty() {
@@ -417,9 +423,10 @@ fn are_lvalues_last_used_by_scope(
     let range_end = env.scopes[scope_id.0 as usize].range.end;
     for lvalue in lvalues {
         if let Some(&last_used_at) = last_usage.get(lvalue)
-            && last_used_at >= range_end {
-                return false;
-            }
+            && last_used_at >= range_end
+        {
+            return false;
+        }
     }
     true
 }
@@ -489,18 +496,14 @@ fn can_merge_scopes(
 /// Check if a type is always invalidating (guaranteed to change when inputs change).
 pub fn is_always_invalidating_type(ty: &Type) -> bool {
     match ty {
-        Type::Object { shape_id } => {
-            if let Some(id) = shape_id {
-                matches!(
-                    id.as_str(),
-                    s if s == BUILT_IN_ARRAY_ID
-                        || s == BUILT_IN_OBJECT_ID
-                        || s == BUILT_IN_FUNCTION_ID
-                        || s == BUILT_IN_JSX_ID
-                )
-            } else {
-                false
-            }
+        Type::Object { shape_id: Some(id) } => {
+            matches!(
+                id.as_str(),
+                s if s == BUILT_IN_ARRAY_ID
+                    || s == BUILT_IN_OBJECT_ID
+                    || s == BUILT_IN_FUNCTION_ID
+                    || s == BUILT_IN_JSX_ID
+            )
         }
         Type::Function { .. } => true,
         _ => false,

@@ -207,7 +207,7 @@ fn outline_jsx_impl(
 fn process_and_outline_jsx(
     func: &mut HirFunction,
     env: &mut Environment,
-    jsx_group: &mut Vec<JsxInstrInfo>,
+    jsx_group: &mut [JsxInstrInfo],
     globals: &HashMap<IdentifierId, usize>,
     rewrite_instr: &mut HashMap<EvaluationOrder, Vec<Instruction>>,
     outlined_fns: &mut Vec<HirFunction>,
@@ -501,10 +501,11 @@ fn emit_load_globals(
     for info in jsx_group {
         let instr = &func.instructions[info.instr_idx];
         if let InstructionValue::JsxExpression { tag, .. } = &instr.value
-            && let JsxTag::Place(tag_place) = tag {
-                let global_instr_idx = globals.get(&tag_place.identifier)?;
-                instructions.push(func.instructions[*global_instr_idx].clone());
-            }
+            && let JsxTag::Place(tag_place) = tag
+        {
+            let global_instr_idx = globals.get(&tag_place.identifier)?;
+            instructions.push(func.instructions[*global_instr_idx].clone());
+        }
     }
     Some(instructions)
 }

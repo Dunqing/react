@@ -48,8 +48,7 @@ pub struct HookConfig {
     pub transitive_mixed_data: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExhaustiveEffectDepsMode {
     #[serde(rename = "off")]
     #[default]
@@ -61,7 +60,6 @@ pub enum ExhaustiveEffectDepsMode {
     #[serde(rename = "extra-only")]
     ExtraOnly,
 }
-
 
 fn default_true() -> bool {
     true

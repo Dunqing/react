@@ -195,9 +195,10 @@ impl ProgramContext {
     ) -> NonLocalImportSpecifier {
         // Check if already imported
         if let Some(module_imports) = self.imports.get(module)
-            && let Some(existing) = module_imports.get(specifier) {
-                return existing.clone();
-            }
+            && let Some(existing) = module_imports.get(specifier)
+        {
+            return existing.clone();
+        }
 
         let name = self.new_uid(name_hint.unwrap_or(specifier));
         let binding = NonLocalImportSpecifier {

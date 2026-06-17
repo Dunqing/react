@@ -219,8 +219,7 @@ pub(crate) fn emit_hoists(
             .scoping()
             .symbol_name(symbol_id)
             .to_string();
-        let binding =
-            builder.resolve_identifier_symbol(&name, Some(symbol_id), Some(loc))?;
+        let binding = builder.resolve_identifier_symbol(&name, Some(symbol_id), Some(loc))?;
         let identifier = match binding {
             VariableBinding::Identifier { identifier, .. } => identifier,
             _ => {

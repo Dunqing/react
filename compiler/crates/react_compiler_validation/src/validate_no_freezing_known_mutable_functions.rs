@@ -175,39 +175,40 @@ fn check_operand_for_freeze_violation(
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     if operand.effect == Effect::Freeze
-        && let Some(mutation_info) = context_mutation_effects.get(&operand.identifier) {
-            let identifier = &identifiers[mutation_info.value_identifier.0 as usize];
-            let variable_name = match &identifier.name {
-                Some(IdentifierName::Named(name)) => format!("`{}`", name),
-                _ => "a local variable".to_string(),
-            };
+        && let Some(mutation_info) = context_mutation_effects.get(&operand.identifier)
+    {
+        let identifier = &identifiers[mutation_info.value_identifier.0 as usize];
+        let variable_name = match &identifier.name {
+            Some(IdentifierName::Named(name)) => format!("`{}`", name),
+            _ => "a local variable".to_string(),
+        };
 
-            diagnostics.push(
-                CompilerDiagnostic::new(
-                    ErrorCategory::Immutability,
-                    "Cannot modify local variables after render completes",
-                    Some(format!(
-                        "This argument is a function which may reassign or mutate {} after render, \
+        diagnostics.push(
+            CompilerDiagnostic::new(
+                ErrorCategory::Immutability,
+                "Cannot modify local variables after render completes",
+                Some(format!(
+                    "This argument is a function which may reassign or mutate {} after render, \
                          which can cause inconsistent behavior on subsequent renders. \
                          Consider using state instead",
-                        variable_name
-                    )),
-                )
-                .with_detail(CompilerDiagnosticDetail::Error {
-                    loc: operand.loc,
-                    message: Some(format!(
-                        "This function may (indirectly) reassign or modify {} after render",
-                        variable_name
-                    )),
-                    identifier_name: None,
-                })
-                .with_detail(CompilerDiagnosticDetail::Error {
-                    loc: mutation_info.value_loc,
-                    message: Some(format!("This modifies {}", variable_name)),
-                    identifier_name: None,
-                }),
-            );
-        }
+                    variable_name
+                )),
+            )
+            .with_detail(CompilerDiagnosticDetail::Error {
+                loc: operand.loc,
+                message: Some(format!(
+                    "This function may (indirectly) reassign or modify {} after render",
+                    variable_name
+                )),
+                identifier_name: None,
+            })
+            .with_detail(CompilerDiagnosticDetail::Error {
+                loc: mutation_info.value_loc,
+                message: Some(format!("This modifies {}", variable_name)),
+                identifier_name: None,
+            }),
+        );
+    }
 }
 
 /// Check if an identifier's type is a ref or ref-like mutable type.

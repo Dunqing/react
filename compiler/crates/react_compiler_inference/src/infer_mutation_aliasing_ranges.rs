@@ -272,9 +272,10 @@ impl AliasingState {
             let current = entry.place;
             let previous_kind = seen.get(&current).copied();
             if let Some(prev) = previous_kind
-                && prev >= entry.kind {
-                    continue;
-                }
+                && prev >= entry.kind
+            {
+                continue;
+            }
             seen.insert(current, entry.kind);
 
             let node = match self.nodes.get_mut(&current) {
@@ -293,10 +294,12 @@ impl AliasingState {
             }
 
             if let NodeValue::Function { function_id } = &node.value
-                && node.transitive.is_none() && node.local.is_none()
-                    && should_record_errors {
-                        append_function_errors(env, *function_id);
-                    }
+                && node.transitive.is_none()
+                && node.local.is_none()
+                && should_record_errors
+            {
+                append_function_errors(env, *function_id);
+            }
 
             if entry.transitive {
                 match &node.transitive {
@@ -738,15 +741,17 @@ pub fn infer_mutation_aliasing_ranges(
             react_compiler_hir::ParamPattern::Spread(s) => &s.place,
         };
         if let Some(node) = state.nodes.get(&place.identifier)
-            && (node.local.is_some() || node.transitive.is_some()) {
-                captured_params.insert(place.identifier);
-            }
+            && (node.local.is_some() || node.transitive.is_some())
+        {
+            captured_params.insert(place.identifier);
+        }
     }
     for ctx in &func.context {
         if let Some(node) = state.nodes.get(&ctx.identifier)
-            && (node.local.is_some() || node.transitive.is_some()) {
-                captured_params.insert(ctx.identifier);
-            }
+            && (node.local.is_some() || node.transitive.is_some())
+        {
+            captured_params.insert(ctx.identifier);
+        }
     }
 
     // Now mutate the effects on params/context in place
@@ -1085,8 +1090,7 @@ pub fn infer_mutation_aliasing_ranges(
             false, // never record errors for simulated mutations
         );
 
-        for j in 0..tracked.len() {
-            let from = &tracked[j];
+        for from in tracked.iter() {
             if from.identifier == into.identifier || from.identifier == returns_identifier_id {
                 continue;
             }

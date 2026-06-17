@@ -111,18 +111,18 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
     ) -> Result<(), CompilerError> {
         if let Some(kind) = state.uninitialized.get(&place.identifier)
             && let UninitializedKind::Func { definition } = kind
-                && *definition != Some(place.identifier) {
-                    let mut err = CompilerError::new();
-                    err.push_error_detail(
-                        CompilerErrorDetail::new(
-                            ErrorCategory::Todo,
-                            "[PruneHoistedContexts] Rewrite hoisted function references"
-                                .to_string(),
-                        )
-                        .with_loc(place.loc),
-                    );
-                    return Err(err);
-                }
+            && *definition != Some(place.identifier)
+        {
+            let mut err = CompilerError::new();
+            err.push_error_detail(
+                CompilerErrorDetail::new(
+                    ErrorCategory::Todo,
+                    "[PruneHoistedContexts] Rewrite hoisted function references".to_string(),
+                )
+                .with_loc(place.loc),
+            );
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -151,44 +151,44 @@ impl<'a> ReactiveFunctionTransform for Transform<'a> {
 
         if let ReactiveValue::Instruction(InstructionValue::StoreContext { lvalue, .. }) =
             &mut instruction.value
-            && lvalue.kind != InstructionKind::Reassign {
-                let lvalue_id = lvalue.place.identifier;
-                let is_declared_by_scope = state.find_in_active_scopes(lvalue_id);
-                if is_declared_by_scope {
-                    if lvalue.kind == InstructionKind::Let || lvalue.kind == InstructionKind::Const
-                    {
-                        lvalue.kind = InstructionKind::Reassign;
-                    } else if lvalue.kind == InstructionKind::Function {
-                        if let Some(kind) = state.uninitialized.get(&lvalue_id) {
-                            if !matches!(kind, UninitializedKind::Func { .. }) {
-                                let mut err = CompilerError::new();
-                                err.push_error_detail(
-                                    CompilerErrorDetail::new(
-                                        ErrorCategory::Invariant,
-                                        "[PruneHoistedContexts] Unexpected hoisted function"
-                                            .to_string(),
-                                    )
-                                    .with_loc(instruction.loc),
-                                );
-                                return Err(err);
-                            }
-                            // References to hoisted functions are now "safe" as
-                            // variable assignments have finished.
-                            state.uninitialized.remove(&lvalue_id);
+            && lvalue.kind != InstructionKind::Reassign
+        {
+            let lvalue_id = lvalue.place.identifier;
+            let is_declared_by_scope = state.find_in_active_scopes(lvalue_id);
+            if is_declared_by_scope {
+                if lvalue.kind == InstructionKind::Let || lvalue.kind == InstructionKind::Const {
+                    lvalue.kind = InstructionKind::Reassign;
+                } else if lvalue.kind == InstructionKind::Function {
+                    if let Some(kind) = state.uninitialized.get(&lvalue_id) {
+                        if !matches!(kind, UninitializedKind::Func { .. }) {
+                            let mut err = CompilerError::new();
+                            err.push_error_detail(
+                                CompilerErrorDetail::new(
+                                    ErrorCategory::Invariant,
+                                    "[PruneHoistedContexts] Unexpected hoisted function"
+                                        .to_string(),
+                                )
+                                .with_loc(instruction.loc),
+                            );
+                            return Err(err);
                         }
-                    } else {
-                        let mut err = CompilerError::new();
-                        err.push_error_detail(
-                            CompilerErrorDetail::new(
-                                ErrorCategory::Todo,
-                                "[PruneHoistedContexts] Unexpected kind".to_string(),
-                            )
-                            .with_loc(instruction.loc),
-                        );
-                        return Err(err);
+                        // References to hoisted functions are now "safe" as
+                        // variable assignments have finished.
+                        state.uninitialized.remove(&lvalue_id);
                     }
+                } else {
+                    let mut err = CompilerError::new();
+                    err.push_error_detail(
+                        CompilerErrorDetail::new(
+                            ErrorCategory::Todo,
+                            "[PruneHoistedContexts] Unexpected kind".to_string(),
+                        )
+                        .with_loc(instruction.loc),
+                    );
+                    return Err(err);
                 }
             }
+        }
 
         self.visit_instruction(instruction, state)?;
         Ok(Transformed::Keep)

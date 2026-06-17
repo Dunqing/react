@@ -1,9 +1,7 @@
 use react_compiler_diagnostics::CompilerError;
 use react_compiler_hir::environment::Environment;
 use react_compiler_hir::print::{self, PrintFormatter};
-use react_compiler_hir::{
-    BasicBlock, BlockId, HirFunction, Instruction, ParamPattern, Terminal,
-};
+use react_compiler_hir::{BasicBlock, BlockId, HirFunction, Instruction, ParamPattern, Terminal};
 
 // =============================================================================
 // DebugPrinter struct — thin wrapper around PrintFormatter for HIR-specific logic
