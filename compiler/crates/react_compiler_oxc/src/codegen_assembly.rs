@@ -22,6 +22,9 @@
 //! gating import is injected after the `_c` import. Mirrors
 //! `insertGatedFunctionDeclaration` in `Entrypoint/Gating.ts`.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
+
 use oxc_allocator::Allocator;
 use oxc_allocator::Box as ArenaBox;
 use oxc_ast::AstBuilder;
@@ -107,11 +110,9 @@ pub fn assemble_and_print(
     let (outlined, spanned): (Vec<CompiledNode<'_>>, Vec<CompiledNode<'_>>) =
         compiled.into_iter().partition(|c| c.span == (0, 0));
 
-    let mut outlined_by_parent: std::collections::HashMap<u32, Vec<CompiledNode<'_>>> =
-        std::collections::HashMap::new();
+    let mut outlined_by_parent: HashMap<u32, Vec<CompiledNode<'_>>> = HashMap::new();
     let mut orphan_outlined: Vec<CompiledNode<'_>> = Vec::new();
-    let spanned_starts: std::collections::HashSet<u32> =
-        spanned.iter().map(|c| c.span.0).collect();
+    let spanned_starts: HashSet<u32> = spanned.iter().map(|c| c.span.0).collect();
     for node in outlined {
         match node.insert_after {
             Some(parent_span) if spanned_starts.contains(&parent_span.0) => {
@@ -183,10 +184,10 @@ fn splice_functions<'a>(
     program: &mut oxc::Program<'a>,
     compiled: Vec<CompiledNode<'a>>,
     gating_imports: &mut Vec<GatingImport>,
-    outlined_by_parent: &mut std::collections::HashMap<u32, Vec<CompiledNode<'a>>>,
+    outlined_by_parent: &mut HashMap<u32, Vec<CompiledNode<'a>>>,
 ) {
     // Map span.start -> compiled node, consumed as we walk the body.
-    let mut by_start: std::collections::HashMap<u32, CompiledNode<'a>> =
+    let mut by_start: HashMap<u32, CompiledNode<'a>> =
         compiled.into_iter().map(|c| (c.span.0, c)).collect();
 
     // Rebuild the body, since gated functions can expand into multiple
@@ -222,7 +223,7 @@ fn emit_outlined_children<'a>(
     builder: &AstBuilder<'a>,
     body: &mut oxc_allocator::Vec<'a, oxc::Statement<'a>>,
     parent_start: u32,
-    outlined_by_parent: &mut std::collections::HashMap<u32, Vec<CompiledNode<'a>>>,
+    outlined_by_parent: &mut HashMap<u32, Vec<CompiledNode<'a>>>,
 ) {
     if let Some(children) = outlined_by_parent.remove(&parent_start) {
         for child in children {
@@ -478,7 +479,7 @@ fn dispatcher_args<'a>(
 fn try_splice_nested<'a>(
     builder: &AstBuilder<'a>,
     stmt: &mut oxc::Statement<'a>,
-    by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
+    by_start: &mut HashMap<u32, CompiledNode<'a>>,
     gating_imports: &mut Vec<GatingImport>,
 ) -> Vec<u32> {
     match stmt {
@@ -575,7 +576,7 @@ fn try_splice_nested<'a>(
 fn splice_into_init<'a>(
     builder: &AstBuilder<'a>,
     expr: &mut oxc::Expression<'a>,
-    by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
+    by_start: &mut HashMap<u32, CompiledNode<'a>>,
     gating_imports: &mut Vec<GatingImport>,
 ) -> Option<u32> {
     // Direct function literal at this position.
@@ -606,7 +607,7 @@ fn splice_into_init<'a>(
 fn splice_in_expression<'a>(
     builder: &AstBuilder<'a>,
     expr: &mut oxc::Expression<'a>,
-    by_start: &mut std::collections::HashMap<u32, CompiledNode<'a>>,
+    by_start: &mut HashMap<u32, CompiledNode<'a>>,
     gating_imports: &mut Vec<GatingImport>,
 ) -> Vec<u32> {
     if let oxc::Expression::ObjectExpression(obj) = expr {
