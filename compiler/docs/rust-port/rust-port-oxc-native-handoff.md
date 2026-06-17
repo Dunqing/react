@@ -1,7 +1,14 @@
 # React Compiler — Native Oxc Migration: Status & Handoff
 
-**Branch:** `oxc-migration` (a deliberate fork; diverges from upstream #36743, which moved OXC/SWC
-integration out of this repo — see [[react-compiler-oxc-migration]] memory).
+**TL;DR.** The React Compiler's Rust port now runs **fully natively on Oxc** (no Babel, no hand-written
+AST): **96.4% semantic parity** (1738/1803 fixtures) with the TypeScript compiler, **~8× faster than
+TS/Babel** and **~6× faster than the prior Babel-AST Rust port**, **~22% smaller binary**, on
+**oxc 0.136 / rustc 1.94**, clippy-clean, and synced with upstream `main`. The remaining ~65 fixtures are
+deferred opt-in features (fbt, SSR, JSX-outlining, instrumentation) plus a scattered single-cause tail.
+
+**Branch:** `oxc-migration` — a **deliberate fork** that diverges from upstream React #36743 (which removed
+in-repo OXC/SWC integration, intending those to live in the OXC project and consume `react_compiler` as a
+crate). This branch instead makes Oxc the compiler's *native* AST + scope core.
 
 ## What this migration did
 
@@ -121,6 +128,29 @@ passthrough printing, `enableNameAnonymousFunctions` naming, lone-surrogate stri
 (`lone-surrogate-string-values.js` — an oxc_codegen printer-level issue), `jsx-preserve-whitespace.tsx`
 multi-line text line-join, etc.
 
+## Path to oxc integration (#36743)
+
+Upstream's stated direction is for the OXC integration to live in the OXC project, consuming
+`react_compiler` as a crate. Assessment of what that takes:
+
+- **Mechanical (low risk):** edition 2021→2024 + toolchain 1.94→1.96 (oxc's); switch oxc deps from
+  crates.io `"0.136.0"` to oxc's workspace `path` deps — oxc HEAD == 0.136.0 today, so **no API
+  reconciliation right now** (in-tree thereafter means tracking oxc HEAD as it moves). Strip the
+  JS/NAPI-oriented surface (serde `CompileResult`, `ordered_log` JSON, the e2e CLI) to a clean Rust API.
+- **The lint rule *unblocks* in-tree:** the `oxc_linter::Rule` we deferred was blocked only by
+  `oxc_linter` not being on crates.io — in-tree the `Rule` trait + `declare_oxc_lint!` are available.
+- **Real blockers:**
+  1. **No home for a heavyweight transform.** The compiler *rewrites* code (memoization); oxc lint rules
+     emit diagnostics and oxc transformers do syntax-lowering — neither fits a ~74k-line optimizing
+     transform. It'd be its own crate(s) that oxc apps consume; oxc has no existing "userland optimizing
+     transform" product to host it.
+  2. **The oracle can't follow.** Correctness is validated against the in-process **TypeScript** React
+     compiler; oxc has no React/Node toolchain to run it. Testing would have to become self-contained
+     snapshots.
+  3. **Scope + governance.** ~74k lines / 12 crates, and this is a **fork** of Meta's compiler diverging
+     from React upstream. Publish-as-crate (ownership?) vs vendor-into-oxc, and who keeps it in sync with
+     React's evolving compiler semantics — a cross-project decision, not a code task.
+
 ## Working notes for whoever continues
 
 - The original react_compiler_ast lowering/codegen LOGIC (deleted) is the transcription reference in git:
@@ -129,6 +159,8 @@ multi-line text line-join, etc.
   under `compiler/packages/babel-plugin-react-compiler/src/` is the ultimate reference.
 - Driving metric for any change: keep `compare-code.ts` SEMANTIC-pass from regressing; a lowering/inference
   fix should hold or raise `compare-hir.ts` HIR-MATCH. Use `--list` + single-fixture diff to localize.
-- oxc 0.121 specifics that bit repeatedly: `BindingPattern` IS the enum (no `.kind`); `MemberExpression`
-  split into Static/Computed/PrivateField; optional chaining is one `ChainExpression` over plain members
-  (NOT Babel per-link nesting); `symbol_id`/`reference_id` are `Cell`s; `oxc_ast::Expression` isn't `Clone`.
+- oxc API specifics that bit repeatedly (held 0.121→0.136): `BindingPattern` IS the enum (no `.kind`);
+  `MemberExpression` split into Static/Computed/PrivateField; optional chaining is one `ChainExpression`
+  over plain members (NOT Babel per-link nesting); `symbol_id`/`reference_id` are `Cell`s;
+  `oxc_ast::Expression` isn't `Clone`. (0.136 deltas: `Atom`→`oxc_ast::ast::Str`, `AstBuilder::atom`→`str`,
+  `SemanticBuilder` needs `.with_build_nodes(true)`, `ParserReturn/SemanticBuilderReturn.errors`→`.diagnostics`.)
