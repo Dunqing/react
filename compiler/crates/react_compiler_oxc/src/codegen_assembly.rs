@@ -679,12 +679,12 @@ fn call_no_args<'a>(builder: &AstBuilder<'a>, name: &str) -> oxc::Expression<'a>
     )
 }
 
-/// `const <name> = <init>;`.
-fn const_decl<'a>(
+/// `const <name> = <init>` as a single-declarator `VariableDeclaration`.
+fn const_var_decl<'a>(
     builder: &AstBuilder<'a>,
     name: &str,
     init: oxc::Expression<'a>,
-) -> oxc::Statement<'a> {
+) -> oxc::VariableDeclaration<'a> {
     let pat = builder.binding_pattern_binding_identifier(SPAN, builder.str(name));
     let declarator = builder.variable_declarator(
         SPAN,
@@ -696,8 +696,16 @@ fn const_decl<'a>(
     );
     let mut decls = builder.vec();
     decls.push(declarator);
-    let decl =
-        builder.variable_declaration(SPAN, oxc::VariableDeclarationKind::Const, decls, false);
+    builder.variable_declaration(SPAN, oxc::VariableDeclarationKind::Const, decls, false)
+}
+
+/// `const <name> = <init>;`.
+fn const_decl<'a>(
+    builder: &AstBuilder<'a>,
+    name: &str,
+    init: oxc::Expression<'a>,
+) -> oxc::Statement<'a> {
+    let decl = const_var_decl(builder, name, init);
     oxc::Statement::VariableDeclaration(builder.alloc(decl))
 }
 
@@ -707,19 +715,7 @@ fn export_const_decl<'a>(
     name: &str,
     init: oxc::Expression<'a>,
 ) -> oxc::Statement<'a> {
-    let pat = builder.binding_pattern_binding_identifier(SPAN, builder.str(name));
-    let declarator = builder.variable_declarator(
-        SPAN,
-        oxc::VariableDeclarationKind::Const,
-        pat,
-        None::<ArenaBox<'a, oxc::TSTypeAnnotation<'a>>>,
-        Some(init),
-        false,
-    );
-    let mut decls = builder.vec();
-    decls.push(declarator);
-    let var_decl =
-        builder.variable_declaration(SPAN, oxc::VariableDeclarationKind::Const, decls, false);
+    let var_decl = const_var_decl(builder, name, init);
     let export = builder.export_named_declaration(
         SPAN,
         Some(oxc::Declaration::VariableDeclaration(
@@ -938,6 +934,34 @@ fn function_expression<'a>(
     }
 }
 
+/// Build `import { <imported> as <local> } from "<source>";` as a statement.
+fn build_named_import<'a>(
+    builder: &AstBuilder<'a>,
+    source: &str,
+    imported: &str,
+    local: &str,
+) -> oxc::Statement<'a> {
+    let imported = oxc::ModuleExportName::IdentifierName(
+        builder.identifier_name(SPAN, builder.str(imported)),
+    );
+    let local = builder.binding_identifier(SPAN, builder.str(local));
+    let specifier = builder.import_specifier(SPAN, imported, local, oxc::ImportOrExportKind::Value);
+    let mut specifiers = builder.vec();
+    specifiers.push(oxc::ImportDeclarationSpecifier::ImportSpecifier(
+        builder.alloc(specifier),
+    ));
+    let source = builder.string_literal(SPAN, builder.str(source), None);
+    let import_decl = builder.import_declaration(
+        SPAN,
+        Some(specifiers),
+        source,
+        None,
+        None::<ArenaBox<'a, oxc::WithClause<'a>>>,
+        oxc::ImportOrExportKind::Value,
+    );
+    oxc::Statement::ImportDeclaration(builder.alloc(import_decl))
+}
+
 /// Prepend the runtime cache import to the program body. In `module` source
 /// type, emits `import { c as _c } from "<runtime_module>";`. In `script`
 /// source type, emits `const { c: _c } = require("<runtime_module>");`
@@ -954,24 +978,7 @@ fn inject_memo_import<'a>(
         program.body.insert(0, stmt);
         return;
     }
-    let imported =
-        oxc::ModuleExportName::IdentifierName(builder.identifier_name(SPAN, builder.str("c")));
-    let local = builder.binding_identifier(SPAN, builder.str(MEMO_LOCAL_NAME));
-    let specifier = builder.import_specifier(SPAN, imported, local, oxc::ImportOrExportKind::Value);
-    let mut specifiers = builder.vec();
-    specifiers.push(oxc::ImportDeclarationSpecifier::ImportSpecifier(
-        builder.alloc(specifier),
-    ));
-    let source = builder.string_literal(SPAN, builder.str(runtime_module), None);
-    let import_decl = builder.import_declaration(
-        SPAN,
-        Some(specifiers),
-        source,
-        None,
-        None::<ArenaBox<'a, oxc::WithClause<'a>>>,
-        oxc::ImportOrExportKind::Value,
-    );
-    let import_stmt = oxc::Statement::ImportDeclaration(builder.alloc(import_decl));
+    let import_stmt = build_named_import(builder, runtime_module, "c", MEMO_LOCAL_NAME);
     program.body.insert(0, import_stmt);
 }
 
@@ -1063,26 +1070,7 @@ fn inject_gating_imports<'a>(
     };
 
     for gi in seen {
-        let imported = oxc::ModuleExportName::IdentifierName(
-            builder.identifier_name(SPAN, builder.str(&gi.imported)),
-        );
-        let local = builder.binding_identifier(SPAN, builder.str(&gi.local));
-        let specifier =
-            builder.import_specifier(SPAN, imported, local, oxc::ImportOrExportKind::Value);
-        let mut specifiers = builder.vec();
-        specifiers.push(oxc::ImportDeclarationSpecifier::ImportSpecifier(
-            builder.alloc(specifier),
-        ));
-        let source = builder.string_literal(SPAN, builder.str(&gi.source), None);
-        let import_decl = builder.import_declaration(
-            SPAN,
-            Some(specifiers),
-            source,
-            None,
-            None::<ArenaBox<'a, oxc::WithClause<'a>>>,
-            oxc::ImportOrExportKind::Value,
-        );
-        let import_stmt = oxc::Statement::ImportDeclaration(builder.alloc(import_decl));
+        let import_stmt = build_named_import(builder, &gi.source, &gi.imported, &gi.local);
         program.body.insert(insert_at, import_stmt);
         insert_at += 1;
     }
