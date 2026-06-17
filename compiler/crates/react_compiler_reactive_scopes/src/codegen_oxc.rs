@@ -990,7 +990,7 @@ impl<'a, 'e> Cx<'a, 'e> {
         // `id`) and then re-cloning `dependencies`/`declarations`. The owned
         // copies are needed because the loops below call `&mut self` methods,
         // which precludes holding the `&self` borrow returned by `self.scope`.
-        let (mut deps, mut decls, reassignments, early_return_value) = {
+        let (deps, mut decls, reassignments, early_return_value) = {
             let scope = self.scope(scope_id)?;
             (
                 scope.dependencies.clone(),
@@ -1002,7 +1002,20 @@ impl<'a, 'e> Cx<'a, 'e> {
         };
 
         // --- Dependencies: one slot each (sorted for stable order). ---
-        deps.sort_by(compare_scope_dependency);
+        // Mirror the reference `compareScopeDependency`: sort by the dependency's
+        // fully-qualified name, i.e. the `.`-joined `[name, ...path]` where each
+        // optional path entry is prefixed with `?`, compared lexicographically as
+        // a single string. The identifier name (not its numeric `IdentifierId`)
+        // is the sort key, so names must be resolved up front (which can bail).
+        let mut keyed_deps: Vec<(String, react_compiler_hir::ReactiveScopeDependency)> =
+            Vec::with_capacity(deps.len());
+        for dep in deps {
+            let key = self.scope_dependency_sort_key(&dep)?;
+            keyed_deps.push((key, dep));
+        }
+        keyed_deps.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let deps: Vec<react_compiler_hir::ReactiveScopeDependency> =
+            keyed_deps.into_iter().map(|(_, dep)| dep).collect();
 
         let mut change_exprs: Vec<oxc::Expression<'a>> = Vec::new();
         // (slot index, dependency expression-builder inputs)
@@ -2786,6 +2799,26 @@ impl<'a, 'e> Cx<'a, 'e> {
         }
         Ok(expr)
     }
+
+    /// Build the dependency's fully-qualified sort key, mirroring the reference
+    /// `compareScopeDependency`:
+    /// `[identifier.name.value, ...path.map(e => `${e.optional ? '?' : ''}${e.property}`)].join('.')`.
+    /// The resulting strings are then compared lexicographically.
+    fn scope_dependency_sort_key(
+        &self,
+        dep: &react_compiler_hir::ReactiveScopeDependency,
+    ) -> Bail<String> {
+        let mut key = self.ident_name(dep.identifier)?;
+        for entry in &dep.path {
+            key.push('.');
+            if entry.optional {
+                key.push('?');
+            }
+            use std::fmt::Write;
+            let _ = write!(key, "{}", entry.property);
+        }
+        Ok(key)
+    }
 }
 
 // =============================================================================
@@ -2829,45 +2862,6 @@ fn synthesize_name(base: &str, taken: &HashSet<String>) -> String {
             return candidate;
         }
         i += 1;
-    }
-}
-
-fn compare_scope_dependency(
-    a: &react_compiler_hir::ReactiveScopeDependency,
-    b: &react_compiler_hir::ReactiveScopeDependency,
-) -> std::cmp::Ordering {
-    a.identifier
-        .0
-        .cmp(&b.identifier.0)
-        .then_with(|| a.path.len().cmp(&b.path.len()))
-        .then_with(|| {
-            for (pa, pb) in a.path.iter().zip(b.path.iter()) {
-                let ord = compare_property_literal(&pa.property, &pb.property);
-                if ord != std::cmp::Ordering::Equal {
-                    return ord;
-                }
-            }
-            std::cmp::Ordering::Equal
-        })
-}
-
-/// Order property keys for stable dependency sorting. Equivalent to comparing
-/// the old tagged strings (`"n:<f64>"` / `"s:<str>"`) without allocating in the
-/// common cases: the Number tag (`'n'`) sorts before the String tag (`'s'`),
-/// Strings compare directly, and Numbers preserve the previous lexical ordering
-/// of their plain `f64` Display form.
-fn compare_property_literal(a: &PropertyLiteral, b: &PropertyLiteral) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        // Number tag < String tag (mirrors `'n' < 's'`).
-        (PropertyLiteral::Number(_), PropertyLiteral::String(_)) => Ordering::Less,
-        (PropertyLiteral::String(_), PropertyLiteral::Number(_)) => Ordering::Greater,
-        (PropertyLiteral::String(sa), PropertyLiteral::String(sb)) => sa.cmp(sb),
-        (PropertyLiteral::Number(na), PropertyLiteral::Number(nb)) => {
-            // Preserve the previous lexical comparison of `f64` Display strings
-            // (not a numeric comparison).
-            na.value().to_string().cmp(&nb.value().to_string())
-        }
     }
 }
 
