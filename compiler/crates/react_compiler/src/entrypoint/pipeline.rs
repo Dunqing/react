@@ -1062,11 +1062,13 @@ pub fn compile_fn(
 
     // Native oxc codegen runs after the input semantic borrow ends (see
     // native_codegen.rs / codegen_assembly.rs), so we move the reactive function
-    // + unique identifiers into a `NativeArtifact` below. They are the only
-    // codegen inputs; `fbt_operands` is unused by the native path.
-    let _ = fbt_operands;
+    // + unique identifiers + fbt operands into a `NativeArtifact` below. The fbt
+    // operand set lets codegen keep fbt-param string attributes as bare
+    // `name="…"` attributes (matching the reference `fbtOperands` exclusion in
+    // `codegenJsxAttribute`).
     let native_reactive_fn = reactive_fn;
     let native_unique_identifiers = unique_identifiers;
+    let native_fbt_operands = fbt_operands;
 
     // Memoization stats for the `CompileSuccess` logger event. The four
     // block/value counts come from a structural walk of the reactive function
@@ -1087,6 +1089,7 @@ pub fn compile_fn(
             &native_reactive_fn,
             &env,
             &native_unique_identifiers,
+            &native_fbt_operands,
             &builder,
             "_c",
         ) {
@@ -1200,7 +1203,7 @@ pub fn compile_fn(
             build_outlined_reactive_fn(&func, &mut child_env, context)
         };
         match build_result {
-            Ok((reactive_fn, unique_identifiers)) => {
+            Ok((reactive_fn, unique_identifiers, fbt_operands)) => {
                 // Drain any further outlined functions surfaced on the child env.
                 outlined_queue.extend(child_env.take_outlined_functions());
                 if let Some(uid_names) = child_env.take_uid_known_names() {
@@ -1210,6 +1213,7 @@ pub fn compile_fn(
                     reactive_fn,
                     env: child_env,
                     unique_identifiers,
+                    fbt_operands,
                     // Sentinel span: assembly appends this as a top-level
                     // function declaration rather than splicing by source span.
                     fn_span: (0, 0),
@@ -1241,6 +1245,7 @@ pub fn compile_fn(
         reactive_fn: native_reactive_fn,
         env,
         unique_identifiers: native_unique_identifiers,
+        fbt_operands: native_fbt_operands,
         fn_span: (native_fn_span.0, native_fn_span.1),
         is_arrow: native_is_arrow,
         fn_name: fn_name.map(|s| s.to_string()),
@@ -1280,6 +1285,7 @@ fn build_outlined_reactive_fn(
     (
         react_compiler_hir::reactive::ReactiveFunction,
         std::collections::HashSet<String>,
+        std::collections::HashSet<react_compiler_hir::IdentifierId>,
     ),
     CompilerError,
 > {
@@ -1294,7 +1300,13 @@ fn build_outlined_reactive_fn(
         context.add_new_reference(name.clone());
     }
 
-    Ok((reactive_fn, unique_identifiers))
+    // Outlined closures never contain fbt operands (`outline_functions` excludes
+    // them), so this short codegen path needs no fbt-operand set.
+    Ok((
+        reactive_fn,
+        unique_identifiers,
+        std::collections::HashSet::new(),
+    ))
 }
 
 /// Build the `ReactiveFunction` + reserved unique identifiers for a JSX-outlined
@@ -1326,6 +1338,7 @@ fn compile_outlined_jsx_fn(
     (
         react_compiler_hir::reactive::ReactiveFunction,
         std::collections::HashSet<String>,
+        std::collections::HashSet<react_compiler_hir::IdentifierId>,
     ),
     CompilerError,
 > {
@@ -1526,7 +1539,7 @@ fn compile_outlined_jsx_fn(
         react_compiler_validation::validate_preserved_manual_memoization(&reactive_fn, env);
     }
 
-    Ok((reactive_fn, unique_identifiers))
+    Ok((reactive_fn, unique_identifiers, fbt_operands))
 }
 
 /// Log CompilerError diagnostics as CompileError events, matching TS `env.logErrors()` behavior.

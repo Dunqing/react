@@ -703,3 +703,21 @@ commit 03e775554a (#36173), HIR-diff categorization probes, no React semantics. 
   with reassignments as followups — no more mixed-kind SSA invariant.
 Independently verified 1770→1775, **0 regressions**. SSA invariant + validate_context_variable_lvalues
 left untouched (the fix is purely in lowering, as in BuildHIR.ts).
+
+## 20260617 Dependency sort key → name (byte-fidelity, → 1775/1797, 0 metric move)
+codegen_oxc.rs sorted scope deps by IdentifierId; TS sorts lexicographically by qualified name
+(CodegenReactiveFunction.ts compareScopeDependency). Fixed the key. SEMANTIC unchanged
+(structuralNormalize already canonicalizes dep order) — pure byte-fidelity, 0 regressions.
+
+## 20260617 Apply renames to output + fbt operand attr escaping (+4, → 1779/1797)
+- New `react_compiler_oxc/src/rename_apply.rs`: apply `env.renames` (shadow-collision renames like
+  `ref`→`ref_0`) to the OUTPUT oxc AST via a throwaway semantic + VisitMut. The port computed
+  renames but never applied them to passthrough output (TS mutates via Babel `scope.rename`).
+  Threaded through transform → assemble_and_print (compiled path) + CLI passthrough branch.
+- fbt operand string attributes: thread `fbt_operands` from MemoizeFbt into codegen; keep fbt-operand
+  attrs as bare `name="…"` with Babel-style JSX-attribute escaping (escape_jsx_attribute_string),
+  matching TS codegenJsxAttribute's `!fbtOperands.has(...)` exclusion.
+Cleared valid-setState ×2, fbt-param-with-{newline,unicode}. Independently verified, 0 regressions.
+OPEN: fbt-param-with-quotes — vendored oxc_codegen 0.136 hardcodes single-quote for JSX attr values
+containing `"` (ignores single_quote option); TS emits invalid-JSX `name="\"…\""` that only matches
+via the oracle's textual fallback. Needs an oxc_codegen patch/bump — out of clean scope.

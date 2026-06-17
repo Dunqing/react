@@ -1,6 +1,7 @@
 pub mod codegen_assembly;
 pub mod diagnostics;
 pub mod prefilter;
+pub mod rename_apply;
 
 use diagnostics::compile_result_to_diagnostics;
 use prefilter::has_react_like_functions;
@@ -21,6 +22,14 @@ pub struct TransformResult {
     /// `options.debug` (i.e. `__debug`) is enabled. Used by the e2e CLI's
     /// `--dump-hir` flag as a printer-independent oracle.
     pub ordered_log: Vec<OrderedLogItem>,
+    /// Variable renames computed during lowering (binding name collisions
+    /// resolved to `name_0`, `name_1`, …). These must be applied to ANY part of
+    /// the output emitted from the original source AST — i.e. uncompiled
+    /// passthrough functions — to mirror the reference compiler, which mutates
+    /// the source AST in place via Babel's `scope.rename`. The compiled path
+    /// applies them inside `assemble_and_print`; the passthrough path (when
+    /// `code` is `None`) must apply them via [`apply_renames_to_program`].
+    pub renames: Vec<react_compiler::entrypoint::compile_result::BindingRenameInfo>,
 }
 
 /// Result of linting a program via the OXC frontend.
@@ -42,6 +51,7 @@ pub fn transform(
             diagnostics: vec![],
             events: vec![],
             ordered_log: vec![],
+            renames: vec![],
         };
     }
 
@@ -62,17 +72,18 @@ pub fn transform(
     let native_artifacts = compiled.native_artifacts;
 
     let diagnostics = compile_result_to_diagnostics(&result);
-    let (events, ordered_log) = match result {
+    let (events, ordered_log, renames) = match result {
         react_compiler::entrypoint::compile_result::CompileResult::Success {
             events,
             ordered_log,
+            renames,
             ..
-        }
-        | react_compiler::entrypoint::compile_result::CompileResult::Error {
+        } => (events, ordered_log, renames),
+        react_compiler::entrypoint::compile_result::CompileResult::Error {
             events,
             ordered_log,
             ..
-        } => (events, ordered_log),
+        } => (events, ordered_log, Vec::new()),
     };
 
     // N2.1: native oxc codegen + assembly + print. Runs AFTER the input
@@ -84,6 +95,7 @@ pub fn transform(
         source_type,
         &native_artifacts,
         &runtime_module,
+        &renames,
     );
 
     TransformResult {
@@ -91,6 +103,7 @@ pub fn transform(
         diagnostics,
         events,
         ordered_log,
+        renames,
     }
 }
 

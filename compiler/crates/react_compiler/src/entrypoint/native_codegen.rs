@@ -62,6 +62,12 @@ pub struct NativeArtifact {
     /// Unique identifier names reserved by `rename_variables`, used by codegen
     /// for collision-safe synthesized names (e.g. the `$` cache variable).
     pub unique_identifiers: std::collections::HashSet<String>,
+    /// Identifiers that are fbt/macro operands (from
+    /// `MemoizeFbtAndMacroOperandsInSameScope`). Codegen keeps fbt-operand JSX
+    /// string attributes as bare `name="…"` attributes rather than wrapping them
+    /// in expression containers. Mirrors the reference `fbtOperands` set threaded
+    /// into `codegenFunction`.
+    pub fbt_operands: std::collections::HashSet<react_compiler_hir::IdentifierId>,
     /// Source span of the original function node (start, end). Used to locate
     /// and replace the original node in the program body during assembly.
     pub fn_span: (u32, u32),

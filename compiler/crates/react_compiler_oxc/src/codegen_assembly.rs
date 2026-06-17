@@ -33,9 +33,12 @@ use oxc_ast::ast::Str;
 use oxc_span::GetSpan;
 use oxc_span::SPAN;
 use oxc_span::SourceType;
+use react_compiler::entrypoint::compile_result::BindingRenameInfo;
 use react_compiler::entrypoint::native_codegen::GatingPlan;
 use react_compiler::entrypoint::native_codegen::NativeArtifact;
 use react_compiler_reactive_scopes::codegen_oxc::codegen_oxc_function;
+
+use crate::rename_apply::apply_renames_to_program;
 
 /// The local binding name for the runtime cache import (`import { c as _c }`).
 const MEMO_LOCAL_NAME: &str = "_c";
@@ -50,6 +53,7 @@ pub fn assemble_and_print(
     source_type: SourceType,
     artifacts: &[NativeArtifact],
     runtime_module: &str,
+    renames: &[BindingRenameInfo],
 ) -> Option<String> {
     if artifacts.is_empty() {
         return None;
@@ -72,6 +76,7 @@ pub fn assemble_and_print(
             &artifact.reactive_fn,
             &artifact.env,
             &artifact.unique_identifiers,
+            &artifact.fbt_operands,
             &builder,
             MEMO_LOCAL_NAME,
         ) {
@@ -152,6 +157,13 @@ pub fn assemble_and_print(
     // Inject the gating import(s) after the `_c` import (TS emits the gating
     // import right after the memo-cache import). Dedupe identical specifiers.
     inject_gating_imports(&builder, &mut program, &gating_imports);
+
+    // Apply lowering-time binding renames to any function that was emitted from
+    // the original source AST (uncompiled passthrough functions left untouched
+    // by splicing). Compiled functions were rebuilt from already-renamed HIR, so
+    // their declaration nodes no longer carry the original offsets and are left
+    // alone. Mirrors the reference compiler's `scope.rename`.
+    apply_renames_to_program(&mut program, &allocator, renames);
 
     Some(oxc_codegen::Codegen::new().build(&program).code)
 }
@@ -832,7 +844,10 @@ fn as_fn_decl<'a>(builder: &AstBuilder<'a>, mut function: oxc::Function<'a>) -> 
 }
 
 /// Tag a `Function` as a `FunctionExpression` and wrap it as an expression.
-fn as_fn_expr<'a>(builder: &AstBuilder<'a>, mut function: oxc::Function<'a>) -> oxc::Expression<'a> {
+fn as_fn_expr<'a>(
+    builder: &AstBuilder<'a>,
+    mut function: oxc::Function<'a>,
+) -> oxc::Expression<'a> {
     function.r#type = oxc::FunctionType::FunctionExpression;
     oxc::Expression::FunctionExpression(builder.alloc(function))
 }
@@ -941,9 +956,8 @@ fn build_named_import<'a>(
     imported: &str,
     local: &str,
 ) -> oxc::Statement<'a> {
-    let imported = oxc::ModuleExportName::IdentifierName(
-        builder.identifier_name(SPAN, builder.str(imported)),
-    );
+    let imported =
+        oxc::ModuleExportName::IdentifierName(builder.identifier_name(SPAN, builder.str(imported)));
     let local = builder.binding_identifier(SPAN, builder.str(local));
     let specifier = builder.import_specifier(SPAN, imported, local, oxc::ImportOrExportKind::Value);
     let mut specifiers = builder.vec();

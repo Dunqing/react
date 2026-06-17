@@ -141,6 +141,7 @@ pub fn codegen_oxc_function<'a>(
     func: &ReactiveFunction,
     env: &Environment,
     unique_identifiers: &HashSet<String>,
+    fbt_operands: &HashSet<IdentifierId>,
     builder: &AstBuilder<'a>,
     memo_local_name: &str,
 ) -> Bail<OxcCodegenOutput<'a>> {
@@ -153,6 +154,7 @@ pub fn codegen_oxc_function<'a>(
         temp: HashMap::new(),
         declared: HashSet::new(),
         object_methods: HashMap::new(),
+        fbt_operands,
     };
 
     let (function, cache_count) = cx.codegen_function(func)?;
@@ -165,7 +167,7 @@ pub fn codegen_oxc_function<'a>(
 
 /// Codegen context. Holds the arena builder, a read-only env, the cache-slot
 /// counter, and the inline-temporary table (keyed by `DeclarationId`).
-struct Cx<'a, 'e> {
+struct Cx<'a, 'e, 'f> {
     b: AstBuilder<'a>,
     env: &'e Environment,
     next_cache_index: u32,
@@ -189,9 +191,16 @@ struct Cx<'a, 'e> {
     /// retrieved when the enclosing `ObjectExpression` emits its `Method`-typed
     /// properties. Mirrors the reference codegen's `cx.object_methods`.
     object_methods: HashMap<IdentifierId, react_compiler_hir::LoweredFunction>,
+    /// Identifiers that are fbt/macro operands (from
+    /// `MemoizeFbtAndMacroOperandsInSameScope`). A JSX string attribute whose
+    /// place is an fbt operand is kept as a bare `name="…"` attribute even when
+    /// it contains characters that would otherwise require an expression
+    /// container, because the fbt transform reads these as literal strings.
+    /// Mirrors the reference codegen's `cx.fbtOperands`.
+    fbt_operands: &'f HashSet<IdentifierId>,
 }
 
-impl<'a, 'e> Cx<'a, 'e> {
+impl<'a, 'e, 'f> Cx<'a, 'e, 'f> {
     fn atom(&self, s: &str) -> Str<'a> {
         Str::from_in(s, self.b.allocator)
     }
@@ -2683,14 +2692,34 @@ impl<'a, 'e> Cx<'a, 'e> {
             // astral-plane character) must instead be emitted as an expression
             // container holding a JS string literal, so the generator escapes
             // it. Mirrors the reference `STRING_REQUIRES_EXPR_CONTAINER_PATTERN`.
-            // (The reference's fbtOperands exclusion is for deferred fbt.)
+            // The reference excludes fbt operands (`!cx.fbtOperands.has(...)`):
+            // an fbt param `name`/`desc` attribute is read as a literal string by
+            // the fbt transform, so it must stay a bare `name="…"` attribute.
             if string_requires_expr_container(&s) {
-                let lit = self.b.expression_string_literal(SPAN, self.atom(&s), None);
-                let container = self
-                    .b
-                    .jsx_expression_container(SPAN, oxc::JSXExpression::from(lit));
-                return Ok(oxc::JSXAttributeValue::ExpressionContainer(
-                    self.b.alloc(container),
+                if !self.fbt_operands.contains(&place.identifier) {
+                    let lit = self.b.expression_string_literal(SPAN, self.atom(&s), None);
+                    let container = self
+                        .b
+                        .jsx_expression_container(SPAN, oxc::JSXExpression::from(lit));
+                    return Ok(oxc::JSXAttributeValue::ExpressionContainer(
+                        self.b.alloc(container),
+                    ));
+                }
+                // fbt-operand attribute that contains characters needing escaping.
+                // It must stay a bare `name="…"` attribute, so the escaping cannot
+                // be delegated to a JS string-literal printer. oxc's codegen prints
+                // a `JSXAttributeValue::StringLiteral` body verbatim, so pre-encode
+                // the value exactly as the reference (Babel) JSX-attribute printer
+                // would: always double-quoted, with `"` / `\` / control codes /
+                // non-ASCII escaped (`\n`, `\t`, `\uXXXX`, …). We then hand oxc a
+                // string whose printed form already matches the reference byte for
+                // byte (oxc keeps double quotes because the escaped body no longer
+                // contains a bare `"`).
+                let escaped = escape_jsx_attribute_string(&s);
+                return Ok(self.b.jsx_attribute_value_string_literal(
+                    SPAN,
+                    self.atom(&escaped),
+                    None,
                 ));
             }
             return Ok(self
@@ -2841,6 +2870,44 @@ fn string_requires_expr_container(s: &str) -> bool {
             || (c as u32) == 0x007F
             || (c as u32) >= 0x0080
     })
+}
+
+/// Escape a string for emission as a bare double-quoted JSX **attribute** value,
+/// mirroring the reference (Babel) JSX-attribute printer. Babel always uses
+/// double quotes and escapes the `"` and `\` characters, C0/DEL control codes
+/// (as `\n`, `\t`, `\r`, `\f`, `\b`, `\v`, or `\xNN`), and any non-ASCII
+/// character (as `\uXXXX`). It does NOT escape `&`, `<`, `>`, `{`, `}` or `'`.
+fn escape_jsx_attribute_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\u{0B}' => out.push_str("\\v"),
+            c if (c as u32) < 0x20 || (c as u32) == 0x7F => {
+                out.push_str(&format!("\\x{:02X}", c as u32));
+            }
+            c if (c as u32) >= 0x80 => {
+                let code = c as u32;
+                if code > 0xFFFF {
+                    // Astral plane: emit as a surrogate pair, matching jsesc.
+                    let v = code - 0x10000;
+                    let high = 0xD800 + (v >> 10);
+                    let low = 0xDC00 + (v & 0x3FF);
+                    out.push_str(&format!("\\u{high:04X}\\u{low:04X}"));
+                } else {
+                    out.push_str(&format!("\\u{code:04X}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// True if a JSX **text child** must be emitted as an expression container

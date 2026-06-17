@@ -473,7 +473,7 @@ fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> Comp
         .with_typescript(true);
 
     let allocator = oxc_allocator::Allocator::default();
-    let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
+    let mut parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
 
     if parsed.panicked || !parsed.diagnostics.is_empty() {
         let err_msgs: Vec<String> = parsed.diagnostics.iter().map(|e| e.to_string()).collect();
@@ -485,14 +485,19 @@ fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> Comp
         };
     }
 
-    let semantic = oxc_semantic::SemanticBuilder::new()
-        .with_build_nodes(true)
-        .build(&parsed.program)
-        .semantic;
-
-    let mut result = react_compiler_oxc::transform(&parsed.program, &semantic, source, options);
+    // Run the transform in a scope so the `semantic` borrow of `parsed.program`
+    // ends before the passthrough branch (which mutates `parsed.program` to
+    // apply binding renames).
+    let mut result = {
+        let semantic = oxc_semantic::SemanticBuilder::new()
+            .with_build_nodes(true)
+            .build(&parsed.program)
+            .semantic;
+        react_compiler_oxc::transform(&parsed.program, &semantic, source, options)
+    };
     let events = std::mem::take(&mut result.events);
     let ordered_log = std::mem::take(&mut result.ordered_log);
+    let renames = std::mem::take(&mut result.renames);
 
     // Check for error-level diagnostics, similar to SWC path.
     // OxcDiagnostic uses miette's Severity.
@@ -527,7 +532,16 @@ fn compile_oxc(source: &str, filename: &str, mut options: PluginOptions) -> Comp
             ordered_log,
         }
     } else {
-        // No changes — emit the original parsed program (already has comments).
+        // No function compiled natively: emit the original parsed program
+        // (already has comments). First apply any lowering-time binding renames
+        // to the passthrough AST, mirroring the reference compiler's
+        // `scope.rename` (which mutates the source AST in place even for
+        // uncompiled functions).
+        react_compiler_oxc::rename_apply::apply_renames_to_program(
+            &mut parsed.program,
+            &allocator,
+            &renames,
+        );
         CompileOutput {
             code: Some(oxc_codegen::Codegen::new().build(&parsed.program).code),
             error: None,

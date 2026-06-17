@@ -752,6 +752,7 @@ dependencies = [
  "oxc_parser",
  "oxc_semantic",
  "oxc_span",
+ "oxc_str",
  "react_compiler",
  "react_compiler_hir",
  "react_compiler_reactive_scopes",
