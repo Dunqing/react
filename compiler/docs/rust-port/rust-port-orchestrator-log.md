@@ -767,3 +767,18 @@ invalid-fnexpr-reference}, props-method-dependency, try-catch-optional-call. Ind
   HIR shape. Handoff doc warns forcing risks false-positives on the 1780+ passing → NOT forced.
 - **1 ValidateSourceLocations** (error.todo-missing-source-locations): needs native codegen source-location tracking.
 - **2 vendored oxc_codegen** (lone-surrogate-string-values, fbt/fbt-param-with-quotes): printer limitations; need oxc patch/bump.
+
+## 20260618 Verify N-VAL divergences + allowlist the native-correct ones
+Reviewed each N-VAL where native compiles code TS errors on, judging whether native's output is a
+SOUND memoization (not just non-empty). Findings:
+- **NATIVE-CORRECT (allowlisted as EXPECTED):** error.bug-invariant-local-or-context-references (TS
+  invariant on catch-binding captured by a closure; native lowers it correctly + leaves body unmemoized),
+  error.todo-repro-named-function-with-shadowed-local-same-name + its new-mutability variant (TS
+  InferMutationAliasingEffects invariant on a fn shadowed by a same-name local; native renames the outer
+  binding, keeps the shadow, memoizes on props.items — sound).
+- **NATIVE-WRONG (NOT allowlisted — real bug to fix):** error.bug-invariant-unnamed-temporary — native
+  drops the outlined rest-param arrow but still emits `renderer={_temp}` referencing an undefined `_temp`
+  → runtime ReferenceError. Must bail the whole function instead of emitting a dangling reference.
+Added a `KNOWN_DIVERGENCES` allowlist + `EXPECTED` verdict to compare-code.ts (raw SEMANTIC-pass stays
+1790/1797; reports `+3 expected divergences => 1793/1797 accounted`). Real failures now 4: the
+unnamed-temporary native bug, ValidateSourceLocations, and the 2 oxc_codegen printer issues.

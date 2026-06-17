@@ -249,7 +249,46 @@ function hasMemo(code: string): boolean {
   return code.includes('_c(') || code.includes('useMemoCache');
 }
 
-type Verdict = 'IDENTICAL' | 'STRUCTURAL' | 'N-VAL' | 'BAIL' | 'OTHER';
+type Verdict =
+  | 'IDENTICAL'
+  | 'STRUCTURAL'
+  | 'EXPECTED'
+  | 'N-VAL'
+  | 'BAIL'
+  | 'OTHER';
+
+/**
+ * Fixtures where the in-process TS compiler hits a documented bug/limitation on
+ * valid code (throws an internal invariant / Todo → no output) but the native
+ * compiler produces a SOUND, behavior-preserving memoization. These are NOT
+ * native failures — native is more correct than the reference here. Each entry
+ * was individually verified (native output inspected for correctness) before
+ * being listed. Keyed by a path suffix; only an N-VAL verdict is reclassified to
+ * EXPECTED, so a future regression to a different failure mode is NOT masked.
+ */
+const KNOWN_DIVERGENCES: ReadonlyArray<{suffix: string; reason: string}> = [
+  {
+    suffix: 'fixtures/compiler/error.bug-invariant-local-or-context-references.js',
+    reason:
+      "TS bug: invariant on a catch-binding captured by a nested closure. Native lowers the catch binding correctly (catch(t0){const err=t0;...}) and leaves the hook body unmemoized — sound.",
+  },
+  {
+    suffix:
+      'fixtures/compiler/error.todo-repro-named-function-with-shadowed-local-same-name.js',
+    reason:
+      'TS bug: InferMutationAliasingEffects invariant when an inner local shadows the function name. Native renames the outer binding (hasErrors_0), keeps the inner shadow, memoizes on the real dep (props.items) — sound.',
+  },
+  {
+    suffix:
+      'fixtures/compiler/new-mutability/error.todo-repro-named-function-with-shadowed-local-same-name.js',
+    reason:
+      'Same as the non-new-mutability variant; identical sound output under @enableNewMutationAliasingModel.',
+  },
+];
+
+function knownDivergence(relPath: string): boolean {
+  return KNOWN_DIVERGENCES.some(d => relPath.endsWith(d.suffix));
+}
 
 interface Result {
   fixture: string;
@@ -319,7 +358,13 @@ function classify(
 
   // --- Not byte-identical: decide structural-equivalence vs a failure bucket. ---
   if (tsErrored && !oxcErrored) {
-    // TS validated/bailed (no output) but oxc produced memoized output.
+    // TS validated/bailed (no output) but oxc produced memoized output. Most are
+    // native bugs (N-VAL), but a verified few are cases where TS hits a
+    // documented bug on valid code and native compiles it correctly — see
+    // KNOWN_DIVERGENCES. Reclassify ONLY those to EXPECTED.
+    if (knownDivergence(relPath)) {
+      return {fixture: relPath, verdict: 'EXPECTED', tsCode, oxcCode, bailReasons};
+    }
     return {fixture: relPath, verdict: 'N-VAL', tsCode, oxcCode, bailReasons};
   }
   if (!tsErrored && oxcErrored) {
@@ -347,6 +392,10 @@ function classify(
 const SEMANTIC_PASS: ReadonlySet<Verdict> = new Set([
   'IDENTICAL',
   'STRUCTURAL',
+  // EXPECTED is a verified known-divergence (native correct, TS bug) — not a
+  // failure. It is reported as its own bucket and excluded from the raw
+  // SEMANTIC-pass count, but single-fixture mode treats it as a pass.
+  'EXPECTED',
 ]);
 
 // --- Simple line diff (for single-fixture mode). ---
@@ -465,6 +514,7 @@ async function runCorpus(): Promise<void> {
   const counts: Record<Verdict, number> = {
     IDENTICAL: 0,
     STRUCTURAL: 0,
+    EXPECTED: 0,
     'N-VAL': 0,
     BAIL: 0,
     OTHER: 0,
@@ -522,6 +572,13 @@ async function runCorpus(): Promise<void> {
     `${DIM}  byte-identical:  ${counts.IDENTICAL}\n` +
       `  structural-equiv: ${counts.STRUCTURAL}${RESET}`,
   );
+  if (counts.EXPECTED > 0) {
+    const accounted = semanticPass + counts.EXPECTED;
+    console.log(
+      `${GREEN}  + ${counts.EXPECTED} expected divergence(s) (native correct, documented TS bug) ` +
+        `=> ${accounted}/${total} accounted (${((accounted / total) * 100).toFixed(1)}%)${RESET}`,
+    );
+  }
   console.log('');
   console.log(`${BOLD}=== FAILURE BUCKETS ===${RESET}`);
   console.log(
