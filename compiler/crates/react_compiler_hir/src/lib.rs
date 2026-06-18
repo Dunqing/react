@@ -217,7 +217,7 @@ impl std::fmt::Display for BlockKind {
 }
 
 /// A basic block in the CFG
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BasicBlock {
     pub kind: BlockKind,
     pub id: BlockId,
@@ -225,6 +225,22 @@ pub struct BasicBlock {
     pub terminal: Terminal,
     pub preds: IndexSet<BlockId>,
     pub phis: Vec<Phi>,
+}
+
+impl Clone for BasicBlock {
+    // Force a single out-of-line copy of this clone instead of letting LTO emit
+    // a duplicate per codegen unit. The slice/map clones below stay inlinable.
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind,
+            id: self.id,
+            instructions: self.instructions.clone(),
+            terminal: self.terminal.clone(),
+            preds: self.preds.clone(),
+            phis: self.phis.clone(),
+        }
+    }
 }
 
 /// Phi node for SSA
