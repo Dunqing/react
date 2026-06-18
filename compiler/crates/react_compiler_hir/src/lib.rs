@@ -4,6 +4,7 @@ pub mod environment;
 pub mod environment_config;
 pub mod globals;
 pub mod object_shape;
+#[cfg(feature = "debug")]
 pub mod print;
 pub mod reactive;
 pub mod type_config;

@@ -3,6 +3,11 @@ name = "react_compiler_reactive_scopes"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Off by default: gates the reactive-function debug printer
+# (`print_reactive_function`). Forwards to `react_compiler_hir/debug`.
+debug = ["react_compiler_hir/debug"]
+
 [dependencies]
 react_compiler_diagnostics = { path = "../react_compiler_diagnostics" }
 react_compiler_hir = { path = "../react_compiler_hir" }

@@ -17,6 +17,7 @@ pub mod codegen_oxc;
 pub mod count_memo_blocks;
 mod extract_scope_declarations_from_destructuring;
 mod merge_reactive_scopes_that_invalidate_together;
+#[cfg(feature = "debug")]
 pub mod print_reactive_function;
 mod promote_used_temporaries;
 mod propagate_early_returns;
@@ -38,6 +39,7 @@ pub use codegen_oxc::codegen_oxc_function;
 pub use count_memo_blocks::count_memo_blocks;
 pub use extract_scope_declarations_from_destructuring::extract_scope_declarations_from_destructuring;
 pub use merge_reactive_scopes_that_invalidate_together::merge_reactive_scopes_that_invalidate_together;
+#[cfg(feature = "debug")]
 pub use print_reactive_function::debug_reactive_function;
 pub use promote_used_temporaries::promote_used_temporaries;
 pub use propagate_early_returns::propagate_early_returns;

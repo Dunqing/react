@@ -3,6 +3,12 @@ name = "react_compiler_hir"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Off by default: gates the HIR debug printer (`print` module), which is only
+# needed for `--dump-hir` / the compare-hir oracle. A library consumer never
+# prints HIR, so gating it out shrinks the linked binary.
+debug = []
+
 [dependencies]
 react_compiler_diagnostics = { path = "../react_compiler_diagnostics" }
 indexmap = { version = "2", features = ["serde"] }

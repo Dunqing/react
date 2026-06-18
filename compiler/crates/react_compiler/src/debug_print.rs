@@ -1,16 +1,35 @@
+// When the `debug` feature is off, the HIR printer is gated out (it is only
+// needed for `--dump-hir` / the compare-hir oracle). `debug_hir` keeps its
+// signature so the pipeline's per-pass debug blocks compile unchanged; it just
+// returns an empty string (those blocks only run when `debug_enabled`, which a
+// non-`debug` consumer never sets).
+#[cfg(not(feature = "debug"))]
+pub fn debug_hir(
+    _hir: &react_compiler_hir::HirFunction,
+    _env: &react_compiler_hir::environment::Environment,
+) -> String {
+    String::new()
+}
+
+#[cfg(feature = "debug")]
 use react_compiler_diagnostics::CompilerError;
+#[cfg(feature = "debug")]
 use react_compiler_hir::environment::Environment;
+#[cfg(feature = "debug")]
 use react_compiler_hir::print::{self, PrintFormatter};
+#[cfg(feature = "debug")]
 use react_compiler_hir::{BasicBlock, BlockId, HirFunction, Instruction, ParamPattern, Terminal};
 
 // =============================================================================
 // DebugPrinter struct — thin wrapper around PrintFormatter for HIR-specific logic
 // =============================================================================
 
+#[cfg(feature = "debug")]
 struct DebugPrinter<'a> {
     fmt: PrintFormatter<'a>,
 }
 
+#[cfg(feature = "debug")]
 impl<'a> DebugPrinter<'a> {
     fn new(env: &'a Environment) -> Self {
         Self {
@@ -658,6 +677,7 @@ impl<'a> DebugPrinter<'a> {
 // Entry point
 // =============================================================================
 
+#[cfg(feature = "debug")]
 pub fn debug_hir(hir: &HirFunction, env: &Environment) -> String {
     let mut printer = DebugPrinter::new(env);
     printer.format_function(hir);
@@ -681,6 +701,7 @@ pub fn debug_hir(hir: &HirFunction, env: &Environment) -> String {
 // Error formatting (kept for backward compatibility)
 // =============================================================================
 
+#[cfg(feature = "debug")]
 pub fn format_errors(error: &CompilerError) -> String {
     let env = Environment::new();
     let mut fmt = PrintFormatter::new(&env);
@@ -691,6 +712,7 @@ pub fn format_errors(error: &CompilerError) -> String {
 /// Format an HIR function into a reactive PrintFormatter.
 /// This bridges the two debug printers so inner functions in FunctionExpression/ObjectMethod
 /// can be printed within the reactive function output.
+#[cfg(feature = "debug")]
 pub fn format_hir_function_into(reactive_fmt: &mut PrintFormatter, func: &HirFunction) {
     // Create a temporary DebugPrinter that shares the same environment
     let mut printer = DebugPrinter {

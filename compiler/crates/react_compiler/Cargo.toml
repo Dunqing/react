@@ -3,6 +3,15 @@ name = "react_compiler"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Off by default: gates the HIR debug printer + the per-pass debug-dump
+# population in the pipeline (`--dump-hir`-only). Forwards to the printer
+# features in the HIR and reactive-scopes crates.
+debug = [
+    "react_compiler_hir/debug",
+    "react_compiler_reactive_scopes/debug",
+]
+
 [dependencies]
 react_compiler_diagnostics = { path = "../react_compiler_diagnostics" }
 react_compiler_hir = { path = "../react_compiler_hir" }

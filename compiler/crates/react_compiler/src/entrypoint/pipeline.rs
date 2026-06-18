@@ -799,11 +799,13 @@ pub fn compile_fn(
     let mut reactive_fn = react_compiler_reactive_scopes::build_reactive_function(&hir, &env)?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     let hir_formatter = |fmt: &mut react_compiler_hir::print::PrintFormatter,
                          func: &react_compiler_hir::HirFunction| {
         debug_print::format_hir_function_into(fmt, func);
     };
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:BuildReactiveFunction");
         let debug_reactive = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -827,6 +829,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::prune_unused_labels(&mut reactive_fn, &env)?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:PruneUnusedLabels");
         let debug_prune_labels_reactive = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -853,6 +856,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::prune_non_escaping_scopes(&mut reactive_fn, &mut env)?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:PruneNonEscapingScopes");
         let debug = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -866,6 +870,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::prune_non_reactive_dependencies(&mut reactive_fn, &mut env);
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context
             .timing
@@ -884,6 +889,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::prune_unused_scopes(&mut reactive_fn, &env)?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:PruneUnusedScopes");
         let debug_prune_unused_scopes = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -905,6 +911,7 @@ pub fn compile_fn(
     )?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context
             .timing
@@ -923,6 +930,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::prune_always_invalidating_scopes(&mut reactive_fn, &env)?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context
             .timing
@@ -941,6 +949,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::propagate_early_returns(&mut reactive_fn, &mut env);
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:PropagateEarlyReturns");
         let debug = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -954,6 +963,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::prune_unused_lvalues(&mut reactive_fn, &env);
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:PruneUnusedLValues");
         let debug_prune_lvalues = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -970,6 +980,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::promote_used_temporaries(&mut reactive_fn, &mut env);
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:PromoteUsedTemporaries");
         let debug = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -988,6 +999,7 @@ pub fn compile_fn(
     )?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context
             .timing
@@ -1006,6 +1018,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::stabilize_block_ids(&mut reactive_fn, &mut env);
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:StabilizeBlockIds");
         let debug_stabilize = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -1024,6 +1037,7 @@ pub fn compile_fn(
         context.add_new_reference(name.clone());
     }
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:RenameVariables");
         let debug = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
@@ -1037,6 +1051,7 @@ pub fn compile_fn(
     react_compiler_reactive_scopes::prune_hoisted_contexts(&mut reactive_fn, &env)?;
     context.timing.stop();
 
+    #[cfg(feature = "debug")]
     if context.debug_enabled {
         context.timing.start("debug_print:PruneHoistedContexts");
         let debug = react_compiler_reactive_scopes::print_reactive_function::debug_reactive_function_with_formatter(
